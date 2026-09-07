@@ -1,0 +1,47 @@
+<?php
+
+namespace App\Modules\Dropi\Filament\Resources\DropiWalletMovimientoResource\Pages;
+
+use App\Modules\Dropi\Actions\ConciliarWalletDropi;
+use App\Modules\Dropi\Filament\Resources\DropiWalletMovimientoResource;
+use Carbon\CarbonImmutable;
+use Filament\Actions\Action;
+use Filament\Notifications\Notification;
+use Filament\Resources\Pages\ListRecords;
+use Illuminate\Support\Facades\RateLimiter;
+
+class ListDropiWalletMovimientos extends ListRecords
+{
+    protected static string $resource = DropiWalletMovimientoResource::class;
+
+    protected function getHeaderActions(): array
+    {
+        return [
+            Action::make('conciliar')
+                ->label('Conciliar wallet Dropi')
+                ->icon('heroicon-o-arrows-right-left')
+                ->color('info')
+                ->requiresConfirmation()
+                ->modalDescription('§15 · Trae movimientos de la wallet Dropi, matchea pagos por guía y detecta sanciones.')
+                ->action(function () {
+                    $key = 'dropi-conciliar:' . auth()->id();
+                    if (RateLimiter::tooManyAttempts($key, 3)) {
+                        Notification::make()
+                            ->title('Espera un momento')
+                            ->body('Ya conciliaste hace poco. Reintenta en ' . RateLimiter::availableIn($key) . 's.')
+                            ->warning()->send();
+                        return;
+                    }
+                    RateLimiter::hit($key, 60);
+
+                    $r = app(ConciliarWalletDropi::class)->handle(CarbonImmutable::now()->subMonths(3));
+
+                    Notification::make()
+                        ->title('Conciliación completada')
+                        ->body("Procesados: {$r['procesados']} · Pagos: {$r['pagos_matcheados']} · Sanciones: {$r['sanciones_detectadas']} · Gastos: {$r['gastos_registrados']}")
+                        ->success()
+                        ->send();
+                }),
+        ];
+    }
+}

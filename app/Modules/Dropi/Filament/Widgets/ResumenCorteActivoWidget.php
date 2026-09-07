@@ -1,0 +1,75 @@
+<?php
+
+namespace App\Modules\Dropi\Filament\Widgets;
+
+use App\Modules\Dropi\Enums\EstadoPedidoDropi;
+use App\Modules\Dropi\Filament\Resources\DropiCorteResource;
+use App\Modules\Dropi\Filament\Resources\DropiPedidoResource;
+use App\Modules\Dropi\Models\DropiCorte;
+use App\Modules\Dropi\Models\DropiPedido;
+use Filament\Widgets\StatsOverviewWidget;
+use Filament\Widgets\StatsOverviewWidget\Stat;
+
+/**
+ * Vista de estado integral (Aracely). Cada tarjeta enlaza a su detalle.
+ */
+class ResumenCorteActivoWidget extends StatsOverviewWidget
+{
+    protected ?string $heading = 'Corte activo · Estado integral';
+
+    protected function getStats(): array
+    {
+        $corte = DropiCorte::query()->orderByDesc('fecha')->orderByDesc('numero')->first();
+        $pedidosAcumulados = DropiPedido::query()->count();
+        $porConciliar = DropiPedido::query()
+            ->whereIn('estado', [EstadoPedidoDropi::Despachado, EstadoPedidoDropi::Entregado])
+            ->count();
+
+        if (! $corte) {
+            return [
+                Stat::make('Sin corte activo', 'Sincronice pedidos para crear el primero')
+                    ->color('gray')->icon('heroicon-o-inbox'),
+            ];
+        }
+
+        return [
+            Stat::make('Corte activo', $corte->etiqueta())
+                ->description(ucfirst($corte->estado->label()))
+                ->color(match ($corte->estado->value) {
+                    'cerrado' => 'success',
+                    'despachado' => 'info',
+                    default => 'warning',
+                })
+                ->icon('heroicon-o-clipboard-document-list')
+                ->url(DropiCorteResource::getUrl('edit', ['record' => $corte->id])),
+
+            Stat::make('Pedidos en el corte', (string) $corte->pedidos_totales)
+                ->description($corte->pedidos_despachados . ' despachados · clic para ver')
+                ->color('info')
+                ->chart([
+                    max(0, $corte->pedidos_totales - $corte->pedidos_despachados),
+                    $corte->pedidos_despachados,
+                ])
+                ->icon('heroicon-o-truck')
+                ->url(DropiPedidoResource::getUrl('index', ['tableFilters' => ['corte_id' => ['value' => $corte->id]]])),
+
+            Stat::make('Pendientes por inventario', (string) $corte->pedidos_pendientes_inv)
+                ->description('Esperan devolución compatible · clic para ver')
+                ->color($corte->pedidos_pendientes_inv > 0 ? 'danger' : 'success')
+                ->icon('heroicon-o-exclamation-triangle')
+                ->url(DropiPedidoResource::getUrl('index', ['tableFilters' => ['estado' => ['value' => 'pendiente_inventario']]])),
+
+            Stat::make('Por conciliar (histórico)', (string) $porConciliar)
+                ->description('Acumulado · ignora el filtro de periodo')
+                ->color('warning')
+                ->icon('heroicon-o-banknotes')
+                ->url(DropiPedidoResource::getUrl('index', ['tableFilters' => ['estado' => ['value' => 'despachado']]])),
+
+            Stat::make('Pedidos totales', (string) $pedidosAcumulados)
+                ->description('En toda la historia · clic para ver')
+                ->color('gray')
+                ->icon('heroicon-o-circle-stack')
+                ->url(DropiPedidoResource::getUrl('index')),
+        ];
+    }
+}

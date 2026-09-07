@@ -1,0 +1,48 @@
+*.log
+.DS_Store
+.env
+.env.backup
+.env.production
+.phpactor.json
+.phpunit.result.cache
+/.fleet
+/.idea
+/.nova
+/.phpunit.cache
+/.vscode
+/.zed
+/auth.json
+/node_modules
+/public/build
+/public/hot
+/public/storage
+/storage/*.key
+/storage/pail
+/vendor
+Homestead.json
+Homestead.yaml
+Thumbs.db
+
+# GREAT BABY — datos operativos que no van al repo
+/storage/app/private/empaques/*
+!/storage/app/private/empaques/.gitkeep
+/storage/app/backups/*
+!/storage/app/backups/.gitkeep
+/storage/app/public/empresa/*
+!/storage/app/public/empresa/.gitkeep
+/public/uploads/*
+!/public/uploads/.gitkeep
+
+# Logs, caches y scratchpad
+/storage/logs/*
+!/storage/logs/.gitkeep
+/bootstrap/cache/*.php
+!/bootstrap/cache/.gitignore
+
+# Windows/OSX cruft
+desktop.ini
+*.tmp
+
+# Manual PDF renderizado (se regenera con artisan)
+manual-usuario-greatbaby-erp.pdf
+anexo-pendientes-por-modulo.pdf
