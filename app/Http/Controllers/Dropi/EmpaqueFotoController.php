@@ -16,7 +16,8 @@ class EmpaqueFotoController extends Controller
     public function ver(EmpaqueRegistro $registro): Response
     {
         $u = auth()->user();
-        abort_unless($u && ($u->esAracely() || $u->hasAnyRole(['Alistador'])), 403);
+        // Solo Aracely puede ver cualquier foto; un Alistador solo la suya (evita IDOR).
+        abort_unless($u && ($u->esAracely() || (int) $registro->operario_id === (int) $u->id), 403);
 
         abort_unless($registro->foto_path && Storage::disk('local')->exists($registro->foto_path), 404);
 

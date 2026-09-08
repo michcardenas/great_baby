@@ -44,15 +44,31 @@ class ProcesarEscaneoEmpaque
                 ->first();
 
             if ($pedido) {
-                if (in_array($pedido->estado, [EstadoPedidoDropi::Despachado, EstadoPedidoDropi::Entregado, EstadoPedidoDropi::Pagado], true)) {
+                // Bloquear pedidos ya empacados/despachados/entregados/pagados (evita reapertura y duplicación de métricas).
+                if (in_array($pedido->estado, [
+                    EstadoPedidoDropi::Empacado,
+                    EstadoPedidoDropi::Despachado,
+                    EstadoPedidoDropi::Entregado,
+                    EstadoPedidoDropi::Pagado,
+                ], true)) {
                     return [
                         'tipo' => 'error',
-                        'mensaje' => "Pedido {$codigo} ya fue despachado.",
+                        'mensaje' => "Pedido {$codigo} ya fue empacado/despachado.",
                         'sonido' => 'error',
                     ];
                 }
 
-                // Bloqueo de carrera: si ya hay un registro en curso para este pedido por otro operario, aviso
+                // Rechazar guía sin ítems (empaque fantasma).
+                $totalUnidades = (int) $pedido->items->sum(fn ($it) => (int) ($it->cantidad ?? 1));
+                if ($totalUnidades === 0) {
+                    return [
+                        'tipo' => 'error',
+                        'mensaje' => "Pedido {$codigo} no tiene ítems — reportá a Aracely",
+                        'sonido' => 'error',
+                    ];
+                }
+
+                // Bloqueo de carrera: si ya hay un registro en curso por otro operario, aviso
                 $enCurso = EmpaqueRegistro::where('pedido_id', $pedido->id)
                     ->where('estado', 'en_curso')
                     ->lockForUpdate()
@@ -66,21 +82,19 @@ class ProcesarEscaneoEmpaque
                     ];
                 }
 
-                if (! $enCurso) {
-                    // Total de unidades a empacar considerando cantidad por item
-                    $totalUnidades = (int) $pedido->items->sum(fn ($it) => (int) ($it->cantidad ?? 1));
-
-                    EmpaqueRegistro::create([
-                        'pedido_id' => $pedido->id,
+                // firstOrCreate para blindaje: aunque el lockForUpdate sobre dropi_pedidos
+                // ya serializa, esto garantiza idempotencia si alguien bypassa el lock.
+                EmpaqueRegistro::firstOrCreate(
+                    ['pedido_id' => $pedido->id, 'estado' => 'en_curso'],
+                    [
                         'operario_id' => $operarioId,
                         'inicio_at' => now(),
                         'items_totales' => $totalUnidades,
                         'items_escaneados' => 0,
-                        'estado' => 'en_curso',
-                    ]);
-                }
+                    ]
+                );
 
-                if ($pedido->estado !== EstadoPedidoDropi::Empacado) {
+                if ($pedido->estado !== EstadoPedidoDropi::Alistando) {
                     $pedido->estado = EstadoPedidoDropi::Alistando;
                     $pedido->save();
                 }
@@ -135,8 +149,11 @@ class ProcesarEscaneoEmpaque
                 ];
             }
 
-            $cantidadRequerida = (int) ($item->cantidad ?? 1);
-            $cantidadYa = (int) ($item->cantidad_pickeada ?? 0);
+            // Recargar el item con lock para evitar race en el increment.
+            $itemLocked = \App\Modules\Dropi\Models\DropiPedidoItem::where('id', $item->id)
+                ->lockForUpdate()->first();
+            $cantidadRequerida = (int) ($itemLocked->cantidad ?? 1);
+            $cantidadYa = (int) ($itemLocked->cantidad_pickeada ?? 0);
 
             if ($cantidadYa >= $cantidadRequerida) {
                 return [
@@ -147,15 +164,17 @@ class ProcesarEscaneoEmpaque
                 ];
             }
 
-            $item->cantidad_pickeada = $cantidadYa + 1;
-            if ($item->cantidad_pickeada >= $cantidadRequerida) {
-                $item->pickeado_at = now();
-                $item->pickeado_por = $operarioId;
+            $itemLocked->cantidad_pickeada = $cantidadYa + 1;
+            if ($itemLocked->cantidad_pickeada >= $cantidadRequerida) {
+                $itemLocked->pickeado_at = now();
+                $itemLocked->pickeado_por = $operarioId;
             }
-            $item->save();
+            $itemLocked->save();
+            $item = $itemLocked;
 
             EmpaqueRegistro::where('pedido_id', $pedido->id)
                 ->where('estado', 'en_curso')
+                ->where('operario_id', $operarioId)
                 ->increment('items_escaneados');
 
             $restanteItem = $cantidadRequerida - $item->cantidad_pickeada;

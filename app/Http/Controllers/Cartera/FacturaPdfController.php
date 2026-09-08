@@ -44,11 +44,17 @@ class FacturaPdfController extends Controller
             $qrSvg = app(QrDianService::class)->generarSvg($factura, 130);
         }
 
-        return Pdf::loadView('cartera.pdf.factura', [
+        // Task #46: usar plantilla WYSIWYG si hay una configurada; sino fallback a la clásica.
+        $plantilla = \App\Modules\Plantillas\Models\PlantillaDocumento::paraTipo('factura');
+        $vista = $plantilla ? 'cartera.pdf.factura-plantilla' : 'cartera.pdf.factura';
+        $cfg = $plantilla ? $plantilla->configEfectiva() : \App\Modules\Plantillas\Models\PlantillaDocumento::defaults();
+
+        return Pdf::loadView($vista, [
             'factura' => $factura,
             'empresa' => $empresa,
             'qrSvg' => $qrSvg,
             'publica' => $publica,
+            'cfg' => $cfg,
         ])->setPaper('letter', 'portrait')
           ->stream('factura-' . $factura->numero . '.pdf');
     }

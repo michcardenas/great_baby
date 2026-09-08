@@ -1,0 +1,69 @@
+<script setup>
+import { reactive } from 'vue';
+import { Head, router, usePage } from '@inertiajs/vue3';
+import { Lock, Mail } from 'lucide-vue-next';
+
+const page = usePage();
+const form = reactive({ email: '', password: '', remember: false, processing: false });
+
+const submit = () => {
+    if (form.processing) return;
+    form.processing = true;
+    router.post('/portal/login', {
+        email: form.email,
+        password: form.password,
+        remember: form.remember,
+    }, {
+        onFinish: () => { form.processing = false; form.password = ''; },
+    });
+};
+</script>
+
+<template>
+    <Head title="Portal B2B · Ingresar"/>
+    <div class="min-h-screen flex items-center justify-center bg-gradient-to-br from-brand-50 to-white dark:from-surface-950 dark:to-surface-900 px-4">
+        <div class="w-full max-w-md">
+            <div class="text-center mb-6">
+                <div class="mx-auto h-14 w-14 rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center text-white font-bold text-lg mb-3">
+                    GB
+                </div>
+                <h1 class="text-2xl font-bold text-surface-900 dark:text-surface-100">Portal B2B GREAT BABY</h1>
+                <p class="text-sm text-surface-500 mt-1">Ingresa con las credenciales que te compartimos.</p>
+            </div>
+
+            <div class="card p-6 space-y-4">
+                <div v-if="page.props.errors?.email" class="p-3 rounded-lg bg-red-50 dark:bg-red-950/40 border-l-4 border-red-500 text-red-700 dark:text-red-300 text-sm">
+                    {{ page.props.errors.email }}
+                </div>
+                <form @submit.prevent="submit" class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-semibold text-surface-600 dark:text-surface-400 mb-1">Correo</label>
+                        <div class="relative">
+                            <Mail class="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-surface-500"/>
+                            <input v-model="form.email" type="email" required autofocus autocomplete="username"
+                                class="input w-full pl-10" placeholder="cliente@empresa.com"/>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-surface-600 dark:text-surface-400 mb-1">Contraseña</label>
+                        <div class="relative">
+                            <Lock class="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-surface-500"/>
+                            <input v-model="form.password" type="password" required autocomplete="current-password"
+                                class="input w-full pl-10" placeholder="••••••••"/>
+                        </div>
+                    </div>
+                    <label class="flex items-center gap-2 text-sm text-surface-600 dark:text-surface-400 cursor-pointer">
+                        <input v-model="form.remember" type="checkbox" class="rounded border-surface-300"/>
+                        Recordarme en este dispositivo
+                    </label>
+                    <button type="submit" :disabled="form.processing" class="btn-primary w-full">
+                        {{ form.processing ? 'Ingresando…' : 'Ingresar' }}
+                    </button>
+                </form>
+                <div class="text-center text-xs text-surface-500 pt-4 border-t border-surface-200 dark:border-surface-800">
+                    ¿Sin acceso? Comunícate al WhatsApp comercial.
+                </div>
+            </div>
+        </div>
+    </div>
+</template>

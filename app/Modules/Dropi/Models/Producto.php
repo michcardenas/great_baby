@@ -27,6 +27,11 @@ class Producto extends Model implements AuditableContract, HasMedia
         'precio_proveedor', 'activo', 'requiere_talla', 'es_set',
         'marca_id', 'categoria_id', 'coleccion_id', 'unidad_medida_id', 'impuesto_id',
         'neto', 'peso_gr', 'alto_cm', 'ancho_cm', 'largo_cm',
+        // REU-1 · Parametrización contable
+        'cta_ingreso', 'cta_iva_venta', 'cta_costo', 'cta_inventario',
+        'cta_devolucion', 'cta_descuento', 'centro_costo', 'notas_contables',
+        // M8 · Marketing rich
+        'copy_comercial', 'specs_json', 'keywords_seo', 'beneficios',
     ];
 
     protected $casts = [
@@ -51,5 +56,26 @@ class Producto extends Model implements AuditableContract, HasMedia
     public function registerMediaCollections(): void
     {
         $this->addMediaCollection('imagenes')->useDisk('public');
+    }
+
+    /**
+     * Cuenta contable efectiva: la del producto si tiene, sino el default global.
+     * REU-1: para asientos, PDFs contables y exportación a SIIGO.
+     */
+    public function cta(string $tipo): ?string
+    {
+        $col = 'cta_' . $tipo;
+        $valor = $this->{$col} ?? null;
+        // Explícito: null/'' = usar default. "0" o "0000" son válidos.
+        if ($valor !== null && $valor !== '') return (string) $valor;
+        $default = setting('contable.cta_' . $tipo . '_default');
+        return ($default !== null && $default !== '') ? (string) $default : null;
+    }
+
+    public function centroCosto(): ?string
+    {
+        if ($this->centro_costo !== null && $this->centro_costo !== '') return (string) $this->centro_costo;
+        $default = setting('contable.centro_costo_default');
+        return ($default !== null && $default !== '') ? (string) $default : null;
     }
 }

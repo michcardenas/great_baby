@@ -41,12 +41,14 @@ class RegistrarDevolucion
                 throw new RuntimeException("La guía {$guia} ya tiene una devolución registrada.");
             }
 
+            // NO pre-setear genero_nota_credito — el observer EmitirNotaCreditoDropi
+            // lo activa recién cuando confirma dispatch a SIIGO. Antes mentíamos.
             $devolucion = DropiDevolucion::create([
                 'pedido_id' => $pedido->id,
                 'recibido_at' => now(),
                 'destino_inventario' => $destino->value,
                 'decision_por' => $userId,
-                'genero_nota_credito' => (bool) $pedido->ari_factura_id,
+                'genero_nota_credito' => false,
                 'notas' => $notas,
             ]);
 

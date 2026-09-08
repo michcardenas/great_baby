@@ -1,0 +1,105 @@
+<script setup>
+import { ref, computed } from 'vue';
+import { Head, Link, router } from '@inertiajs/vue3';
+import { Search, Filter, ShoppingBag } from 'lucide-vue-next';
+import PortalLayout from '@/Layouts/PortalLayout.vue';
+
+const props = defineProps({
+    productos: { type: Array, required: true },
+    meta: { type: Object, required: true },
+    filtros: { type: Object, required: true },
+    lista_nombre: { type: String, default: null },
+    marcas: { type: Array, required: true },
+});
+
+const q = ref(props.filtros.q || '');
+const marcaId = ref(props.filtros.marca_id || '');
+
+const money = (n) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(n || 0);
+
+let deb;
+const buscar = () => {
+    clearTimeout(deb);
+    deb = setTimeout(() => {
+        router.get('/portal/catalogo',
+            { q: q.value, marca_id: marcaId.value || null },
+            { preserveState: true, preserveScroll: true, replace: true });
+    }, 300);
+};
+
+const rangoPrecio = (p) => {
+    if (!p.precio_desde) return null;
+    if (p.precio_desde === p.precio_hasta) return money(p.precio_desde);
+    return `${money(p.precio_desde)} – ${money(p.precio_hasta)}`;
+};
+</script>
+
+<template>
+    <Head title="Catálogo · Portal"/>
+    <PortalLayout>
+        <div class="space-y-4">
+            <div class="flex items-start justify-between gap-4 flex-wrap">
+                <div>
+                    <h1 class="text-2xl font-bold flex items-center gap-2">
+                        <ShoppingBag class="h-6 w-6 text-brand-600"/>
+                        Catálogo
+                    </h1>
+                    <p v-if="lista_nombre" class="text-xs text-surface-500 mt-1">
+                        Precios según tu lista: <b>{{ lista_nombre }}</b>
+                    </p>
+                    <p v-else class="text-xs text-amber-600 mt-1">
+                        Aún no tienes lista de precios asignada. Contacta al comercial para verla.
+                    </p>
+                </div>
+                <div class="text-sm text-surface-500">{{ meta.total }} productos</div>
+            </div>
+
+            <!-- Filtros -->
+            <div class="card p-3 flex items-center gap-2 flex-wrap">
+                <div class="relative flex-1 min-w-[200px]">
+                    <Search class="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-surface-500"/>
+                    <input v-model="q" @input="buscar" placeholder="Buscar por referencia o nombre…" class="input w-full pl-10"/>
+                </div>
+                <select v-model="marcaId" @change="buscar" class="input">
+                    <option value="">Todas las marcas</option>
+                    <option v-for="m in marcas" :key="m.id" :value="m.id">{{ m.nombre }}</option>
+                </select>
+            </div>
+
+            <!-- Grid productos -->
+            <div v-if="!productos.length" class="text-center py-16 text-surface-500 text-sm">
+                No hay productos con esos criterios.
+            </div>
+            <div v-else class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                <Link v-for="p in productos" :key="p.id"
+                    :href="`/portal/producto/${p.id}`"
+                    class="card p-4 hover:shadow-lg hover:-translate-y-0.5 transition-all flex flex-col">
+                    <div class="aspect-square bg-surface-100 dark:bg-surface-800 rounded-lg mb-3 flex items-center justify-center">
+                        <ShoppingBag class="h-12 w-12 text-surface-400"/>
+                    </div>
+                    <div class="text-[10px] font-mono text-surface-500">{{ p.referencia }}</div>
+                    <div class="font-semibold text-sm line-clamp-2 mt-0.5">{{ p.nombre }}</div>
+                    <div class="text-xs text-surface-500 mt-1">{{ p.variantes_count }} variantes</div>
+                    <div class="mt-auto pt-2">
+                        <div v-if="rangoPrecio(p)" class="font-bold text-brand-600">{{ rangoPrecio(p) }}</div>
+                        <a v-else :href="`https://wa.me/573001234567?text=${encodeURIComponent('Hola GREAT BABY, quisiera cotizar el producto ' + p.referencia + ' - ' + p.nombre)}`"
+                            target="_blank" rel="noopener"
+                            @click.stop
+                            class="text-xs text-emerald-600 hover:text-emerald-700 font-semibold flex items-center gap-1">
+                            📱 Cotizar por WhatsApp
+                        </a>
+                    </div>
+                </Link>
+            </div>
+
+            <!-- Paginación simple -->
+            <div v-if="meta.last_page > 1" class="flex items-center justify-center gap-2 pt-4">
+                <button v-for="n in meta.last_page" :key="n"
+                    @click="router.get('/portal/catalogo', { q, marca_id: marcaId, page: n }, { preserveState: true })"
+                    :class="['px-3 py-1 rounded text-sm', n === meta.current_page ? 'bg-brand-600 text-white' : 'bg-surface-100 hover:bg-surface-200 dark:bg-surface-800']">
+                    {{ n }}
+                </button>
+            </div>
+        </div>
+    </PortalLayout>
+</template>

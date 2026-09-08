@@ -2,7 +2,8 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="refresh" content="20">
+    {{-- Auto-refresh sin flash blanco: fetch AJAX + reemplazo del body (fallback: refresh cada 5min si falla el AJAX). --}}
+    <meta http-equiv="refresh" content="300">
     <title>📺 Bodega · Empaque en vivo</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -197,6 +198,20 @@
     <script>
         const tick = () => document.getElementById('reloj').textContent = new Date().toLocaleTimeString('es-CO');
         tick(); setInterval(tick, 1000);
+
+        // Auto-refresh sin flash: reemplaza solo el contenedor cada 20s vía fetch.
+        setInterval(async () => {
+            try {
+                const r = await fetch(window.location.href, { credentials: 'same-origin', cache: 'no-store' });
+                if (!r.ok) return; // se caerá el <meta refresh> de 5 min
+                const html = await r.text();
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, 'text/html');
+                const nuevo = doc.querySelector('.contenedor');
+                const actual = document.querySelector('.contenedor');
+                if (nuevo && actual) actual.replaceWith(nuevo);
+            } catch (e) {}
+        }, 20000);
     </script>
 </body>
 </html>

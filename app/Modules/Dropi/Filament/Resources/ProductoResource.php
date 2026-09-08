@@ -94,6 +94,21 @@ class ProductoResource extends Resource
                         ->columnSpanFull(),
                 ]),
 
+                \Filament\Schemas\Components\Tabs\Tab::make('Contable')->icon('heroicon-o-calculator')->schema([
+                    \Filament\Schemas\Components\Section::make('Cuentas contables del producto')
+                        ->description('Si vacío, se usa el default global de Configuración → Reglas de negocio. Estas cuentas alimentan asientos, PDFs y sincronización SIIGO.')
+                        ->schema([
+                            TextInput::make('cta_ingreso')->label('Cta. ingreso')->placeholder(setting('contable.cta_ingreso_default'))->maxLength(30)->columnSpan(1),
+                            TextInput::make('cta_iva_venta')->label('Cta. IVA venta')->placeholder(setting('contable.cta_iva_venta_default'))->maxLength(30)->columnSpan(1),
+                            TextInput::make('cta_costo')->label('Cta. costo')->placeholder(setting('contable.cta_costo_default'))->maxLength(30)->columnSpan(1),
+                            TextInput::make('cta_inventario')->label('Cta. inventario')->placeholder(setting('contable.cta_inventario_default'))->maxLength(30)->columnSpan(1),
+                            TextInput::make('cta_devolucion')->label('Cta. devolución en ventas')->placeholder(setting('contable.cta_devolucion_default'))->maxLength(30)->columnSpan(1),
+                            TextInput::make('cta_descuento')->label('Cta. descuento comercial')->placeholder(setting('contable.cta_descuento_default'))->maxLength(30)->columnSpan(1),
+                            TextInput::make('centro_costo')->label('Centro de costo')->placeholder(setting('contable.centro_costo_default'))->maxLength(20)->columnSpan(1),
+                            Textarea::make('notas_contables')->label('Notas contables')->rows(3)->columnSpanFull(),
+                        ])->columns(2),
+                ]),
+
                 \Filament\Schemas\Components\Tabs\Tab::make('Sincronización SIIGO')->icon('heroicon-o-cloud')->schema([
                     TextInput::make('siigo_id')->label('ID en SIIGO')->disabled()->dehydrated(false),
                     TextInput::make('siigo_code')->label('Code SIIGO')->disabled()->dehydrated(false),

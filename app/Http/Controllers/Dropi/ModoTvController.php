@@ -12,10 +12,13 @@ class ModoTvController extends Controller
 {
     /**
      * Vista fullscreen para pantalla en pared de bodega.
-     * No requiere auth (es solo lectura + está dentro de la red local).
+     * Requiere sesión Aracely/Alistador (aunque sea "solo lectura", contiene ranking + guías).
      */
     public function empaque()
     {
+        $u = auth()->user();
+        abort_unless($u && ($u->esAracely() || $u->hasAnyRole(['Alistador'])), 403);
+
         $hoy = today();
 
         $empacadosHoy = EmpaqueRegistro::whereDate('fin_at', $hoy)->where('estado', 'completado')->count();

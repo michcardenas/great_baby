@@ -140,9 +140,9 @@ class ImportarProductos extends Page implements HasForms
             [$reader, $path] = $this->abrirLector();
             $reader->open($path);
 
-            $creados = 0; $actualizados = 0; $variantes = 0; $errores = [];
+            $creados = 0; $actualizados = 0; $variantes = 0; $variantesCreadas = 0; $variantesActualizadas = 0; $errores = [];
 
-            DB::transaction(function () use ($reader, &$creados, &$actualizados, &$variantes, &$errores) {
+            DB::transaction(function () use ($reader, &$creados, &$actualizados, &$variantes, &$variantesCreadas, &$variantesActualizadas, &$errores) {
                 foreach ($reader->getSheetIterator() as $sheet) {
                     $header = null;
                     foreach ($sheet->getRowIterator() as $i => $row) {
@@ -172,24 +172,65 @@ class ImportarProductos extends Page implements HasForms
                             $producto->wasRecentlyCreated ? $creados++ : $actualizados++;
 
                             if (! empty($r['color_codigo']) || ! empty($r['diseno_codigo']) || ! empty($r['talla'])) {
-                                $codigo = ProductoVariante::generarCodigoBarras(
-                                    $producto->referencia,
-                                    $r['color_codigo'] ?? null,
-                                    $r['diseno_codigo'] ?? null,
-                                    $r['talla'] ?? null,
-                                );
-                                ProductoVariante::updateOrCreate(
-                                    ['codigo_barras' => $codigo],
-                                    [
+                                // REU-4: preservar código de barras existente para re-imports.
+                                $preservar = (bool) setting('catalogo.preservar_codigo_china', true);
+                                $bloquearCambio = (bool) setting('catalogo.bloquear_cambio_codigo', true);
+
+                                // Normalizar '' → NULL para matchear filas legacy con NULL.
+                                $normalizar = fn ($v) => ($v === '' || $v === null) ? null : trim((string) $v);
+                                $colorRef = $normalizar($r['color_codigo'] ?? null);
+                                $disenoRef = $normalizar($r['diseno_codigo'] ?? null);
+                                $tallaRef = $normalizar($r['talla'] ?? null);
+
+                                // 1) Buscar variante existente por combinación (usa whereNull donde corresponde).
+                                $existente = ProductoVariante::where('producto_id', $producto->id)
+                                    ->when($colorRef === null, fn ($q) => $q->whereNull('color_codigo'), fn ($q) => $q->where('color_codigo', $colorRef))
+                                    ->when($disenoRef === null, fn ($q) => $q->whereNull('diseno_codigo'), fn ($q) => $q->where('diseno_codigo', $disenoRef))
+                                    ->when($tallaRef === null, fn ($q) => $q->whereNull('talla'), fn ($q) => $q->where('talla', $tallaRef))
+                                    ->first();
+
+                                // 2) Determinar el código a usar:
+                                //    - Si viene explícito en el Excel (columna 'codigo_barras' - venido de China), respetar.
+                                //    - Si existe la variante y preservar=true, reusar el suyo.
+                                //    - Si no, generar uno nuevo.
+                                if (! empty($r['codigo_barras'])) {
+                                    $codigo = trim((string) $r['codigo_barras']);
+                                } elseif ($existente && $preservar) {
+                                    $codigo = $existente->codigo_barras;
+                                } else {
+                                    $codigo = ProductoVariante::generarCodigoBarras(
+                                        $producto->referencia,
+                                        $colorRef,
+                                        $disenoRef,
+                                        $tallaRef,
+                                    );
+                                }
+
+                                // 3) Guardar. Si existe + bloquearCambio, no pisamos el codigo_barras.
+                                $dataAttrs = [
+                                    'color_nombre' => $r['color_nombre'] ?? null,
+                                    'diseno_nombre' => $r['diseno_nombre'] ?? null,
+                                ];
+                                if ($existente) {
+                                    if (! $bloquearCambio && $existente->codigo_barras !== $codigo) {
+                                        $dataAttrs['codigo_barras'] = $codigo;
+                                    }
+                                    $existente->update($dataAttrs);
+                                    $variantesActualizadas++;
+                                } else {
+                                    $nuevaVar = ProductoVariante::create(array_merge($dataAttrs, [
                                         'producto_id' => $producto->id,
-                                        'color_codigo' => $r['color_codigo'] ?? null,
-                                        'color_nombre' => $r['color_nombre'] ?? null,
-                                        'diseno_codigo' => $r['diseno_codigo'] ?? null,
-                                        'diseno_nombre' => $r['diseno_nombre'] ?? null,
-                                        'talla' => $r['talla'] ?? null,
-                                    ]
-                                );
-                                $variantes++;
+                                        'codigo_barras' => $codigo,
+                                        'color_codigo' => $colorRef,
+                                        'diseno_codigo' => $disenoRef,
+                                        'talla' => $tallaRef,
+                                    ]));
+                                    // Bind del producto ya cargado (evita N+1 en hooks del modelo).
+                                    if ($nuevaVar->relationLoaded('producto') === false) {
+                                        $nuevaVar->setRelation('producto', $producto);
+                                    }
+                                    $variantesCreadas++;
+                                }
                             }
                         } catch (\Throwable $e) {
                             $errores[] = [
@@ -205,11 +246,12 @@ class ImportarProductos extends Page implements HasForms
             @unlink($path);
 
             $this->errores = $errores;
-            $this->preview = ['nuevos' => $creados, 'actualizados' => $actualizados, 'variantes' => $variantes];
+            $variantes = $variantesCreadas + $variantesActualizadas;
+            $this->preview = ['nuevos' => $creados, 'actualizados' => $actualizados, 'variantes' => $variantes, 'variantesCreadas' => $variantesCreadas, 'variantesActualizadas' => $variantesActualizadas];
 
             Notification::make()
                 ->title(empty($errores) ? '✅ Importación exitosa' : "⚠️ Importación con {" . count($errores) . "} errores")
-                ->body("Nuevos: {$creados} · Actualizados: {$actualizados} · Variantes: {$variantes}")
+                ->body("Productos → Nuevos: {$creados} · Actualizados: {$actualizados}. Variantes → Nuevas: {$variantesCreadas} · Actualizadas: {$variantesActualizadas}")
                 ->color(empty($errores) ? 'success' : 'warning')
                 ->send();
         } catch (\Throwable $e) {
