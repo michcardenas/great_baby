@@ -84,11 +84,42 @@ class ContactosController extends Controller implements HasMiddleware
     public function buscarApi(Request $request)
     {
         $q = trim((string) $request->input('q', ''));
+        $scope = (string) $request->input('scope', 'contactos');
         if (strlen($q) < 2) return response()->json([]);
-        return Contacto::where(function ($qq) use ($q) {
-            $qq->where('nombre_completo', 'like', "%{$q}%")
-                ->orWhere('numero_documento', 'like', "%{$q}%");
-        })->limit(10)->get(['id', 'nombre_completo as nombre', 'numero_documento as documento']);
+
+        // H1 · scope=facturas: busca por número/prefijo de factura O por nombre/doc
+        // del cliente y devuelve pares {factura_id, numero, contacto, saldo}.
+        // Usado por Cobranzas Index para autocomplete sin ID numérico expuesto.
+        if ($scope === 'facturas') {
+            $rows = FacturaVenta::query()
+                ->whereNotIn('estado', [EstadoFactura::Pagada, EstadoFactura::Anulada])
+                ->where(function ($qq) use ($q) {
+                    $qq->where('numero', 'like', "%{$q}%")
+                        ->orWhereHas('contacto', function ($c) use ($q) {
+                            $c->where('nombre_completo', 'like', "%{$q}%")
+                              ->orWhere('numero_documento', 'like', "%{$q}%");
+                        });
+                })
+                ->with('contacto:id,nombre_completo')
+                ->orderByDesc('fecha_emision')
+                ->limit(10)
+                ->get(['id', 'numero', 'contacto_id', 'saldo', 'fecha_vencimiento'])
+                ->map(fn ($f) => [
+                    'factura_id' => $f->id,
+                    'numero' => $f->numero,
+                    'contacto' => $f->contacto?->nombre_completo ?? '—',
+                    'saldo' => (float) $f->saldo,
+                    'vence' => optional($f->fecha_vencimiento)->toDateString(),
+                ])->values();
+            return response()->json($rows);
+        }
+
+        return response()->json(
+            Contacto::where(function ($qq) use ($q) {
+                $qq->where('nombre_completo', 'like', "%{$q}%")
+                    ->orWhere('numero_documento', 'like', "%{$q}%");
+            })->limit(10)->get(['id', 'nombre_completo as nombre', 'numero_documento as documento'])
+        );
     }
 
     public function show(Contacto $contacto): Response

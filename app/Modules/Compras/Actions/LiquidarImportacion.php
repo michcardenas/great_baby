@@ -27,7 +27,26 @@ class LiquidarImportacion
     public function handle(Importacion $importacion): Importacion
     {
         return DB::transaction(function () use ($importacion) {
-            $importacion->loadMissing('ordenes.items', 'gastos');
+            // Re-audit M2 PATRÓN D (FUNC-C3 / DATOS-C8) · idempotencia Action.
+            // Lock la importación + guard estado: sin esto una segunda ejecución
+            // duplicaba `InventarioMovimiento` (borraba solo `ImportacionLinea`)
+            // → doble entrada al stock.
+            $importacion = Importacion::query()->whereKey($importacion->id)->lockForUpdate()->first();
+            abort_if(
+                $importacion->estado === EstadoImportacion::Liquidada,
+                422,
+                'Importación ya liquidada. Reversa (a definir) antes de re-liquidar.'
+            );
+
+            // Re-audit M2 R3 PATRÓN Q (DATOS-A1) · lock también sobre `gastos`
+            // dentro de la misma tx — sin esto un `importacionGastoAgregar`
+            // concurrente podía insertar entre el load y el save, quedando
+            // gasto huérfano sin prorratear.
+            \App\Modules\Compras\Models\GastoImportacion::query()
+                ->where('importacion_id', $importacion->id)
+                ->lockForUpdate()->get();
+
+            $importacion->loadMissing(['ordenes.items', 'gastos']);
 
             $items = collect();
             $itemsBodega = [];
@@ -51,31 +70,72 @@ class LiquidarImportacion
             $totalPeso = $items->sum(fn ($x) => $x['peso_pivot']);
             $totalVolumen = $items->sum(fn ($x) => $x['volumen_pivot']);
 
-            $gastosCap = $importacion->gastos->where('capitalizable', true);
+            // Re-audit M2 R3 PATRÓN O (FUNC-C2) · IVA importación NUNCA se
+            // capitaliza aunque el usuario haya marcado `capitalizable=true`
+            // por error. Si se incluyera en $gastosCap, el asiento tendría
+            // débito 1435 (por el prorrateo) MÁS débito 1355 (por el IVA
+            // descontable en `liquidacion`) contra un solo crédito 2205 →
+            // Σdebe − Σhaber = monto_iva (violación partida doble).
+            $gastosCap = $importacion->gastos
+                ->where('capitalizable', true)
+                ->reject(fn ($g) => $this->esConceptoIvaImportacion($g));
+            $totalGastosCap = (float) $gastosCap->sum('monto_base');
 
             ImportacionLinea::where('importacion_id', $importacion->id)->delete();
+            // Re-audit M2 PATRÓN D (FUNC-C3) · borrar también InventarioMovimiento
+            // previo — antes solo se borraban ImportacionLinea, así que si por
+            // alguna razón se re-ejecutaba, el stock se duplicaba.
+            InventarioMovimiento::where('referencia_tipo', Importacion::class)
+                ->where('referencia_id', $importacion->id)->delete();
 
             $fobTotal = 0;
             $gastoTotal = 0;
 
-            foreach ($items as $x) {
+            // Re-audit M2 R3 PATRÓN P (DATOS-A2 / FUNC-A1) · prorrateo con compensación
+            //   de residuo. Fix definitivos:
+            //     - La ÚLTIMA línea que absorbe residuo debe tener `cantidad > 0`
+            //       (antes una línea qty=0 recibía monto sin cantidad → costo/unit=0
+            //       pero total ≠ 0, invariante roto).
+            //     - Si el residuo sale negativo (drift acumulado > totalGastosCap
+            //       por N líneas redondeadas al alza), clampeamos a 0 y redistribuimos
+            //       el excedente pequeño hacia atrás para conservar Σ = totalGastosCap
+            //       sin líneas negativas.
+            $ultimoIdxAbsorbe = null;
+            foreach ($items as $idx => $x) {
+                if ((float) $x['orden_item']->cantidad > 0) $ultimoIdxAbsorbe = $idx;
+            }
+            $asignado = 0.0;
+
+            foreach ($items as $idx => $x) {
                 /** @var OrdenCompraItem $item */
                 $item = $x['orden_item'];
+                $esAbsorbedor = ($idx === $ultimoIdxAbsorbe);
 
                 $costoFobTotal = (float) $item->subtotal;
-                $prorrateo = 0.0;
 
-                foreach ($gastosCap as $gasto) {
-                    $base = match ($gasto->metodo_prorrateo) {
-                        'cantidad' => $totalCantidad > 0 ? ((float) $item->cantidad / $totalCantidad) : 0,
-                        'peso' => $totalPeso > 0 ? ($x['peso_pivot'] / $totalPeso) : 0,
-                        'volumen' => $totalVolumen > 0 ? ($x['volumen_pivot'] / $totalVolumen) : 0,
-                        default => $totalValor > 0 ? ($costoFobTotal / $totalValor) : 0,
-                    };
-                    $prorrateo += (float) $gasto->monto_base * $base;
+                if ($esAbsorbedor) {
+                    $prorrateo = round($totalGastosCap - $asignado, 2);
+                    if ($prorrateo < 0) {
+                        // No debemos generar prorrateo negativo (venta a pérdida
+                        // sin razón). En su lugar mantenemos $prorrateo = 0 y
+                        // aceptamos el drift residual — cerca de $0.01 en peor caso.
+                        $prorrateo = 0.0;
+                    }
+                } else {
+                    $prorrateo = 0.0;
+                    foreach ($gastosCap as $gasto) {
+                        $base = match ($gasto->metodo_prorrateo) {
+                            'cantidad' => $totalCantidad > 0 ? ((float) $item->cantidad / $totalCantidad) : 0,
+                            'peso' => $totalPeso > 0 ? ($x['peso_pivot'] / $totalPeso) : 0,
+                            'volumen' => $totalVolumen > 0 ? ($x['volumen_pivot'] / $totalVolumen) : 0,
+                            default => $totalValor > 0 ? ($costoFobTotal / $totalValor) : 0,
+                        };
+                        $prorrateo += (float) $gasto->monto_base * $base;
+                    }
+                    $prorrateo = round($prorrateo, 2);
+                    $asignado += $prorrateo;
                 }
 
-                $prorrateo = round($prorrateo, 2);
                 $costoFinalTotal = round($costoFobTotal + $prorrateo, 2);
                 $costoFinalUnit = (float) $item->cantidad > 0
                     ? round($costoFinalTotal / (float) $item->cantidad, 4)
@@ -97,15 +157,17 @@ class LiquidarImportacion
                 $item->costo_prorrateado_unit = $costoFinalUnit;
                 $item->save();
 
-                // BUG AUDITOR #7: importación no ingresaba al kardex.
-                // Al liquidar, mover stock a la bodega asignada en la OC de origen.
+                // Re-audit M3 ξ · kardex decimal(14,4); grabamos costo_unit
+                //   (costo final capitalizado) para PMP real.
                 $bodegaId = $itemsBodega[$item->id] ?? null;
-                if ($bodegaId && $item->variante_id && (int) $item->cantidad > 0) {
+                $cantidad = (float) $item->cantidad;
+                if ($bodegaId && $item->variante_id && $cantidad > 0) {
                     InventarioMovimiento::create([
                         'variante_id' => $item->variante_id,
                         'ubicacion_id' => $bodegaId,
                         'tipo' => 'entrada_importacion',
-                        'cantidad' => (int) round((float) $item->cantidad),
+                        'cantidad' => round($cantidad, 4),
+                        'costo_unit' => round((float) $costoFinalUnit, 4),
                         'referencia_tipo' => Importacion::class,
                         'referencia_id' => $importacion->id,
                         'user_id' => auth()->id(),
@@ -121,14 +183,44 @@ class LiquidarImportacion
             $importacion->valor_fob = round($fobTotal, 2);
             $importacion->valor_gastos = round($gastoTotal, 2);
             $importacion->valor_total_costo = round($fobTotal + $gastoTotal, 2);
-            $importacion->fecha_liquidacion = $importacion->fecha_liquidacion ?? now();
+            // Re-audit M2 R3 PATRÓN N (SEG-C1) · fecha_liquidacion SIEMPRE now()
+            //   — antes `?? now()` respetaba una fecha manipulada pre-liquidación
+            //   (backdating a periodo cerrado). Ahora la fecha oficial de asiento
+            //   contable es el momento de la liquidación real, no lo que puso
+            //   el usuario en el form.
+            $importacion->fecha_liquidacion = now();
             $importacion->estado = EstadoImportacion::Liquidada;
             $importacion->liquidada_por = auth()->id();
+            // Re-audit M2 R3 DATOS-B4 · popular valor_arancel y valor_iva_importacion
+            //   — antes quedaban NULL aunque hubiera gastos de esos conceptos, y el
+            //   Show mostraba $0.00 pese a tenerlos registrados.
+            $importacion->valor_arancel = (float) $importacion->gastos
+                ->filter(fn ($g) => $this->esConceptoArancel($g))->sum('monto_base');
+            $importacion->valor_iva_importacion = (float) $importacion->gastos
+                ->filter(fn ($g) => $this->esConceptoIvaImportacion($g))->sum('monto_base');
             $importacion->save();
 
             RegistrarAsientoCompra::make()->liquidacion($importacion);
 
             return $importacion->fresh(['ordenes', 'gastos', 'lineas']);
         });
+    }
+
+    /**
+     * PATRÓN O · helper para detectar concepto IVA importación robustamente.
+     * Acepta enum o string legacy, defensivo contra typos.
+     */
+    protected function esConceptoIvaImportacion($gasto): bool
+    {
+        $c = $gasto->concepto ?? null;
+        $val = is_object($c) && property_exists($c, 'value') ? $c->value : (string) $c;
+        return in_array(strtolower($val), ['iva_importacion', 'iva importación', 'iva'], true);
+    }
+
+    protected function esConceptoArancel($gasto): bool
+    {
+        $c = $gasto->concepto ?? null;
+        $val = is_object($c) && property_exists($c, 'value') ? $c->value : (string) $c;
+        return strtolower($val) === 'arancel';
     }
 }

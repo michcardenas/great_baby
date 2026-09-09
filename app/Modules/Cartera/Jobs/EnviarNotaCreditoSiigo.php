@@ -63,14 +63,26 @@ class EnviarNotaCreditoSiigo implements ShouldQueue
             'error' => $e->getMessage(),
         ]);
 
-        // withTrashed: si el registro se soft-deleteó entre dispatch y fallo definitivo,
-        // igual debemos revertir el flag mentiroso.
         $dev = DropiDevolucion::withTrashed()->find($this->devolucionId);
-        if ($dev) {
-            $dev->update([
-                'genero_nota_credito' => false,
-                'notas' => trim(($dev->notas ?? '') . "\n[NC ERROR] {$e->getMessage()}"),
+        if (! $dev) return;
+
+        // Re-audit R3-04 · marcar la NotaCredito local como `rechazada` para
+        // que un re-trigger de la devolución NO quemé OTRO consecutivo DIAN
+        // creando una segunda NC "emitida". Antes la NC quedaba fantasma
+        // "emitida" para siempre.
+        \App\Modules\Cartera\Models\NotaCredito::query()
+            ->where('devolucion_dropi_id', $dev->id)
+            ->where('estado', 'emitida')
+            ->update([
+                'estado' => 'rechazada',
+                // siigo_response tolerado por saving guard porque no está
+                // en la lista de inmutables.
+                'siigo_response' => ['failed_at' => now()->toIso8601String(), 'error' => $e->getMessage()],
             ]);
-        }
+
+        $dev->update([
+            'genero_nota_credito' => false,
+            'notas' => trim(($dev->notas ?? '') . "\n[NC ERROR] {$e->getMessage()}"),
+        ]);
     }
 }

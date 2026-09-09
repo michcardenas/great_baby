@@ -1,6 +1,7 @@
 <script setup>
 import { ref, watch } from 'vue';
 import { Head, router, Link } from '@inertiajs/vue3';
+import { useMoney } from '@/composables/useMoney';
 import { useDebounceFn } from '@vueuse/core';
 import { CreditCard, Search, Calendar, Upload } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
@@ -27,7 +28,7 @@ const buscarDebounced = useDebounceFn(filtrar, 400);
 watch(q, buscarDebounced);
 watch([medio, desde, hasta], filtrar);
 
-const fmtCOP = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('es-CO');
+const { money: fmtCOP } = useMoney();
 
 const badgeDif = (clas, dif) => {
     if (! dif || Math.abs(dif) < 1) return { txt: 'Exacto', cls: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200' };
@@ -50,6 +51,10 @@ const badgeDif = (clas, dif) => {
                     </h1>
                     <p class="text-sm text-surface-500 mt-1">Consultá pagos aplicados a facturas y clasificación de diferencias.</p>
                 </div>
+                <!-- H7 · CTA importar extracto bancario (abre el modal del admin Filament ya funcional). -->
+                <a href="/admin/pago-ventas" target="_blank" rel="noopener" class="btn-primary text-sm">
+                    <Upload class="h-4 w-4"/> Importar extracto bancario
+                </a>
             </div>
 
             <!-- KPIs -->

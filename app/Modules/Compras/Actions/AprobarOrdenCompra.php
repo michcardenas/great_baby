@@ -19,11 +19,38 @@ class AprobarOrdenCompra
         if ($orden->items()->count() === 0) {
             throw new InvalidArgumentException('La OC no tiene ítems.');
         }
+        // Re-audit M2 R3 PATRÓN R (SEG-A1) · Segregación de Funciones — quien
+        //   crea NO aprueba, salvo rol Aracely/Gerencia (dueño real del negocio).
+        //   Excepción configurable vía `setting('compras.permitir_auto_aprobar', false)`
+        //   por si en operación pequeña Aracely opera sola.
+        $u = auth()->user();
+        $mismoUsuario = $orden->creado_por !== null && $u && $orden->creado_por === $u->id;
+        $esGerencia = $u && ($u->hasRole('Aracely') || $u->hasRole('Gerencia') || $u->hasRole('Gerente'));
+        $permitirAuto = (bool) (function_exists('setting') ? setting('compras.permitir_auto_aprobar', true) : true);
+        if ($mismoUsuario && ! $esGerencia && ! $permitirAuto) {
+            abort(403, 'Segregación de funciones: quien crea una OC no puede aprobarla. Solicita aprobación a Gerencia.');
+        }
+        // Re-audit SEG-B5 · exigir total > 0 (no aprobar OC con precios 0).
+        if ((float) $orden->total <= 0) {
+            throw new InvalidArgumentException('La OC tiene total = 0. Revisa precios de los ítems antes de aprobar.');
+        }
 
         $orden->estado = EstadoOrdenCompra::Aprobada;
         $orden->aprobado_por = auth()->id();
         $orden->aprobado_at = now();
         $orden->save();
+
+        // Re-audit M2 R3 PATRÓN R (SEG-M2) · audit log de aprobación.
+        \Illuminate\Support\Facades\Log::channel(
+            array_key_exists('audit', config('logging.channels') ?? []) ? 'audit' : 'stack'
+        )->info('compras.oc.aprobar', [
+            'user_id' => auth()->id(),
+            'orden_id' => $orden->id,
+            'numero' => $orden->numero,
+            'proveedor_id' => $orden->proveedor_id,
+            'total' => (float) $orden->total,
+            'creado_por' => $orden->creado_por,
+        ]);
 
         return $orden;
     }

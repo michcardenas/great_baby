@@ -6,6 +6,8 @@ import {
     LayoutDashboard, Package, ShoppingCart, Warehouse, Calculator,
     FileText, Users, Truck, Settings, Bell, Search, LogOut,
     Menu as MenuIcon, X, ChevronDown, Home, BarChart3, MessageSquare,
+    Boxes, Camera, Scissors, Wallet, MapPin, AlertTriangle, Radio, Upload,
+    Undo2, ScanLine,
 } from 'lucide-vue-next';
 import CommandPalette from '@/Components/CommandPalette.vue';
 import CopilotoChat from '@/Components/CopilotoChat.vue';
@@ -136,19 +138,22 @@ const groups = [
         key: 'dropi',
         label: 'Dropi',
         items: [
-            { name: 'Dropi · Panel', href: '/app/dropi', icon: Truck },
-            { name: 'Vista Alistador', href: '/app/dropi/alistador', icon: Package },
-            { name: 'Registrar devolución', href: '/app/dropi/devolucion/registrar', icon: Package },
-            { name: 'Escáner cámara', href: '/app/dropi/escaner-camara', icon: Package },
-            { name: 'Cortes', href: '/app/dropi/cortes', icon: Package },
-            { name: 'Wallet · movimientos', href: '/app/dropi/wallet', icon: Package },
-            { name: 'Ubicaciones inventario', href: '/app/dropi/ubicaciones', icon: Package },
-            { name: 'Discrepancias wallet', href: '/app/dropi/discrepancias', icon: Package },
-            { name: 'Inventario en vivo', href: '/app/dropi/inventario-en-vivo', icon: Package },
-            { name: 'Reportes Dropi', href: '/app/dropi/reportes', icon: Package },
-            { name: 'Importar productos', href: '/app/dropi/productos/importar', icon: Package },
+            // Bodega (operativa diaria)
+            { name: 'Dropi · Panel', href: '/app/dropi', icon: LayoutDashboard },
+            { name: 'Vista Alistador', href: '/app/dropi/alistador', icon: Boxes },
+            { name: 'Escáner cámara', href: '/app/dropi/escaner-camara', icon: Camera },
+            { name: 'Registrar devolución', href: '/app/dropi/devolucion/registrar', icon: Undo2 },
+            // Administración
+            { name: 'Cortes', href: '/app/dropi/cortes', icon: Scissors },
+            { name: 'Wallet · movimientos', href: '/app/dropi/wallet', icon: Wallet },
+            { name: 'Discrepancias wallet', href: '/app/dropi/discrepancias', icon: AlertTriangle },
+            { name: 'Ubicaciones inventario', href: '/app/dropi/ubicaciones', icon: MapPin },
+            { name: 'Inventario en vivo', href: '/app/dropi/inventario-en-vivo', icon: Radio },
+            { name: 'Reportes Dropi', href: '/app/dropi/reportes', icon: BarChart3 },
+            { name: 'Importar productos', href: '/app/dropi/productos/importar', icon: Upload },
+            // Catálogo (compartido)
             { name: 'Catálogo', href: '/app/catalogo', icon: Package },
-            { name: 'Catálogo · Maestras', href: '/app/catalogo/maestras', icon: Package },
+            { name: 'Catálogo · Maestras', href: '/app/catalogo/maestras', icon: FileText },
         ],
     },
     {

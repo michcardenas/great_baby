@@ -5,7 +5,6 @@ namespace App\Modules\Dropi\Actions;
 use App\Modules\Dropi\Enums\DestinoDevolucion;
 use App\Modules\Dropi\Enums\EstadoPedidoDropi;
 use App\Modules\Dropi\Models\DropiDevolucion;
-use App\Modules\Dropi\Models\DropiEstadoBitacora;
 use App\Modules\Dropi\Models\DropiPedido;
 use App\Modules\Dropi\Models\InventarioMovimiento;
 use App\Modules\Dropi\Models\InventarioUbicacion;
@@ -62,21 +61,17 @@ class RegistrarDevolucion
             }
             // BajaTotal: no crea movimientos — se pierde
 
-            // Cambio de estado del pedido
-            $anterior = $pedido->estado->value;
-            $pedido->update([
-                'estado' => EstadoPedidoDropi::Devuelto,
-                'devuelto_at' => now(),
-            ]);
-
-            DropiEstadoBitacora::create([
-                'pedido_id' => $pedido->id,
-                'estado_desde' => $anterior,
-                'estado_hasta' => EstadoPedidoDropi::Devuelto->value,
-                'fuente' => 'manual',
-                'user_id' => $userId,
-                'payload' => ['motivo' => 'devolucion_recibida', 'destino' => $destino->value],
-            ]);
+            // Cambio de estado del pedido a través de la state machine central.
+            // Fuente 'sistema': esta Action ES la autoridad para pasar cualquier
+            // pedido (Despachado, Entregado, Empacado) a Devuelto. El registro
+            // manual del alistador dispara la Action; la Action es sistema.
+            $pedido->transicionar(
+                EstadoPedidoDropi::Devuelto,
+                'sistema',
+                $userId,
+                ['motivo' => 'devolucion_recibida', 'destino' => $destino->value, 'user_id' => $userId],
+                ['devuelto_at' => now()],
+            );
 
             return ['devolucion' => $devolucion, 'movimientos' => $movimientos];
         });

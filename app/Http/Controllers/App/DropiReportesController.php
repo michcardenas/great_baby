@@ -28,10 +28,20 @@ class DropiReportesController extends Controller implements HasMiddleware
 {
     public static function middleware(): array
     {
+        // N1 · Reportes Dropi (KPIs financieros, top vendedores/ciudades) SOLO Aracely/Gerencia.
+        //     Inventario en vivo (visibilidad de stock) sí es útil para Alistador → gate por método.
         return [
             new Middleware(function (Request $r, \Closure $next) {
                 $u = $r->user();
-                abort_unless($u && ($u->esAracely() || (method_exists($u, 'esAlistador') && $u->esAlistador())), 403);
+                abort_unless($u, 403);
+
+                $endpointsSoloAdmin = ['reportes', 'importarForm', 'importarProcesar'];
+                $accion = $r->route()->getActionMethod();
+                if (in_array($accion, $endpointsSoloAdmin, true) && ! $u->esAracely()) {
+                    abort(403, 'Solo Aracely/Gerencia puede ver los reportes financieros.');
+                }
+
+                abort_unless($u->esAracely() || (method_exists($u, 'esAlistador') && $u->esAlistador()), 403);
                 return $next($r);
             }),
         ];
@@ -166,6 +176,19 @@ class DropiReportesController extends Controller implements HasMiddleware
         $ext = strtolower($file->getClientOriginalExtension());
 
         $filas = $this->leerArchivo(storage_path('app/private/' . $ruta), $ext);
+
+        // F20 · validar encabezado real. Si faltan columnas mínimas la
+        // importación se detiene con mensaje claro — evita el falso "0 errores"
+        // cuando venían filas silenciosamente sin `nombre` o `precio`.
+        $requeridas = ['referencia', 'nombre', 'precio_proveedor'];
+        $encabezadoFila0 = ! empty($filas) ? array_keys($filas[0]) : [];
+        $faltan = array_diff($requeridas, $encabezadoFila0);
+        if (! empty($faltan)) {
+            return back()
+                ->with('error', 'La plantilla no tiene las columnas: ' . implode(', ', $faltan)
+                    . '. Descarga la plantilla oficial y vuelve a intentar.')
+                ->withInput();
+        }
 
         $creados = 0; $actualizados = 0; $errores = [];
         $tx = DB::transaction(function () use ($filas, &$creados, &$actualizados, &$errores) {

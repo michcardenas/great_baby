@@ -3,20 +3,25 @@ import { ref, reactive } from 'vue';
 import { Head, router } from '@inertiajs/vue3';
 import { Undo2, Search, Package, AlertCircle } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import { useMoney } from '@/composables/useMoney';
+import { usePedidoBadge } from '@/composables/usePedidoBadge';
 
 const props = defineProps({
     guiaBuscar: { type: String, default: '' },
     pedido: { type: Object, default: null },
+    destinos: { type: Array, default: () => [] },
 });
 
 const guia = ref(props.guiaBuscar);
 const procesando = ref(false);
 const form = reactive({
-    destino_inventario: 'reingresa',
+    destino_inventario: props.destinos[0]?.value ?? 'reingreso',
     notas: '',
 });
 const buscar = () => {
-    router.get('/app/dropi/devolucion/registrar', { guia: guia.value }, { preserveState: false });
+    const q = (guia.value ?? '').trim();
+    if (!q) return; // U10 · no dispara con input vacío
+    router.get('/app/dropi/devolucion/registrar', { guia: q }, { preserveState: true, preserveScroll: true });
 };
 const guardar = () => {
     if (!props.pedido) return;
@@ -27,7 +32,8 @@ const guardar = () => {
         notas: form.notas,
     }, { onFinish: () => { procesando.value = false; } });
 };
-const money = (n) => '$' + Number(n || 0).toLocaleString('es-CO', { maximumFractionDigits: 0 });
+const { money } = useMoney();
+const { badge } = usePedidoBadge();
 </script>
 
 <template>
@@ -72,9 +78,14 @@ const money = (n) => '$' + Number(n || 0).toLocaleString('es-CO', { maximumFract
                         <div class="font-bold text-brand-600">{{ money(pedido.monto) }}</div>
                     </div>
                 </div>
-                <div class="border-t border-surface-200 pt-3">
+                <div class="border-t border-surface-200 dark:border-surface-800 pt-3">
                     <div class="text-sm font-semibold">{{ pedido.cliente }}</div>
-                    <div class="text-xs text-surface-500">{{ pedido.ciudad }} · Estado: {{ pedido.estado }}</div>
+                    <div class="text-xs text-surface-500 dark:text-surface-400 flex items-center gap-2 mt-1">
+                        {{ pedido.ciudad }} ·
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase" :class="badge(pedido.estado).cls">
+                            {{ badge(pedido.estado).label }}
+                        </span>
+                    </div>
                 </div>
 
                 <div>
@@ -90,20 +101,15 @@ const money = (n) => '$' + Number(n || 0).toLocaleString('es-CO', { maximumFract
                     </ul>
                 </div>
 
-                <div v-if="!pedido.devolucion_existente" class="border-t border-surface-200 pt-4 space-y-3">
+                <div v-if="!pedido.devolucion_existente" class="border-t border-surface-200 dark:border-surface-800 pt-4 space-y-3">
                     <div>
-                        <label class="block text-xs font-semibold text-surface-600 mb-1">Destino inventario</label>
-                        <div class="grid grid-cols-3 gap-2">
-                            <label v-for="opt in [
-                                {v:'reingresa', l:'♻ Re-ingresa', d:'Producto vuelve a stock vendible'},
-                                {v:'averiado', l:'⚠ Averiado', d:'Va a bodega de dañados'},
-                                {v:'perdido', l:'✖ Perdido', d:'Nunca llegó / se perdió'},
-                            ]" :key="opt.v"
-                                :class="['cursor-pointer border rounded-lg p-3 text-center text-sm',
-                                    form.destino_inventario === opt.v ? 'border-brand-600 bg-brand-50 text-brand-800' : 'border-surface-200']">
-                                <input type="radio" v-model="form.destino_inventario" :value="opt.v" class="hidden"/>
-                                <div class="font-semibold">{{ opt.l }}</div>
-                                <div class="text-xs text-surface-500 mt-1">{{ opt.d }}</div>
+                        <label class="block text-xs font-semibold text-surface-600 dark:text-surface-300 mb-1">Destino inventario</label>
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+                            <label v-for="opt in destinos" :key="opt.value"
+                                :class="['cursor-pointer border rounded-lg p-3 text-center text-sm transition',
+                                    form.destino_inventario === opt.value ? 'border-brand-600 bg-brand-50 dark:bg-brand-950 text-brand-800 dark:text-brand-200' : 'border-surface-200 dark:border-surface-800']">
+                                <input type="radio" v-model="form.destino_inventario" :value="opt.value" class="hidden"/>
+                                <div class="font-semibold">{{ opt.label }}</div>
                             </label>
                         </div>
                     </div>

@@ -2,8 +2,8 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    {{-- Auto-refresh sin flash blanco: fetch AJAX + reemplazo del body (fallback: refresh cada 5min si falla el AJAX). --}}
-    <meta http-equiv="refresh" content="300">
+    {{-- U12 · quitado meta refresh: producía flash blanco en la TV de bodega cada 5 min. --}}
+    {{-- El fetch AJAX cada 20s abajo mantiene la vista al día. Si falla, hay reconexión exponencial. --}}
     <title>📺 Bodega · Empaque en vivo</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -79,7 +79,8 @@
         .kpi.verde { background: linear-gradient(135deg, rgba(16,185,129,.2), rgba(16,185,129,.05)); border-left: 8px solid #10b981; }
         .kpi.rojo  { background: linear-gradient(135deg, rgba(239,68,68,.2), rgba(239,68,68,.05));  border-left: 8px solid #ef4444; }
         .kpi .lbl { font-size: 1.4vw; color: #9ca3af; text-transform: uppercase; letter-spacing: .2vw; }
-        .kpi .val { font-size: 10vw; font-weight: 900; line-height: 1; margin-top: .5vw; }
+        /* U24 · clamp para pantallas 4K (evita que los números desborden). */
+        .kpi .val { font-size: clamp(4rem, 10vw, 12rem); font-weight: 900; line-height: 1; margin-top: .5vw; }
         .kpi.verde .val { color: #10b981; }
         .kpi.rojo .val { color: #ef4444; }
 
@@ -195,22 +196,35 @@
         </div>
     </div>
 
+    <div id="tv-error-banner" style="display:none;position:fixed;top:0;left:0;right:0;background:#7f1d1d;color:#fee2e2;padding:1vw;text-align:center;font-size:1.4vw;font-weight:700;z-index:1000;">
+        ⚠ Conexión perdida — reintentando…
+    </div>
+
     <script>
         const tick = () => document.getElementById('reloj').textContent = new Date().toLocaleTimeString('es-CO');
         tick(); setInterval(tick, 1000);
 
-        // Auto-refresh sin flash: reemplaza solo el contenedor cada 20s vía fetch.
+        // U12/UX#10 · auto-refresh sin flash + banner de error si el fetch falla
+        // varias veces seguidas. Sin meta-refresh de 5 min (quitado en U12).
+        const banner = document.getElementById('tv-error-banner');
+        let fallosConsecutivos = 0;
+
         setInterval(async () => {
             try {
                 const r = await fetch(window.location.href, { credentials: 'same-origin', cache: 'no-store' });
-                if (!r.ok) return; // se caerá el <meta refresh> de 5 min
+                if (!r.ok) throw new Error('http ' + r.status);
                 const html = await r.text();
                 const parser = new DOMParser();
                 const doc = parser.parseFromString(html, 'text/html');
                 const nuevo = doc.querySelector('.contenedor');
                 const actual = document.querySelector('.contenedor');
                 if (nuevo && actual) actual.replaceWith(nuevo);
-            } catch (e) {}
+                fallosConsecutivos = 0;
+                banner.style.display = 'none';
+            } catch (e) {
+                fallosConsecutivos++;
+                if (fallosConsecutivos >= 3) banner.style.display = 'block';
+            }
         }, 20000);
     </script>
 </body>

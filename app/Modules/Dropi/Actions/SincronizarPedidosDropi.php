@@ -32,16 +32,39 @@ class SincronizarPedidosDropi
      */
     public function handle(?CarbonImmutable $desde = null): array
     {
-        $desde ??= CarbonImmutable::now()->subDay();
+        // M4 · sync incremental. Si el caller no fija $desde, leemos el
+        // last_sync_at del recurso 'pedidos' con un solape de 30 min para
+        // absorber reintentos y latencia; si nunca sincronizó, arrancamos
+        // hace 24 h.
+        if ($desde === null) {
+            $last = \Illuminate\Support\Facades\DB::table('dropi_sync_estado')
+                ->where('recurso', 'pedidos')
+                ->value('last_sync_at');
+            $desde = $last
+                ? CarbonImmutable::parse($last)->subMinutes(30)
+                : CarbonImmutable::now()->subDay();
+        }
 
+        $ejecutadoEn = CarbonImmutable::now();
         $pedidos = $this->client->pedidosDesde($desde);
 
         $nuevos = 0;
         $actualizados = 0;
         $pendientesInv = 0;
+        $errores = 0;
 
         foreach ($pedidos as $dto) {
-            $resultado = DB::transaction(fn () => $this->guardarPedido($dto));
+            // H7 func · try/catch por pedido — un DTO tóxico NO puede bloquear
+            // el sync completo. Log y sigue.
+            try {
+                $resultado = DB::transaction(fn () => $this->guardarPedido($dto));
+            } catch (\Throwable $e) {
+                $errores++;
+                \Illuminate\Support\Facades\Log::error('dropi.sync.pedido_error', [
+                    'guia' => $dto->guia ?? null, 'msg' => $e->getMessage(),
+                ]);
+                continue;
+            }
 
             match ($resultado) {
                 'nuevo' => $nuevos++,
@@ -57,19 +80,53 @@ class SincronizarPedidosDropi
             }
         }
 
+        // M4 · dejar high-water-mark.
+        // Re-audit N7 seg · race-safe: usar INSERT/UPDATE con GREATEST() para que
+        // dos syncs concurrentes elijan siempre el timestamp mayor y no se pisen.
+        \Illuminate\Support\Facades\DB::statement(
+            "INSERT INTO dropi_sync_estado (recurso, last_sync_at, created_at, updated_at)
+             VALUES (?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+                last_sync_at = GREATEST(last_sync_at, VALUES(last_sync_at)),
+                updated_at = VALUES(updated_at)",
+            ['pedidos', $ejecutadoEn->toDateTimeString(), now(), now()],
+        );
+
         return [
             'procesados' => $pedidos->count(),
             'nuevos' => $nuevos,
             'actualizados' => $actualizados,
             'pendientes_inv' => $pendientesInv,
+            'errores' => $errores,
             'driver' => $this->client->driver(),
+            'desde' => $desde->toIso8601String(),
         ];
     }
 
     protected function guardarPedido(PedidoDropiDTO $dto): string
     {
+        // P7 · Normalizar guía (trim + upper) para blindar dedup.
+        $guia = strtoupper(trim((string) $dto->guia));
+        if ($guia === '') {
+            return 'rechazado'; // guía vacía nunca entra
+        }
+
+        // S8 · sanitizar payload malformado desde la API externa.
+        // Montos negativos, cantidades <= 0 en items → rechazamos el pedido entero.
+        if ((float) $dto->montoEsperadoProveedor < 0) return 'rechazado';
+        foreach ($dto->items as $it) {
+            if ((int) $it->cantidad <= 0 || (float) $it->precioProveedorUnit < 0) {
+                return 'rechazado';
+            }
+        }
+
+        // M1 · cliente_nombre es NOT NULL en BD; si el payload trae null, usar
+        // sentinel para no reventar el sync completo del lote.
+        $clienteNombre = trim((string) ($dto->clienteNombre ?? ''));
+        if ($clienteNombre === '') $clienteNombre = 'SIN NOMBRE';
+
         $corte = AsignarCorteACarga::run($dto->creadoAt);
-        $existente = DropiPedido::where('guia', $dto->guia)->first();
+        $existente = DropiPedido::where('guia', $guia)->first();
 
         // Estado inicial según stock disponible (solo la primera vez).
         $itemsPlano = array_map(fn ($it) => ['sku' => $it->skuDropi, 'cantidad' => $it->cantidad], $dto->items);
@@ -84,7 +141,7 @@ class SincronizarPedidosDropi
             'tienda' => $dto->tienda,
             'vendedor_nombre' => $dto->vendedorNombre,
             'vendedor_identificacion' => $dto->vendedorIdentificacion,
-            'cliente_nombre' => $dto->clienteNombre,
+            'cliente_nombre' => $clienteNombre,
             'cliente_doc' => $dto->clienteDoc,
             'cliente_telefono' => $dto->clienteTelefono,
             'cliente_direccion' => $dto->clienteDireccion,
@@ -102,13 +159,48 @@ class SincronizarPedidosDropi
         ];
 
         if ($existente) {
-            $existente->fill($data)->save();
+            // Campos NO sensibles al estado: cliente/monto/fechas.
+            $sinEstado = array_diff_key($data, ['estado' => true]);
+
+            // A7 · fechas del payload sólo pisan si son MÁS recientes.
+            foreach (['despachado_at', 'entregado_at', 'devuelto_at', 'pagado_at'] as $f) {
+                $incoming = $sinEstado[$f] ?? null;
+                if ($incoming && $existente->{$f} && $existente->{$f}->gt($incoming)) {
+                    unset($sinEstado[$f]);
+                }
+            }
+
+            $existente->fill($sinEstado)->save();
+
+            // C6 · si el estado del payload cambia, transicionar vía state-machine
+            // (fuente=api). Escribe bitácora automática y dispara side-effects.
+            if ($estadoInicial !== $existente->estado) {
+                try {
+                    $existente->transicionar(
+                        $estadoInicial,
+                        'api',
+                        null,
+                        ['origen' => 'sync', 'raw_estado_dropi' => $dto->estadoDropi ?? null],
+                    );
+                } catch (\Throwable $e) {
+                    // H5 datos · si la máquina rechaza (corte cerrado + estado no permitido),
+                    // logueamos para trazabilidad — antes se tragaba silencio.
+                    \Illuminate\Support\Facades\Log::warning('dropi.sync.transicion_bloqueada', [
+                        'guia' => $existente->guia,
+                        'de' => $existente->estado instanceof \App\Modules\Dropi\Enums\EstadoPedidoDropi
+                            ? $existente->estado->value : (string) $existente->estado,
+                        'a' => $estadoInicial->value,
+                        'msg' => $e->getMessage(),
+                    ]);
+                }
+            }
+
             $this->sincronizarItems($existente, $dto);
 
             return 'actualizado';
         }
 
-        $pedido = DropiPedido::create(array_merge($data, ['guia' => $dto->guia]));
+        $pedido = DropiPedido::create(array_merge($data, ['guia' => $guia]));
         $this->sincronizarItems($pedido, $dto);
 
         DropiEstadoBitacora::create([
@@ -117,7 +209,7 @@ class SincronizarPedidosDropi
             'estado_hasta' => $estadoInicial->value,
             'fuente' => 'api',
             'payload' => $dto->raw,
-            'user_id' => auth()->id(), // quien disparó el sync (null si vino de cron)
+            'user_id' => auth()->id(),
         ]);
 
         return 'nuevo';
@@ -138,10 +230,11 @@ class SincronizarPedidosDropi
             );
         }
 
-        $pedido->corte->update([
-            'pedidos_totales' => $pedido->corte->pedidos()->count(),
-            'pedidos_pendientes_inv' => $pedido->corte->pedidos()->where('estado', 'pendiente_inventario')->count(),
-            'pedidos_despachados' => $pedido->corte->pedidos()->where('estado', 'despachado')->count(),
-        ]);
+        // Raíz A (H1 datos) · los contadores del corte son responsabilidad EXCLUSIVA
+        // del listener RecalcularContadoresCorte (evento PedidoDropiTransicionado).
+        // Antes este método sobrescribía pedidos_despachados con criterio distinto
+        // (solo estado='despachado') pisando el cálculo correcto del listener
+        // (IN despachado,entregado,pagado). Eliminado — el listener corre en cada
+        // transición api/sistema/manual y mantiene la coherencia.
     }
 }

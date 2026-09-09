@@ -26,7 +26,8 @@ class GastosController extends Controller implements HasMiddleware
         $tipo = (string) $request->input('tipo', '');
         $estado = (string) $request->input('estado', '');
         $u = $request->user();
-        $esAdmin = $u->esAracely() || $u->hasAnyRole(['Gerente', 'Contador']);
+        // Re-audit M5 R2 SEG-B2 · esContable() unificado.
+        $esAdmin = $u->esContable();
 
         $q = GastoOperativo::with(['solicita:id,name', 'aprueba:id,name'])
             ->when(! $esAdmin, fn ($qb) => $qb->where('solicita_id', $u->id))
@@ -102,7 +103,8 @@ class GastosController extends Controller implements HasMiddleware
     public function marcarPagado(Request $r, int $gasto): RedirectResponse
     {
         $u = $r->user();
-        abort_unless($u->esAracely() || $u->hasAnyRole(['Gerente', 'Contador']), 403);
+        // Re-audit M5 R2 SEG-B2 · esContable().
+        abort_unless($u?->esContable(), 403);
         $g = GastoOperativo::findOrFail($gasto);
         abort_unless($g->estado === 'aprobado', 422, 'Sólo aprobados pueden marcarse pagados.');
         $g->update(['estado' => 'pagado']);

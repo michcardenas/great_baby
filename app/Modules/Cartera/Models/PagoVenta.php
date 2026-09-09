@@ -21,12 +21,23 @@ class PagoVenta extends Model implements AuditableContract
     // (registrado en AppServiceProvider). Se movió fuera de booted() porque
     // el trait OwenIt\Auditing\Auditable intercepta algunos eventos.
 
-    protected $fillable = [
-        'factura_id', 'contacto_id', 'fecha',
-        'monto_recibido', 'monto_aplicado', 'diferencia',
-        'clasificacion_diferencia', 'medio_pago', 'referencia', 'banco',
-        'registrado_por', 'notas',
-    ];
+    // Re-audit DATOS #10 · $fillable coherente con FacturaVenta/MovimientoContable
+    // ($guarded=['id']) + saving guard sobre factura_id post-creación (evita
+    // re-apuntar un pago a otra factura después de contabilizar).
+    protected $guarded = ['id'];
+
+    protected static function booted(): void
+    {
+        static::updating(function (self $p) {
+            // factura_id inmutable post-creación — cambiar el destino de un pago
+            // dejaría el asiento contable con la ref vieja y descuadraría.
+            if ($p->getOriginal('factura_id') && $p->isDirty('factura_id')) {
+                throw new \RuntimeException(
+                    "PagoVenta #{$p->id}: no se puede cambiar factura_id post-creación (rompe asiento contable)."
+                );
+            }
+        });
+    }
 
     protected $casts = [
         'fecha' => 'date',

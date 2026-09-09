@@ -1,20 +1,29 @@
 <script setup>
 import { ref, computed } from 'vue';
 import { Head, router } from '@inertiajs/vue3';
+import { useMoney } from '@/composables/useMoney';
 import { BookOpen } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 
-const props = defineProps({ movimientos: { type: Object, required: true }, filtros: { type: Object, required: true } });
+const props = defineProps({
+    movimientos: { type: Object, required: true },
+    filtros: { type: Object, required: true },
+    // H8 · totales calculados en el backend sobre TODO el rango filtrado,
+    // no sólo la página actual. Sin esto la conciliación mensual era imposible.
+    totales: { type: Object, default: () => ({ suma_debe: 0, suma_haber: 0, diferencia: 0, total_filas: 0 }) },
+});
 
 const desde = ref(props.filtros.desde);
 const hasta = ref(props.filtros.hasta);
 const cuenta = ref(props.filtros.cuenta || '');
 const filtrar = () => router.get('/app/cartera/movimientos', { desde: desde.value, hasta: hasta.value, cuenta: cuenta.value || null }, { preserveState: true });
 
-const money = (n) => '$' + Number(n || 0).toLocaleString('es-CO', { maximumFractionDigits: 0 });
+const { money } = useMoney();
 
-const totalDebe = computed(() => props.movimientos.data.reduce((s, m) => s + Number(m.debe), 0));
-const totalHaber = computed(() => props.movimientos.data.reduce((s, m) => s + Number(m.haber), 0));
+// H8 · usar totales de backend (todo el rango), no de la página.
+const totalDebe = computed(() => props.totales.suma_debe);
+const totalHaber = computed(() => props.totales.suma_haber);
+const diferencia = computed(() => props.totales.diferencia);
 </script>
 
 <template>
@@ -30,12 +39,17 @@ const totalHaber = computed(() => props.movimientos.data.reduce((s, m) => s + Nu
                 <button @click="filtrar" class="btn-primary self-end">Filtrar</button>
             </div>
 
-            <div class="grid grid-cols-3 gap-3">
-                <div class="card p-3"><div class="text-xs">Total débito</div><div class="text-xl font-bold">{{ money(totalDebe) }}</div></div>
-                <div class="card p-3"><div class="text-xs">Total crédito</div><div class="text-xl font-bold">{{ money(totalHaber) }}</div></div>
-                <div class="card p-3" :class="Math.abs(totalDebe - totalHaber) > 0.01 ? 'ring-2 ring-red-500' : ''">
-                    <div class="text-xs">Diferencia</div>
-                    <div class="text-xl font-bold" :class="Math.abs(totalDebe - totalHaber) > 0.01 ? 'text-red-600' : 'text-emerald-600'">{{ money(totalDebe - totalHaber) }}</div>
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div class="card p-3"><div class="text-xs text-surface-500">Total débito (rango)</div><div class="text-xl font-bold">{{ money(totalDebe) }}</div></div>
+                <div class="card p-3"><div class="text-xs text-surface-500">Total crédito (rango)</div><div class="text-xl font-bold">{{ money(totalHaber) }}</div></div>
+                <div class="card p-3" :class="Math.abs(diferencia) > 0.01 ? 'ring-2 ring-red-500' : ''">
+                    <div class="text-xs text-surface-500">Diferencia</div>
+                    <div class="text-xl font-bold" :class="Math.abs(diferencia) > 0.01 ? 'text-red-600' : 'text-emerald-600'">{{ money(diferencia) }}</div>
+                </div>
+                <div class="card p-3">
+                    <div class="text-xs text-surface-500">Filas en el rango</div>
+                    <div class="text-xl font-bold">{{ totales.total_filas.toLocaleString('es-CO') }}</div>
+                    <div class="text-[10px] text-surface-400 mt-0.5">mostrando {{ movimientos.data.length }} de esta página</div>
                 </div>
             </div>
 

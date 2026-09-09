@@ -58,6 +58,19 @@ return [
             'ignore_exceptions' => false,
         ],
 
+        // Re-audit M2 R3 PATRÓN R (SEG-M2) · canal separado para eventos
+        //   financieros/de auditoría (aprobación OC, anulación, liquidación
+        //   importación, consultas de anulados en Contabilidad). Retención
+        //   larga (365 días) para requerimientos DIAN. Path separado permite
+        //   backup y permisos distintos al stack de aplicación.
+        'audit' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/audit.log'),
+            'level' => env('LOG_LEVEL_AUDIT', 'info'),
+            'days' => 365,
+            'replace_placeholders' => true,
+        ],
+
         'single' => [
             'driver' => 'single',
             'path' => storage_path('logs/laravel.log'),

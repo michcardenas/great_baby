@@ -1,9 +1,11 @@
 <script setup>
 import { ref } from 'vue';
 import { Head, Link } from '@inertiajs/vue3';
-import { ShoppingCart, Ship, Package, DollarSign } from 'lucide-vue-next';
+import { ShoppingCart, Ship, Package, DollarSign, Plus, Globe } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import KpiCard from '@/Components/KpiCard.vue';
+import { useMoney } from '@/composables/useMoney';
+import { fechaCorta } from '@/composables/useFecha';
 
 const props = defineProps({
     tab: { type: String, default: 'ordenes' },
@@ -13,7 +15,8 @@ const props = defineProps({
     recepciones: { type: Array, required: true },
 });
 const tabAct = ref(props.tab);
-const fmtCOP = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('es-CO');
+// Re-audit M2 UX-C2 · useMoney en vez de fmtCOP inline.
+const { money } = useMoney();
 
 const badge = (color) => ({
     warning: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200',
@@ -28,12 +31,23 @@ const badge = (color) => ({
     <Head title="Compras e importaciones"/>
     <AppLayout>
         <div class="space-y-4">
-            <div>
-                <h1 class="text-2xl font-bold flex items-center gap-2">
-                    <ShoppingCart class="h-6 w-6 text-brand-600"/>
-                    Compras e importaciones
-                </h1>
-                <p class="text-sm text-surface-500 mt-1">Órdenes de compra, contenedores, recepciones a bodega.</p>
+            <div class="flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                    <h1 class="text-2xl font-bold flex items-center gap-2">
+                        <ShoppingCart class="h-6 w-6 text-brand-600"/>
+                        Compras e importaciones
+                    </h1>
+                    <p class="text-sm text-surface-500 mt-1">Órdenes de compra, contenedores, recepciones a bodega.</p>
+                </div>
+                <!-- Re-audit M2 UX-M8 · CTAs principales visibles desde Index. -->
+                <div class="flex gap-2 flex-wrap">
+                    <Link href="/app/compras/oc/nueva" class="btn-primary text-sm">
+                        <Plus class="h-4 w-4"/> Nueva OC
+                    </Link>
+                    <Link href="/app/compras/importacion/nueva" class="btn-ghost text-sm">
+                        <Globe class="h-4 w-4"/> Nueva importación
+                    </Link>
+                </div>
             </div>
 
             <!-- KPIs -->
@@ -72,15 +86,15 @@ const badge = (color) => ({
                             <th class="text-center">Estado</th>
                         </tr></thead>
                         <tbody>
-                            <tr v-for="o in ordenes" :key="o.id" class="border-t border-surface-100 dark:border-surface-900">
+                            <tr v-for="o in ordenes" :key="o.id" class="border-t border-surface-100 dark:border-surface-900 hover:bg-surface-50 dark:hover:bg-surface-900/50">
                                 <td class="px-4 py-2 font-mono font-semibold">
                                     <Link :href="`/app/compras/oc/${o.id}`" class="text-brand-600 hover:underline">{{ o.numero }}</Link>
                                 </td>
                                 <td>{{ o.proveedor || '—' }}</td>
                                 <td class="text-xs text-surface-500">{{ o.bodega || '—' }}</td>
-                                <td class="text-right text-surface-500 text-xs">{{ o.fecha_emision }}</td>
-                                <td class="text-right text-surface-500 text-xs">{{ o.fecha_esperada || '—' }}</td>
-                                <td class="text-right font-bold font-mono">{{ fmtCOP(o.total) }}</td>
+                                <td class="text-right text-surface-500 text-xs">{{ fechaCorta(o.fecha_emision) }}</td>
+                                <td class="text-right text-surface-500 text-xs">{{ fechaCorta(o.fecha_esperada) }}</td>
+                                <td class="text-right font-bold font-mono">{{ money(o.total) }}</td>
                                 <td class="text-center"><span :class="['px-2 py-0.5 rounded text-xs font-bold', badge(o.estado_color)]">{{ o.estado_label }}</span></td>
                             </tr>
                         </tbody>
@@ -90,7 +104,10 @@ const badge = (color) => ({
 
             <!-- Importaciones -->
             <div v-if="tabAct==='importaciones'" class="card overflow-hidden">
-                <div v-if="!importaciones.length" class="text-center py-12 text-surface-500 text-sm">Sin importaciones registradas.</div>
+                <div v-if="!importaciones.length" class="text-center py-12 text-surface-500 text-sm">
+                    Sin importaciones registradas.
+                    <div class="mt-3"><Link href="/app/compras/importacion/nueva" class="btn-primary text-xs"><Plus class="h-3 w-3"/> Crear la primera</Link></div>
+                </div>
                 <div v-else class="overflow-x-auto">
                     <table class="w-full min-w-[900px] text-sm">
                         <thead class="bg-surface-50 dark:bg-surface-900"><tr class="text-surface-500 text-xs uppercase">
@@ -104,16 +121,16 @@ const badge = (color) => ({
                             <th class="text-center">Estado</th>
                         </tr></thead>
                         <tbody>
-                            <tr v-for="i in importaciones" :key="i.id" class="border-t border-surface-100 dark:border-surface-900">
+                            <tr v-for="i in importaciones" :key="i.id" class="border-t border-surface-100 dark:border-surface-900 hover:bg-surface-50 dark:hover:bg-surface-900/50">
                                 <td class="px-4 py-2 font-mono font-semibold">
                                     <Link :href="`/app/compras/importacion/${i.id}`" class="text-brand-600 hover:underline">{{ i.numero }}</Link>
                                 </td>
                                 <td class="text-xs font-mono">{{ i.contenedor || '—' }}</td>
                                 <td class="text-xs">{{ i.proveedor_pais || '—' }} → {{ i.puerto_destino || '—' }}</td>
-                                <td class="text-right text-xs text-surface-500">{{ i.zarpe }}</td>
-                                <td class="text-right text-xs text-surface-500">{{ i.eta }}</td>
-                                <td class="text-right text-xs text-surface-500">{{ i.llegada || '—' }}</td>
-                                <td class="text-right font-bold font-mono">{{ i.valor_total_costo > 0 ? fmtCOP(i.valor_total_costo) : '—' }}</td>
+                                <td class="text-right text-xs text-surface-500">{{ fechaCorta(i.zarpe) }}</td>
+                                <td class="text-right text-xs text-surface-500">{{ fechaCorta(i.eta) }}</td>
+                                <td class="text-right text-xs text-surface-500">{{ fechaCorta(i.llegada) }}</td>
+                                <td class="text-right font-bold font-mono">{{ i.valor_total_costo > 0 ? money(i.valor_total_costo) : '—' }}</td>
                                 <td class="text-center"><span :class="['px-2 py-0.5 rounded text-xs font-bold', badge(i.estado_color)]">{{ i.estado_label }}</span></td>
                             </tr>
                         </tbody>
@@ -134,14 +151,16 @@ const badge = (color) => ({
                             <th class="text-left">Observaciones</th>
                         </tr></thead>
                         <tbody>
-                            <tr v-for="r in recepciones" :key="r.id" class="border-t border-surface-100 dark:border-surface-900">
-                                <td class="px-4 py-2 text-surface-500">{{ r.fecha_recepcion }}</td>
+                            <tr v-for="r in recepciones" :key="r.id" class="border-t border-surface-100 dark:border-surface-900 hover:bg-surface-50 dark:hover:bg-surface-900/50">
+                                <td class="px-4 py-2 text-surface-500">{{ fechaCorta(r.fecha_recepcion) }}</td>
                                 <td class="font-mono">
                                     <Link :href="`/app/compras/recepcion/${r.id}`" class="text-brand-600 hover:underline">{{ r.orden_numero || 'R#'+r.id }}</Link>
                                 </td>
-                                <td class="capitalize">{{ r.estado }}</td>
+                                <td class="capitalize">
+                                    <span class="px-2 py-0.5 rounded text-xs font-bold" :class="r.estado === 'confirmada' ? badge('success') : badge('warning')">{{ r.estado }}</span>
+                                </td>
                                 <td class="text-xs">{{ r.receptor }}</td>
-                                <td class="text-xs text-surface-500">{{ r.observaciones || '—' }}</td>
+                                <td class="text-xs text-surface-500 max-w-md truncate" :title="r.observaciones">{{ r.observaciones || '—' }}</td>
                             </tr>
                         </tbody>
                     </table>

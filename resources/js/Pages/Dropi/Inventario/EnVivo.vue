@@ -43,36 +43,39 @@ const buscar = () => {
                 </select>
             </div>
 
+            <!-- U21 · columna Variante sticky en scroll horizontal + fondo sólido para dark mode. -->
             <div class="card overflow-x-auto">
-                <table class="w-full text-xs">
-                    <thead class="text-[10px] uppercase text-surface-500 border-b sticky top-0 bg-white dark:bg-surface-900 z-10">
+                <table class="w-full text-xs border-collapse">
+                    <thead class="text-[10px] uppercase text-surface-500 dark:text-surface-400 border-b border-surface-200 dark:border-surface-800 sticky top-0 z-20 bg-white dark:bg-surface-900">
                         <tr>
-                            <th class="text-left p-2 min-w-[200px]">Variante</th>
-                            <th v-for="u in ubicaciones" :key="u.id" class="text-center p-2 min-w-[60px]" :title="u.nombre">
+                            <th class="text-left p-2 min-w-[220px] sticky left-0 z-30 bg-white dark:bg-surface-900 shadow-[2px_0_0_0_rgba(0,0,0,0.05)]">Variante</th>
+                            <th v-for="u in ubicaciones" :key="u.id" class="text-center p-2 min-w-[64px]" :title="u.nombre">
                                 {{ u.codigo }}
                             </th>
-                            <th class="text-right p-2 font-bold">TOTAL</th>
+                            <th class="text-right p-2 font-bold sticky right-0 z-30 bg-white dark:bg-surface-900">TOTAL</th>
                         </tr>
                     </thead>
-                    <tbody class="divide-y divide-surface-100">
-                        <tr v-for="v in variantes" :key="v.id" class="hover:bg-surface-50">
-                            <td class="p-2">
-                                <div class="font-mono text-[10px] text-surface-500">{{ v.codigo }}</div>
+                    <tbody class="divide-y divide-surface-100 dark:divide-surface-800">
+                        <tr v-for="v in variantes" :key="v.id" class="group hover:bg-surface-50 dark:hover:bg-surface-800/50">
+                            <td class="p-2 sticky left-0 z-10 bg-white dark:bg-surface-900 group-hover:bg-surface-50 dark:group-hover:bg-surface-800/50 shadow-[2px_0_0_0_rgba(0,0,0,0.05)]">
+                                <div class="font-mono text-[10px] text-surface-500 dark:text-surface-400">{{ v.codigo }}</div>
                                 <div class="font-medium">{{ v.producto }}</div>
-                                <div class="text-[10px] text-surface-500">{{ v.referencia }} · {{ v.detalle }}</div>
+                                <div class="text-[10px] text-surface-500 dark:text-surface-400">{{ v.referencia }} · {{ v.detalle }}</div>
                             </td>
                             <td v-for="u in ubicaciones" :key="u.id" class="p-2 text-center"
-                                :class="{'font-bold text-brand-600': v.saldos[u.id] > 0, 'text-surface-300': !v.saldos[u.id]}">
+                                :class="{'font-bold text-brand-600': v.saldos[u.id] > 0, 'text-surface-300 dark:text-surface-600': !v.saldos[u.id]}">
                                 {{ v.saldos[u.id] ?? '·' }}
                             </td>
-                            <td class="p-2 text-right font-bold" :class="v.total > 0 ? 'text-emerald-600' : 'text-surface-400'">
+                            <td class="p-2 text-right font-bold sticky right-0 z-10 bg-white dark:bg-surface-900 group-hover:bg-surface-50 dark:group-hover:bg-surface-800/50"
+                                :class="v.total > 0 ? 'text-emerald-600' : 'text-surface-400'">
                                 {{ v.total }}
                             </td>
                         </tr>
+                        <tr v-if="!variantes.length"><td :colspan="ubicaciones.length + 2" class="p-6 text-center text-surface-500 text-sm">Sin variantes que coincidan con el filtro.</td></tr>
                     </tbody>
                 </table>
             </div>
-            <p class="text-xs text-surface-500">Máximo 200 variantes por página · Total = suma de todos los saldos.</p>
+            <p class="text-xs text-surface-500 dark:text-surface-400">Máximo 200 variantes por página · TOTAL = suma de todos los saldos. Refina con el buscador si necesitas ver más.</p>
         </div>
     </AppLayout>
 </template>

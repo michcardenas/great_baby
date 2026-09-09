@@ -3,21 +3,26 @@
 namespace App\Modules\Cartera\Actions;
 
 use App\Modules\Cartera\Models\MovimientoContable;
+use App\Modules\Cartera\Models\NotaCredito;
 use App\Modules\Dropi\Models\DropiDevolucion;
+use Illuminate\Support\Facades\Log;
 use Lorisleiva\Actions\Concerns\AsAction;
 
 /**
- * Al registrar una devolución Dropi, escribe el asiento inverso BALANCEADO
- * (partida doble: ΣDébitos = ΣHaberes exactamente):
+ * Al registrar una devolución Dropi, escribe el asiento inverso balanceado
+ * usando el helper atómico (partida doble validada antes de commit):
  *
  *   4175 (Devoluciones en ventas)   DÉBITO  = valor (por-item)
- *   1305 (Cuentas por cobrar / CxC) HABER   = valor total    ← CONTRAPARTIDA
- *   1435 (Inventario)                DÉBITO  = valor (si reingresa)
- *   6135 (Costo mercancía vendida)   HABER   = valor (si reingresa)
+ *   1305 (CxC del vendedor Dropi)   HABER   = valor total    ← con tercero_id
+ *   1435 (Inventario)               DÉBITO  = valor (si reingresa)
+ *   6135 (Costo mercancía vendida)  HABER   = valor (si reingresa)
  *
- * Multi-producto: cada ítem usa la cta contable de su Producto (o el default de Reglas).
- * Prorrateo del valor total ítem-por-ítem con ajuste de residuo en el ÚLTIMO ítem
- * para eliminar dispersión de centavos por round().
+ * Re-audit fixes:
+ *   DATOS C6 · si `totalPeso <= 0` (items sin cantidad/precio) → skip completo
+ *     con Log crítico. Antes escribía la contrapartida CxC pero cero débitos =
+ *     asiento roto (helper atómico ahora abortaría, pero prevenimos aquí).
+ *   FUNC C3 · contrapartida 1305 incluye `tercero_type`/`tercero_id` del
+ *     Contacto vendedor Dropi. Antes el mayor por cliente quedaba inflado.
  */
 class ContabilizarDevolucionDropi
 {
@@ -34,12 +39,25 @@ class ContabilizarDevolucionDropi
             $devolucion->update([
                 'notas' => trim(($devolucion->notas ?? '') . "\n[Contab skip] pedido con monto=0, sin asiento"),
             ]);
-            \Illuminate\Support\Facades\Log::info('[Contab-Dev] skip monto=0', ['pedido' => $pedido->guia]);
+            Log::info('[Contab-Dev] skip monto=0', ['pedido' => $pedido->guia]);
             return 0;
         }
 
-        if (MovimientoContable::where('origen_type', DropiDevolucion::class)
-            ->where('origen_id', $devolucion->id)->exists()) {
+        // Re-audit R3-D · si ya existe una NotaCredito local para esta devolución,
+        // el asiento contable de "reverso venta" pertenece al documento fiscal NC,
+        // no a la DropiDevolucion. Antes ambos apuntaban a DropiDevolucion → el
+        // libro DIAN quedaba huérfano de origen fiscal, y al eliminar la NC
+        // (forceDelete cascada) los movs se quedaban vivos apuntando a un
+        // origen inexistente. Ahora origen_type=NotaCredito cuando existe.
+        $nc = NotaCredito::query()
+            ->where('devolucion_dropi_id', $devolucion->id)
+            ->whereNotIn('estado', ['rechazada', 'anulada'])
+            ->first();
+        $origenType = $nc ? NotaCredito::class : DropiDevolucion::class;
+        $origenId = $nc?->id ?? $devolucion->id;
+
+        if (MovimientoContable::where('origen_type', $origenType)
+            ->where('origen_id', $origenId)->exists()) {
             return 0;
         }
 
@@ -50,13 +68,26 @@ class ContabilizarDevolucionDropi
         $items = $pedido->items->filter(fn ($it) => (float) ($it->cantidad ?? 1) > 0)->values();
         $totalPeso = (float) $items->sum(fn ($it) => (float) ($it->cantidad ?? 1) * (float) ($it->precio_unitario ?? 0));
         if ($totalPeso <= 0) {
+            // Fallback: peso por cantidad simple.
             $totalPeso = (float) $items->sum(fn ($it) => (float) ($it->cantidad ?? 1));
             $pesoItem = fn ($it) => (float) ($it->cantidad ?? 1);
         } else {
             $pesoItem = fn ($it) => (float) ($it->cantidad ?? 1) * (float) ($it->precio_unitario ?? 0);
         }
 
-        // Pre-calcular porciones con ajuste de residuo en el último ítem.
+        // Re-audit DATOS C6 · guard total: sin peso positivo NO se puede
+        // prorratear NADA → asiento sería 100% contrapartida sin débitos.
+        // Aborta y loguea para investigación.
+        if ($totalPeso <= 0) {
+            Log::critical('[Contab-Dev] items sin cantidad ni precio, imposible prorratear', [
+                'devolucion_id' => $devolucion->id, 'pedido' => $pedido->guia, 'items_count' => $items->count(),
+            ]);
+            $devolucion->update([
+                'notas' => trim(($devolucion->notas ?? '') . "\n[Contab skip] items sin cantidad ni precio — revisar upstream Dropi"),
+            ]);
+            return 0;
+        }
+
         $porciones = [];
         $acumulado = 0.0;
         $n = $items->count();
@@ -65,13 +96,29 @@ class ContabilizarDevolucionDropi
             if ($peso <= 0) { $porciones[$idx] = 0.0; continue; }
             $esUltimo = ($idx === $n - 1);
             $porciones[$idx] = $esUltimo
-                ? round($valor - $acumulado, 2)  // absorbe residuo
+                ? round($valor - $acumulado, 2)
                 : round($valor * ($peso / $totalPeso), 2);
             $acumulado += $porciones[$idx];
         }
 
-        // ---------- Asientos por ítem ----------
-        $movs = 0;
+        // ---------- Contacto tercero (FUNC C3) ----------
+        // El pedido Dropi apunta a un `vendedor_identificacion` → localizamos
+        // el Contacto B2B. Si no existe, la contrapartida CxC queda sin tercero
+        // pero balanceada — se logea para revisión.
+        $terceroTipo = 'App\\Models\\Contacto';
+        $terceroId = null;
+        if (! empty($pedido->vendedor_identificacion)) {
+            $terceroId = \App\Models\Contacto::where('numero_documento', $pedido->vendedor_identificacion)->value('id');
+            if (! $terceroId) {
+                Log::warning('[Contab-Dev] contrapartida 1305 sin tercero_id', [
+                    'devolucion_id' => $devolucion->id, 'pedido' => $pedido->guia,
+                    'vendedor_doc' => $pedido->vendedor_identificacion,
+                ]);
+            }
+        }
+
+        // ---------- Armar líneas ----------
+        $lineas = [];
         $totalReingresado = 0.0;
         foreach ($items as $idx => $item) {
             $porcion = $porciones[$idx] ?? 0.0;
@@ -84,47 +131,44 @@ class ContabilizarDevolucionDropi
             $cc = $producto?->centroCosto();
             $desc = "Dev guía {$pedido->guia} · " . ($producto?->referencia ?? 'sin-ref') . ($cc ? " [CC:{$cc}]" : '');
 
-            MovimientoContable::create([
+            $lineas[] = [
                 'fecha' => $fecha, 'cuenta_puc' => $ctaDev,
                 'debe' => $porcion, 'haber' => 0,
-                'origen_type' => DropiDevolucion::class, 'origen_id' => $devolucion->id,
+                'origen_type' => $origenType, 'origen_id' => $origenId,
                 'descripcion' => $desc, 'user_id' => $userId,
-            ]);
-            $movs++;
+            ];
 
             if ($devolucion->destino_inventario === 'reingreso') {
-                MovimientoContable::create([
+                $lineas[] = [
                     'fecha' => $fecha, 'cuenta_puc' => $ctaInv,
                     'debe' => $porcion, 'haber' => 0,
-                    'origen_type' => DropiDevolucion::class, 'origen_id' => $devolucion->id,
+                    'origen_type' => $origenType, 'origen_id' => $origenId,
                     'descripcion' => "Reingreso inv " . ($producto?->referencia ?? '—') . " · {$pedido->guia}",
                     'user_id' => $userId,
-                ]);
-                MovimientoContable::create([
+                ];
+                $lineas[] = [
                     'fecha' => $fecha, 'cuenta_puc' => $ctaCosto,
                     'debe' => 0, 'haber' => $porcion,
-                    'origen_type' => DropiDevolucion::class, 'origen_id' => $devolucion->id,
+                    'origen_type' => $origenType, 'origen_id' => $origenId,
                     'descripcion' => "Reverso costo " . ($producto?->referencia ?? '—') . " · {$pedido->guia}",
                     'user_id' => $userId,
-                ]);
-                $movs += 2;
+                ];
                 $totalReingresado += $porcion;
             }
         }
 
-        // ---------- CONTRAPARTIDA por el valor total ----------
-        // Balancea los débitos a la cuenta de Devoluciones (4175) con el crédito a CxC (1305).
-        // Sin esto los asientos serían UNBALANCED y no pasarían validación de partida doble.
+        // Contrapartida CxC (FUNC C3 · con tercero_id).
         $ctaCxC = setting('contable.cta_cxc_default', '1305');
-        MovimientoContable::create([
+        $lineas[] = [
             'fecha' => $fecha, 'cuenta_puc' => $ctaCxC,
+            'tercero_type' => $terceroId ? $terceroTipo : null, 'tercero_id' => $terceroId,
             'debe' => 0, 'haber' => $valor,
-            'origen_type' => DropiDevolucion::class, 'origen_id' => $devolucion->id,
+            'origen_type' => $origenType, 'origen_id' => $origenId,
             'descripcion' => "Contrapartida devolución guía {$pedido->guia} (CxC)",
             'user_id' => $userId,
-        ]);
-        $movs++;
+        ];
 
-        return $movs;
+        // Helper atómico valida partida doble antes de commit.
+        return MovimientoContable::registrarAsientoAtomico($lineas);
     }
 }

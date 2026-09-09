@@ -1,12 +1,17 @@
 <script setup>
 import { ref, reactive } from 'vue';
 import { Head, router } from '@inertiajs/vue3';
+import { useMoney } from '@/composables/useMoney';
+import { useEscClose } from '@/composables/useEscClose';
 import { FileCheck, Check, X } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 
 const props = defineProps({ solicitudes: { type: Object, required: true }, filtro: { type: String, default: '' } });
 
 const modal = ref(null);
+// Re-audit UX #20 · ESC cierra el modal. useEscClose acepta cualquier ref
+// truthy — modal=null es "cerrado", modal={...} es "abierto".
+useEscClose(modal);
 const form = reactive({ decision: 'aprobar', notas: '' });
 const procesando = ref(false);
 const abrir = (s) => { modal.value = s; form.decision = 'aprobar'; form.notas = ''; };
@@ -19,8 +24,12 @@ const resolver = () => {
         onFinish: () => procesando.value = false,
     });
 };
-const filtrar = (e) => router.get('/app/cartera/solicitudes', { estado: e || null });
-const money = (n) => '$' + Number(n || 0).toLocaleString('es-CO', { maximumFractionDigits: 0 });
+// Re-audit UX #12 · preserveState/Scroll para evitar salto al top al cambiar tab.
+const filtrar = (e) => router.get('/app/cartera/solicitudes',
+    { estado: e || null },
+    { preserveScroll: true, preserveState: true, replace: true },
+);
+const { money } = useMoney();
 const badge = (e) => ({ pendiente: 'bg-amber-100 text-amber-800', aprobada: 'bg-emerald-100 text-emerald-800', rechazada: 'bg-red-100 text-red-800', escalada: 'bg-blue-100 text-blue-800' }[e] || 'bg-surface-100');
 </script>
 
@@ -73,9 +82,14 @@ const badge = (e) => ({ pendiente: 'bg-amber-100 text-amber-800', aprobada: 'bg-
             <div class="card p-6 max-w-md w-full">
                 <h3 class="text-lg font-bold mb-3">Resolver solicitud</h3>
                 <p class="text-sm text-surface-500 mb-3">{{ modal.contacto }} · {{ money(modal.monto_pedido) }}</p>
+                <!-- Re-audit UX #2 · mapa estático de clases (JIT purga strings dinámicos como `border-${color}-600`). -->
                 <div class="grid grid-cols-3 gap-2 mb-3">
-                    <label v-for="opt in [{v:'aprobar',c:'emerald',t:'Aprobar'},{v:'rechazar',c:'red',t:'Rechazar'},{v:'escalar',c:'blue',t:'Escalar'}]" :key="opt.v"
-                        :class="['border rounded p-2 text-center cursor-pointer text-sm', form.decision === opt.v ? `border-${opt.c}-600 bg-${opt.c}-50 font-bold` : '']">
+                    <label v-for="opt in [
+                        {v:'aprobar',  t:'Aprobar',  sel:'border-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-200 font-bold'},
+                        {v:'rechazar', t:'Rechazar', sel:'border-red-600 bg-red-50 dark:bg-red-900/30 text-red-800 dark:text-red-200 font-bold'},
+                        {v:'escalar',  t:'Escalar',  sel:'border-blue-600 bg-blue-50 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200 font-bold'},
+                    ]" :key="opt.v"
+                        :class="['border rounded p-2 text-center cursor-pointer text-sm', form.decision === opt.v ? opt.sel : 'border-surface-200 dark:border-surface-700']">
                         <input type="radio" v-model="form.decision" :value="opt.v" class="hidden"/>{{ opt.t }}
                     </label>
                 </div>

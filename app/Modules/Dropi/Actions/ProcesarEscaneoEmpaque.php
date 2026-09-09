@@ -95,8 +95,12 @@ class ProcesarEscaneoEmpaque
                 );
 
                 if ($pedido->estado !== EstadoPedidoDropi::Alistando) {
-                    $pedido->estado = EstadoPedidoDropi::Alistando;
-                    $pedido->save();
+                    $pedido->transicionar(
+                        EstadoPedidoDropi::Alistando,
+                        'manual',
+                        $operarioId,
+                        ['origen' => 'estacion_pistola'],
+                    );
                 }
 
                 return [

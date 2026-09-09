@@ -11,6 +11,10 @@ Artisan::command('inspire', function () {
 // §6 diseño Dropi — libera locks vencidos del alistador cada 2 min.
 Schedule::command('dropi:liberar-locks')->everyTwoMinutes()->withoutOverlapping();
 
+// F15 · re-matcheo periódico de wallet huérfanos (movimientos que llegaron antes
+// de que el pedido apareciera en el sync).
+Schedule::command('dropi:reconciliar-huerfanos')->everyThirtyMinutes()->withoutOverlapping();
+
 // §7 TO-BE Cartera — barrido diario de cobranza WhatsApp a las 9:00.
 Schedule::command('cartera:cobrar')->dailyAt('09:00')->withoutOverlapping();
 

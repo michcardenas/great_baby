@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue';
 import { Head, router, Link } from '@inertiajs/vue3';
+import { useMoney } from '@/composables/useMoney';
 import { useDebounceFn } from '@vueuse/core';
 import { FileText, Search, Filter, Phone, ExternalLink, Download } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
@@ -27,7 +28,7 @@ watch(filtro, () => {
     });
 });
 
-const fmtCOP = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('es-CO');
+const { money: fmtCOP } = useMoney();
 
 const tabs = computed(() => [
     { key: 'todas', label: 'Todas', count: props.totales.todas, color: 'slate' },

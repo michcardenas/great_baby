@@ -26,6 +26,20 @@ class User extends Authenticatable implements FilamentUser
         return $this->hasAnyRole(['Aracely', 'Gerencia']);
     }
 
+    /**
+     * Re-audit M5 SEG-C2 · helper unificado para acceso a Contabilidad.
+     *
+     * Antes: los controllers pedían `hasAnyRole(['Contador','Gerente'])` pero el
+     * seeder solo crea `Aracely,Alistador,ServicioCliente,Gerencia` → Contador
+     * y Gerente nunca daban true en runtime; los Filament Pages pedían
+     * `esAracely()` (Aracely/Gerencia) → matriz de autorización desalineada
+     * entre pantallas del mismo módulo. Este helper es LA autoridad.
+     */
+    public function esContable(): bool
+    {
+        return $this->hasAnyRole(['Aracely', 'Gerencia', 'Gerente', 'Contador']);
+    }
+
     public function esAlistador(): bool
     {
         return $this->hasRole('Alistador');
@@ -34,6 +48,31 @@ class User extends Authenticatable implements FilamentUser
     public function esSac(): bool
     {
         return $this->hasRole('ServicioCliente');
+    }
+
+    /**
+     * Re-audit M3 λ (SEG-C2) · alcance de bodegas para un Alistador.
+     *
+     * Se lee de `setting('inventario.alistador_bodegas.<user_id>', [])` que
+     * Aracely/Gerencia mantienen desde el panel de Reglas de Negocio.
+     * Si el user tiene meta directa `bodegas_asignadas` (JSON) también se
+     * respeta. Vacío = SIN acceso (fail-closed) para no permitir escalación
+     * silenciosa cuando el operador aún no fue configurado.
+     *
+     * Aracely/Gerencia NO deben pasar por aquí: usar `esAracely()` primero.
+     */
+    public function bodegasAsignadasIds(): array
+    {
+        if (! empty($this->getAttribute('bodegas_asignadas'))) {
+            $raw = $this->getAttribute('bodegas_asignadas');
+            $arr = is_array($raw) ? $raw : (json_decode((string) $raw, true) ?: []);
+            return array_values(array_map('intval', $arr));
+        }
+        if (function_exists('setting')) {
+            $arr = (array) setting("inventario.alistador_bodegas.{$this->id}", []);
+            return array_values(array_map('intval', $arr));
+        }
+        return [];
     }
 
     /**

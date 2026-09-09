@@ -25,8 +25,28 @@ class ReporteDetalle extends Page
 
     protected static string|BackedEnum|null $navigationIcon = null;
 
+    /**
+     * Re-audit M5 SEG-C1 · sin canAccess() cualquier User con acceso al panel
+     * (Alistador, ServicioCliente) navegaba directo a la URL y veía:
+     *   /reporte/cartera → saldos por cliente
+     *   /reporte/productos → margen bruto (precio_proveedor)
+     *   /reporte/arqueo → diferencias de caja
+     * Autorización explícita: solo esContable() (Aracely/Gerencia/Gerente/Contador).
+     */
+    public static function canAccess(): bool
+    {
+        return auth()->user()?->esContable() ?? false;
+    }
+
     public function mount(string $slug): void
     {
+        // Re-audit M5 SEG-C1 · guard adicional en mount: whitelist explícita
+        // del slug. Sin esto, si el `canAccess` se afloja a futuro, cualquier
+        // slug arbitrario pasa a `getFilas()` (que lo maneja con `default => []`
+        // pero es defensa en profundidad).
+        $slugsPermitidos = ['cartera', 'arqueo', 'consignaciones', 'movimientos', 'descuentos', 'garantias', 'productos'];
+        abort_unless(in_array($slug, $slugsPermitidos, true), 404);
+
         $this->tipoReporte = $slug;
         static::$title = $this->titulo();
     }
@@ -53,7 +73,7 @@ class ReporteDetalle extends Page
             'consignaciones' => ['Fecha', 'Cliente', 'Banco', 'Referencia', 'Monto'],
             'movimientos' => ['Fecha', 'Cuenta', 'Descripción', 'Debe', 'Haber'],
             'descuentos' => ['Fecha', 'Cliente', 'Factura', 'Clasificación', 'Monto'],
-            'garantias' => ['Fecha', 'Guía original', 'Cliente', 'Destino inventario', 'Valor'],
+            'garantias' => ['Fecha', 'Guía original', 'Cliente', 'Destino inventario', 'Costo reposición (ref.)'],
             'productos' => ['Referencia', 'Nombre', 'Categoría', 'Precio proveedor', 'Activo'],
             default => [],
         };
@@ -62,8 +82,10 @@ class ReporteDetalle extends Page
     public function getFilas(): array
     {
         return match ($this->tipoReporte) {
+            // Re-audit M5 DATOS-A2 · limit 500 (antes ->get() sin límite → OOM
+            // en 3-6 meses de operación real; todos los demás casos limitan).
             'cartera' => FacturaVenta::whereNotIn('estado', [EstadoFactura::Pagada, EstadoFactura::Anulada])
-                ->with('contacto')->orderBy('fecha_vencimiento')->get()
+                ->with('contacto')->orderBy('fecha_vencimiento')->limit(500)->get()
                 ->map(fn ($f) => [
                     $f->contacto?->nombreDisplay() ?? '—',
                     $f->numero,
@@ -97,8 +119,15 @@ class ReporteDetalle extends Page
                     '$' . number_format((float) $p->monto_recibido, 0, ',', '.'),
                 ])->all(),
 
+            // Re-audit M5 FUNC-A3 + DATOS-B2 · filtro fecha por defecto al mes
+            // actual + tie-breaker por id para orden estable. Antes: sin filtro
+            // fecha, imposible ver ayer si hoy hubo 100 asientos.
             'movimientos' => MovimientoContable::query()
-                ->orderByDesc('fecha')->limit(100)->get()
+                ->whereBetween('fecha', [
+                    now('America/Bogota')->startOfMonth()->toDateString(),
+                    now('America/Bogota')->endOfMonth()->toDateString(),
+                ])
+                ->orderByDesc('fecha')->orderByDesc('id')->limit(200)->get()
                 ->map(fn ($m) => [
                     $m->fecha->format('Y-m-d'),
                     $m->cuenta_puc,

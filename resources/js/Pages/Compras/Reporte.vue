@@ -2,6 +2,8 @@
 import { Head } from '@inertiajs/vue3';
 import { BarChart3, Package, DollarSign, AlertCircle } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import { useMoney } from '@/composables/useMoney';
+import { fechaCorta } from '@/composables/useFecha';
 
 const props = defineProps({
     periodo: { type: Object, required: true },
@@ -9,7 +11,7 @@ const props = defineProps({
     topProveedores: { type: Array, required: true },
 });
 
-const money = (n) => '$' + Number(n || 0).toLocaleString('es-CO', { maximumFractionDigits: 0 });
+const { money } = useMoney();
 </script>
 
 <template>

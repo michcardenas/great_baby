@@ -3,7 +3,10 @@
 namespace App\Http\Controllers\App;
 
 use App\Http\Controllers\Controller;
+use App\Modules\Dropi\Actions\CerrarCorte;
+use App\Modules\Dropi\Enums\EstadoCorte;
 use App\Modules\Dropi\Enums\EstadoPedidoDropi;
+use App\Modules\Dropi\Enums\TipoMovimientoWallet;
 use App\Modules\Dropi\Models\DropiCorte;
 use App\Modules\Dropi\Models\DropiPedido;
 use App\Modules\Dropi\Models\DropiWalletMovimiento;
@@ -12,8 +15,10 @@ use Illuminate\Http\Request;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Routing\Controllers\HasMiddleware;
 use Illuminate\Routing\Controllers\Middleware;
+use Illuminate\Validation\Rule;
 use Inertia\Inertia;
 use Inertia\Response;
+use Throwable;
 
 /**
  * DRP-B · CRUD Vue de gestión Dropi (paridad Filament):
@@ -68,8 +73,9 @@ class DropiGestionController extends Controller implements HasMiddleware
 
     public function pedidoActualizar(Request $r, int $pedido): RedirectResponse
     {
+        $estados = array_map(fn ($c) => $c->value, EstadoPedidoDropi::cases());
         $data = $r->validate([
-            'estado' => ['required', 'string'],
+            'estado' => ['required', 'string', Rule::in($estados)],
             'cliente_nombre' => ['nullable', 'string', 'max:200'],
             'cliente_telefono' => ['nullable', 'string', 'max:50'],
             'cliente_direccion' => ['nullable', 'string', 'max:500'],
@@ -78,8 +84,29 @@ class DropiGestionController extends Controller implements HasMiddleware
             'transportadora' => ['nullable', 'string', 'max:100'],
             'monto_esperado_proveedor' => ['nullable', 'numeric', 'min:0'],
         ]);
-        $p = DropiPedido::findOrFail($pedido);
-        $p->update($data);
+
+        try {
+            $p = DropiPedido::with('corte')->findOrFail($pedido);
+
+            $corteCerrado = $p->corte && (
+                ($p->corte->estado instanceof EstadoCorte && $p->corte->estado === EstadoCorte::Cerrado)
+                || (is_string($p->corte->estado) && $p->corte->estado === EstadoCorte::Cerrado->value)
+            );
+            if ($corteCerrado) {
+                abort(422, "Pedido {$p->guia}: no se puede editar — el corte {$p->corte->numero} está cerrado.");
+            }
+
+            $estadoNuevo = EstadoPedidoDropi::from($data['estado']);
+            $camposDirectos = array_diff_key($data, ['estado' => true]);
+            $p->update($camposDirectos);
+
+            if ($p->estado !== $estadoNuevo) {
+                $p->transicionar($estadoNuevo, 'manual', (int) auth()->id(), ['origen' => 'pedido_editar']);
+            }
+        } catch (Throwable $e) {
+            return back()->with('error', $e->getMessage())->withInput();
+        }
+
         return back()->with('success', 'Pedido actualizado.');
     }
 
@@ -116,20 +143,31 @@ class DropiGestionController extends Controller implements HasMiddleware
 
     public function corteCerrar(int $corte): RedirectResponse
     {
-        $c = DropiCorte::findOrFail($corte);
-        abort_if($c->estado === 'cerrado', 422, 'Corte ya cerrado.');
-        $c->update([
-            'estado' => 'cerrado',
-            'cerrado_at' => now(),
-            'cerrado_por' => auth()->id(),
-        ]);
-        return back()->with('success', "Corte {$c->numero} cerrado.");
+        try {
+            $r = CerrarCorte::run($corte, (int) auth()->id());
+        } catch (Throwable $e) {
+            return back()->with('error', $e->getMessage());
+        }
+        $c = DropiCorte::find($corte);
+        return back()->with('success', sprintf(
+            'Corte %d cerrado. Remisiones: %d · Facturas B2B: %d · Hash: %s',
+            $c?->numero ?? 0,
+            $r['remisiones'] ?? 0,
+            $r['facturas_b2b'] ?? 0,
+            substr((string) ($r['hash'] ?? ''), 0, 12),
+        ));
     }
 
     // ---------- WALLET MOVIMIENTOS ----------
     public function walletIndex(): Response
     {
         $movs = DropiWalletMovimiento::orderByDesc('fecha')->paginate(30);
+        $bruto = (float) DropiWalletMovimiento::sum('monto');
+        // Re-audit H3 · misma regla: solo restar sanciones que NO afectaron el wallet.
+        $sanciones = (float) \App\Modules\Dropi\Models\DropiSancion::query()
+            ->whereIn('tipo', ['pago_sobre_devuelto', 'categoria_explicita'])
+            ->sum('diferencia');
+
         return Inertia::render('Dropi/Wallet/Index', [
             'movimientos' => $movs->through(function ($m) {
                 $tipo = is_object($m->tipo) ? ($m->tipo->value ?? (string) $m->tipo) : (string) $m->tipo;
@@ -145,21 +183,54 @@ class DropiGestionController extends Controller implements HasMiddleware
                     'referencia' => $m->dropi_movimiento_id,
                 ];
             }),
+            'saldo' => $bruto - $sanciones,
+            'saldo_bruto' => $bruto,
+            'sanciones_total' => $sanciones,
         ]);
     }
 
     public function walletCrear(Request $r): RedirectResponse
     {
+        $tipos = array_map(fn ($c) => $c->value, TipoMovimientoWallet::cases());
         $data = $r->validate([
             'fecha' => ['required', 'date'],
-            'tipo' => ['required', 'string', 'max:50'],
+            'tipo' => ['required', 'string', Rule::in($tipos)],
             'monto' => ['required', 'numeric'],
             'pedido_id' => ['nullable', 'integer', 'exists:dropi_pedidos,id'],
+            'guia' => ['nullable', 'string', 'max:60'],
             'categoria' => ['nullable', 'string', 'max:100'],
-            'dropi_movimiento_id' => ['nullable', 'string', 'max:100'],
         ]);
+
+        // N6 seg · signo del monto coherente con el tipo — evita mostrar saldo
+        // inflado/negativo por un ajuste con signo equivocado.
+        //   ingresos (PagoGuia/Indemnizacion): monto >= 0
+        //   egresos (RetiroBanco/FleteGarantia/Tarjeta): monto <= 0
+        $tiposIngreso = ['pago_guia', 'indemnizacion'];
+        $tiposEgreso = ['retiro_banco', 'flete_garantia', 'tarjeta'];
+        if (in_array($data['tipo'], $tiposIngreso, true) && $data['monto'] < 0) {
+            return back()->with('error', "El tipo {$data['tipo']} exige monto positivo.")->withInput();
+        }
+        if (in_array($data['tipo'], $tiposEgreso, true) && $data['monto'] > 0) {
+            return back()->with('error', "El tipo {$data['tipo']} exige monto negativo.")->withInput();
+        }
+
+        // U9/U20 · si vino guía en vez de pedido_id, resolver.
+        if (empty($data['pedido_id']) && ! empty($data['guia'])) {
+            $g = strtoupper(trim($data['guia']));
+            $data['pedido_id'] = DropiPedido::where('guia', $g)->value('id');
+        }
+        unset($data['guia']);
+
+        // Ajuste manual → sintetizar ID único e idempotente (P7).
+        $synthId = 'synth:manual:' . hash('sha256', implode('|', [
+            $data['fecha'], $data['tipo'], (string) $data['monto'],
+            (string) ($data['pedido_id'] ?? ''), (string) ($data['categoria'] ?? ''),
+            (string) microtime(true),
+        ]));
+
         DropiWalletMovimiento::create([
             ...$data,
+            'dropi_movimiento_id' => $synthId,
             'fuente' => ['origen' => 'ajuste_manual', 'user_id' => auth()->id()],
         ]);
         return back()->with('success', 'Movimiento wallet registrado.');
@@ -179,6 +250,10 @@ class DropiGestionController extends Controller implements HasMiddleware
                 'activa' => (bool) $u->activa,
                 'notas' => $u->notas,
             ]),
+            'categorias' => array_map(
+                fn ($c) => ['value' => $c->value, 'label' => $c->label()],
+                \App\Modules\Dropi\Enums\CategoriaUbicacion::cases()
+            ),
         ]);
     }
 
@@ -203,7 +278,19 @@ class DropiGestionController extends Controller implements HasMiddleware
 
     public function ubicacionEliminar(int $ubicacion): RedirectResponse
     {
-        InventarioUbicacion::findOrFail($ubicacion)->delete();
+        $u = InventarioUbicacion::findOrFail($ubicacion);
+
+        // U29 · guard: no borrar si hay movimientos históricos ni saldo actual.
+        $tieneMovs = \App\Modules\Dropi\Models\InventarioMovimiento::where('ubicacion_id', $u->id)->exists();
+        if ($tieneMovs) {
+            return back()->with('error', "No se puede eliminar {$u->codigo}: tiene movimientos históricos. Desactívala en su lugar.");
+        }
+
+        try {
+            $u->delete();
+        } catch (Throwable $e) {
+            return back()->with('error', 'No se pudo eliminar la ubicación: ' . $e->getMessage());
+        }
         return back()->with('success', 'Ubicación eliminada.');
     }
 }

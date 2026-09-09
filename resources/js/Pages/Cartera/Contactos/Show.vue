@@ -1,6 +1,7 @@
 <script setup>
 import { Head, Link } from '@inertiajs/vue3';
-import { ArrowLeft, User, Phone, Mail, MapPin, FileText, TrendingUp, Wallet } from 'lucide-vue-next';
+import { useMoney } from '@/composables/useMoney';
+import { ArrowLeft, User, Phone, Mail, MapPin, FileText, TrendingUp, Wallet, FilePlus, CreditCard } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import KpiCard from '@/Components/KpiCard.vue';
 
@@ -10,7 +11,7 @@ const props = defineProps({
     metricas: { type: Object, required: true },
 });
 
-const fmtCOP = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('es-CO');
+const { money: fmtCOP } = useMoney();
 
 const rolLabel = {
     cliente: 'Cliente',
@@ -59,9 +60,18 @@ const abrirWA = () => {
                         </span>
                     </div>
                 </div>
-                <button v-if="contacto.telefono" @click="abrirWA" class="btn-primary bg-emerald-600 hover:bg-emerald-700 text-sm">
-                    <Phone class="h-4 w-4"/> WhatsApp
-                </button>
+                <div class="flex flex-wrap gap-2">
+                    <!-- H5+H6 · CTAs directas a Emitir factura y Registrar pago (target admin Filament) -->
+                    <a v-if="contacto.roles?.cliente || contacto.roles?.b2b" :href="`/admin/factura-ventas/create?contacto_id=${contacto.id}`" target="_blank" rel="noopener" class="btn-primary text-sm">
+                        <FilePlus class="h-4 w-4"/> Emitir factura
+                    </a>
+                    <a v-if="contacto.roles?.cliente || contacto.roles?.b2b" :href="`/app/cartera/pagos?contacto_id=${contacto.id}&nuevo=1`" class="btn-primary bg-brand-600 text-sm">
+                        <CreditCard class="h-4 w-4"/> Registrar pago
+                    </a>
+                    <button v-if="contacto.telefono" @click="abrirWA" class="btn-primary bg-emerald-600 hover:bg-emerald-700 text-sm">
+                        <Phone class="h-4 w-4"/> WhatsApp
+                    </button>
+                </div>
             </div>
 
             <!-- Datos + KPIs -->

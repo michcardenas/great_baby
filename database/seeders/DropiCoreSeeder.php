@@ -98,7 +98,7 @@ class DropiCoreSeeder extends Seeder
         // --- Corte 1 de hoy, con 5 pedidos ejemplo ---
         $corte = DropiCorte::firstOrCreate(
             ['fecha' => now()->toDateString(), 'numero' => 1],
-            ['estado' => EstadoCorte::Alistando, 'pedidos_totales' => 0]
+            ['estado' => EstadoCorte::Abierto, 'pedidos_totales' => 0]
         );
 
         $variante = ProductoVariante::where('codigo_barras', 'AND2512-79/154-02LEÓ-6M')->first();

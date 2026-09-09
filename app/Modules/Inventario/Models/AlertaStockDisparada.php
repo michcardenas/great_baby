@@ -7,16 +7,22 @@ use App\Modules\Dropi\Models\InventarioUbicacion;
 use App\Modules\Dropi\Models\ProductoVariante;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use OwenIt\Auditing\Auditable;
+use OwenIt\Auditing\Contracts\Auditable as AuditableContract;
 
-class AlertaStockDisparada extends Model
+/**
+ * Re-audit M3 PATRÓN ο (FUNC-C6, DATOS-C5) · Auditable trait.
+ *   Antes: VerificarAlertasStock decía "iteración por instancia para que
+ *   dispare Auditable" pero el modelo NO lo tenía. Auto-resolución era muda.
+ * Re-audit M3 PATRÓN κ · $guarded (consistencia η).
+ */
+class AlertaStockDisparada extends Model implements AuditableContract
 {
+    use Auditable;
+
     protected $table = 'alertas_stock_disparadas';
 
-    protected $fillable = [
-        'config_id', 'variante_id', 'ubicacion_id',
-        'tipo', 'saldo_al_disparar',
-        'resuelta', 'resuelta_at', 'resuelta_por',
-    ];
+    protected $guarded = ['id', 'created_at', 'updated_at', 'clave_abierta'];
 
     protected $casts = [
         'saldo_al_disparar' => 'integer',

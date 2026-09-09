@@ -2,6 +2,7 @@
 
 namespace App\Modules\Dropi\Models;
 
+use App\Modules\Dropi\Concerns\HasEstadoDropi;
 use App\Modules\Dropi\Enums\EstadoPedidoDropi;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -13,20 +14,25 @@ use OwenIt\Auditing\Contracts\Auditable as AuditableContract;
 
 class DropiPedido extends Model implements AuditableContract
 {
-    use Auditable, SoftDeletes;
+    use Auditable, HasEstadoDropi, SoftDeletes;
 
     protected $table = 'dropi_pedidos';
 
+    // A2 · sacamos de $fillable los vínculos escritos SOLO por integraciones.
+    // Re-audit H9 func · también quitamos `estado` — la única forma legítima
+    // de cambiarlo es `transicionar()`, que usa `->save()` directo. Cualquier
+    // controller que quiera bypasear la máquina de estados con `->update([...])`
+    // fallará silenciosamente en vez de romper la coherencia.
     protected $fillable = [
         'corte_id',
         'guia', 'dropi_orden_id', 'transportadora', 'tienda', 'tienda_id',
         'vendedor_nombre', 'vendedor_identificacion', 'requiere_factura_b2b',
         'cliente_nombre', 'cliente_doc', 'cliente_telefono',
         'cliente_direccion', 'cliente_ciudad', 'cliente_depto',
-        'estado', 'despachado_at', 'entregado_at', 'devuelto_at', 'pagado_at',
+        'despachado_at', 'entregado_at', 'devuelto_at', 'pagado_at',
         'monto_esperado_proveedor', 'monto_cliente_final',
         'ganancia_vendedor', 'flete_transportadora',
-        'remision_interna_id', 'ari_factura_id', 'ari_enviado_at', 'nota_credito_id',
+        'notificado_despacho_at',
     ];
 
     protected $casts = [
@@ -36,6 +42,7 @@ class DropiPedido extends Model implements AuditableContract
         'devuelto_at' => 'datetime',
         'pagado_at' => 'datetime',
         'ari_enviado_at' => 'datetime',
+        'notificado_despacho_at' => 'datetime',
         'requiere_factura_b2b' => 'boolean',
         'monto_esperado_proveedor' => 'decimal:2',
         'monto_cliente_final' => 'decimal:2',

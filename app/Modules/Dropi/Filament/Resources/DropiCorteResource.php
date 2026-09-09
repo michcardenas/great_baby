@@ -77,8 +77,7 @@ class DropiCorteResource extends Resource
                     ->formatStateUsing(fn ($state) => $state instanceof EstadoCorte ? $state->label() : $state)
                     ->color(fn ($state) => match ($state) {
                         EstadoCorte::Abierto => 'gray',
-                        EstadoCorte::Alistando, EstadoCorte::Empacando => 'warning',
-                        EstadoCorte::Despachado => 'info',
+                        // Estados legacy removidos (P6): alistando/empacando/despachado.
                         EstadoCorte::Cerrado => 'success',
                         default => 'gray',
                     }),

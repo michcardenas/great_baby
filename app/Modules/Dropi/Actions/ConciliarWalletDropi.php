@@ -5,8 +5,6 @@ namespace App\Modules\Dropi\Actions;
 use App\Modules\Dropi\Clients\DropiClientInterface;
 use App\Modules\Dropi\DTOs\PagoWalletDTO;
 use App\Modules\Dropi\Enums\EstadoPedidoDropi;
-use App\Modules\Dropi\Enums\TipoMovimientoWallet;
-use App\Modules\Dropi\Models\DropiEstadoBitacora;
 use App\Modules\Dropi\Models\DropiPedido;
 use App\Modules\Dropi\Models\DropiSancion;
 use App\Modules\Dropi\Models\DropiWalletMovimiento;
@@ -63,17 +61,22 @@ class ConciliarWalletDropi
 
     protected function procesar(PagoWalletDTO $mov): string
     {
-        // Idempotencia por ID único de Dropi (no por monto/fecha que colisionan).
-        if ($mov->dropiMovimientoId
-            && DropiWalletMovimiento::where('dropi_movimiento_id', $mov->dropiMovimientoId)->exists()
-        ) {
+        // P7 · Idempotencia por ID único. Si el DTO no trae uno, sintetizar
+        // determinístico para que la misma fila no se duplique en re-corridas.
+        $movId = $mov->dropiMovimientoId ?: ('synth:' . hash('sha256', implode('|', [
+            $mov->fecha->toDateString(), $mov->tipo, (string) $mov->monto,
+            (string) ($mov->guia ?? ''), (string) ($mov->categoria ?? ''),
+        ])));
+
+        if (DropiWalletMovimiento::where('dropi_movimiento_id', $movId)->exists()) {
             return 'duplicado';
         }
 
-        $pedido = $mov->guia ? DropiPedido::where('guia', $mov->guia)->first() : null;
+        $guiaNormalizada = $mov->guia ? strtoupper(trim($mov->guia)) : null;
+        $pedido = $guiaNormalizada ? DropiPedido::where('guia', $guiaNormalizada)->first() : null;
 
         DropiWalletMovimiento::create([
-            'dropi_movimiento_id' => $mov->dropiMovimientoId,
+            'dropi_movimiento_id' => $movId,
             'fecha' => $mov->fecha->toDateString(),
             'tipo' => $mov->tipo,
             'monto' => $mov->monto,
@@ -84,32 +87,48 @@ class ConciliarWalletDropi
 
         // §15 Capa 1: pago de guía → matchear + marcar pedido pagado
         if ($mov->tipo === 'pago_guia' && $pedido) {
-            $anterior = $pedido->estado->value;
-            $pedido->update([
-                'estado' => EstadoPedidoDropi::Pagado,
-                'pagado_at' => $mov->fecha,
-            ]);
+            // A6 · si el pedido fue devuelto o cancelado, NO se marca Pagado.
+            // En su lugar se registra sanción tipo pago_sobre_devuelto.
+            if (in_array($pedido->estado, [
+                EstadoPedidoDropi::Devuelto,
+                EstadoPedidoDropi::CanceladoDropi,
+                EstadoPedidoDropi::CanceladoGb,
+            ], true)) {
+                // H8 func / H2 datos · UNIQUE(pedido_id, tipo) + create desnudo
+                // reventaba en re-conciliación → updateOrCreate mantiene idempotencia.
+                DropiSancion::updateOrCreate(
+                    ['pedido_id' => $pedido->id, 'tipo' => 'pago_sobre_devuelto'],
+                    [
+                        'monto_esperado' => 0,
+                        'monto_recibido' => $mov->monto,
+                        'diferencia' => $mov->monto,
+                        'detectada_at' => now(),
+                    ],
+                );
 
-            DropiEstadoBitacora::create([
-                'pedido_id' => $pedido->id,
-                'estado_desde' => $anterior,
-                'estado_hasta' => EstadoPedidoDropi::Pagado->value,
-                'fuente' => 'sistema',
-                'payload' => ['conciliacion' => 'auto', 'monto' => $mov->monto],
-                'user_id' => auth()->id(),
-            ]);
+                return 'sancion';
+            }
+
+            $pedido->transicionar(
+                EstadoPedidoDropi::Pagado,
+                'sistema',
+                auth()->id(),
+                ['conciliacion' => 'auto', 'monto' => $mov->monto],
+                ['pagado_at' => $mov->fecha],
+            );
 
             // §19 detectar sanción por diferencia de precio
             $esperado = (float) $pedido->monto_esperado_proveedor;
             if ($mov->monto + 0.01 < $esperado) {
-                DropiSancion::create([
-                    'pedido_id' => $pedido->id,
-                    'tipo' => 'diferencia_precio',
-                    'monto_esperado' => $esperado,
-                    'monto_recibido' => $mov->monto,
-                    'diferencia' => $esperado - $mov->monto,
-                    'detectada_at' => now(),
-                ]);
+                DropiSancion::updateOrCreate(
+                    ['pedido_id' => $pedido->id, 'tipo' => 'diferencia_precio'],
+                    [
+                        'monto_esperado' => $esperado,
+                        'monto_recibido' => $mov->monto,
+                        'diferencia' => $esperado - $mov->monto,
+                        'detectada_at' => now(),
+                    ],
+                );
 
                 return 'sancion';
             }
@@ -120,14 +139,15 @@ class ConciliarWalletDropi
         // §19 sanción por categoría explícita (indemnización con guía)
         if (in_array($mov->tipo, ['indemnizacion'], true)) {
             if ($pedido) {
-                DropiSancion::create([
-                    'pedido_id' => $pedido->id,
-                    'tipo' => 'categoria_explicita',
-                    'monto_esperado' => 0,
-                    'monto_recibido' => $mov->monto,
-                    'diferencia' => abs($mov->monto),
-                    'detectada_at' => now(),
-                ]);
+                DropiSancion::updateOrCreate(
+                    ['pedido_id' => $pedido->id, 'tipo' => 'categoria_explicita'],
+                    [
+                        'monto_esperado' => 0,
+                        'monto_recibido' => $mov->monto,
+                        'diferencia' => abs($mov->monto),
+                        'detectada_at' => now(),
+                    ],
+                );
 
                 return 'sancion';
             }

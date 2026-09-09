@@ -3,11 +3,20 @@ import { reactive, ref, computed } from 'vue';
 import { Head, Link, router } from '@inertiajs/vue3';
 import { ShoppingCart, Plus, Trash2, Save } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import { useMoney } from '@/composables/useMoney';
 
-const props = defineProps({ proveedores: { type: Array, required: true } });
+const props = defineProps({
+    proveedores: { type: Array, required: true },
+    // Re-audit M2 UX-A4 · antes bodega default silenciosa; ahora prop `bodegas`
+    // permite elección explícita al crear OC (fallback: primera si solo hay 1).
+    bodegas: { type: Array, default: () => [] },
+});
+
+const { money } = useMoney();
 
 const form = reactive({
     proveedor_id: '',
+    bodega_id: props.bodegas.length === 1 ? props.bodegas[0].id : '',
     tipo: 'nacional',
     moneda: 'COP',
     tasa_cambio: 1,
@@ -20,7 +29,6 @@ const procesando = ref(false);
 const addItem = () => form.items.push({ descripcion: '', cantidad: 1, precio_unit: 0, iva_pct: 19, descuento_pct: 0 });
 const rmItem = (i) => form.items.splice(i, 1);
 
-const money = (n) => '$' + Number(n || 0).toLocaleString('es-CO', { maximumFractionDigits: 0 });
 const subtotal = computed(() => form.items.reduce((s, i) => s + (i.cantidad * i.precio_unit * (1 - (i.descuento_pct || 0) / 100)), 0));
 const iva = computed(() => form.items.reduce((s, i) => {
     const sub = i.cantidad * i.precio_unit * (1 - (i.descuento_pct || 0) / 100);
@@ -28,8 +36,14 @@ const iva = computed(() => form.items.reduce((s, i) => {
 }, 0));
 const total = computed(() => subtotal.value + iva.value);
 
+// Re-audit M2 UX-B8 · validar items con cantidad>0 y precio>0 antes de submit.
+const itemsValidos = computed(() => form.items.filter(i =>
+    i.descripcion?.trim() && Number(i.cantidad) > 0 && Number(i.precio_unit) > 0
+));
+const puedeGuardar = computed(() => form.proveedor_id && form.bodega_id && itemsValidos.value.length > 0);
+
 const guardar = () => {
-    if (procesando.value) return;
+    if (procesando.value || !puedeGuardar.value) return;
     procesando.value = true;
     router.post('/app/compras/oc', form, {
         onError: () => { procesando.value = false; },
@@ -55,6 +69,15 @@ const guardar = () => {
                             <option value="">— Seleccionar —</option>
                             <option v-for="p in proveedores" :key="p.id" :value="p.id">{{ p.nombre }}</option>
                         </select>
+                    </div>
+                    <!-- Re-audit M2 UX-A4 · selector de bodega destino. -->
+                    <div>
+                        <label class="text-xs font-semibold">Bodega destino <span class="text-red-500">*</span></label>
+                        <select v-model="form.bodega_id" class="input w-full" required>
+                            <option value="">— Seleccionar —</option>
+                            <option v-for="b in bodegas" :key="b.id" :value="b.id">{{ b.nombre }}</option>
+                        </select>
+                        <p v-if="!bodegas.length" class="text-[10px] text-red-600 mt-1">Sin bodegas configuradas. Crea una en Inventario primero.</p>
                     </div>
                     <div>
                         <label class="text-xs font-semibold">Tipo</label>
@@ -127,7 +150,8 @@ const guardar = () => {
 
             <div class="flex justify-end gap-2">
                 <Link href="/app/compras" class="btn-ghost">Cancelar</Link>
-                <button @click="guardar" :disabled="procesando || !form.proveedor_id" class="btn-primary disabled:opacity-50">
+                <button @click="guardar" :disabled="procesando || !puedeGuardar" class="btn-primary disabled:opacity-50"
+                        :title="!puedeGuardar ? 'Selecciona proveedor, bodega y agrega al menos un ítem con cantidad y precio > 0' : ''">
                     <Save class="h-4 w-4"/> {{ procesando ? 'Creando…' : 'Crear OC' }}
                 </button>
             </div>

@@ -327,10 +327,10 @@ class DropiVolumenRealSeeder extends Seeder
             return EstadoCorte::Cerrado;
         }
         if ($diasAtras === 1) {
-            return EstadoCorte::Despachado;
+            return EstadoCorte::Abierto;
         }
         // hoy
-        return $numero === 1 ? EstadoCorte::Empacando : EstadoCorte::Abierto;
+        return EstadoCorte::Abierto;
     }
 
     // ---------------------------------------------------------------------

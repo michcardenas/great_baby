@@ -129,7 +129,13 @@ class InventarioController extends Controller implements HasMiddleware
                 'bodega' => $a->ubicacion?->nombre,
                 'tipo' => $a->tipo,
                 'stock_actual' => (int) $a->saldo_al_disparar,
-                'umbral' => (int) ($a->config?->umbral_minimo ?? 0),
+                // Re-audit M3 PATRÓN ζ (FUNC-A6 / DATOS-C1) · bug: la columna
+                // real es `stock_minimo`, no `umbral_minimo`. Antes el KPI
+                // siempre mostraba 0. Se agrega también `stock_maximo` +
+                // `punto_reorden` según el tipo para el widget.
+                'umbral' => (int) ($a->config?->stock_minimo ?? 0),
+                'punto_reorden' => (int) ($a->config?->punto_reorden ?? 0),
+                'stock_maximo' => (int) ($a->config?->stock_maximo ?? 0),
                 'creada' => $a->created_at?->diffForHumans(),
             ])->all();
     }

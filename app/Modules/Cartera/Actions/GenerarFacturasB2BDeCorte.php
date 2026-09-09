@@ -15,7 +15,14 @@ use Lorisleiva\Actions\Concerns\AsAction;
  * Al cerrar el corte, los pedidos con requiere_factura_b2b=true se agrupan por vendedor
  * y se emite UNA factura B2B por vendedor con los pedidos del corte.
  *
- * @return array{facturas_creadas:int, valor_total:float, vendedores:int}
+ * Re-audit fixes:
+ *   FUNC C1 / DATOS C1 · asiento contable se dispara EXPLÍCITAMENTE tras crear
+ *     items (antes el `saved` observer chequeaba items()->count() antes de que
+ *     existieran → factura sin asiento → cierre mensual mentiroso).
+ *   FUNC A2 · idempotencia por (corte_id, contacto_id) en lugar de por string
+ *     `numero`. Re-cerrar el corte con contactos recreados NO duplica facturas.
+ *   DATOS A9 · updateOrCreate NO pisa `activo` ni flags si el contacto ya existe;
+ *     usa firstOrCreate con defaults conservadores.
  */
 class GenerarFacturasB2BDeCorte
 {
@@ -41,8 +48,8 @@ class GenerarFacturasB2BDeCorte
                 if (! $vendedorDoc) continue;
                 $primero = $pedidosVendedor->first();
 
-                // Buscar o crear contacto vendedor Dropi como cliente B2B
-                $contacto = Contacto::updateOrCreate(
+                // A9 · firstOrCreate NO pisa flags manuales si el contacto ya existe.
+                $contacto = Contacto::firstOrCreate(
                     ['numero_documento' => $vendedorDoc],
                     [
                         'tipo_documento' => 'CC',
@@ -57,18 +64,28 @@ class GenerarFacturasB2BDeCorte
                 $total = (float) $pedidosVendedor->sum('monto_esperado_proveedor');
                 if ($total <= 0) continue;
 
-                $numero = 'FV-DP-' . $corte->fecha->format('ymd') . '-' . $corte->numero . '-' . str_pad((string) $contacto->id, 4, '0', STR_PAD_LEFT);
+                // FUNC A2 · idempotencia por (corte_id, contacto_id) — sobrevive
+                // a re-cierre del corte y a re-creación del contacto.
+                $yaExiste = FacturaVenta::query()
+                    ->where('origen_type', DropiCorte::class)
+                    ->where('origen_id', $corte->id)
+                    ->where('contacto_id', $contacto->id)
+                    ->exists();
+                if ($yaExiste) continue;
 
-                // Idempotente: si ya existe la factura del corte para ese vendedor, saltar
-                if (FacturaVenta::where('numero', $numero)->exists()) continue;
+                $numero = 'FV-DP-' . $corte->fecha->format('ymd') . '-' . $corte->numero . '-' . str_pad((string) $contacto->id, 4, '0', STR_PAD_LEFT);
+                $fechaEmision = $corte->cerrado_at?->toDateString() ?? now()->toDateString();
+                $fechaVenc = (clone ($corte->cerrado_at ?? now()))->addDays(30)->toDateString();
 
                 $factura = FacturaVenta::create([
                     'numero' => $numero,
                     'contacto_id' => $contacto->id,
-                    'fecha_emision' => $corte->cerrado_at?->toDateString() ?? now()->toDateString(),
-                    'fecha_vencimiento' => (clone ($corte->cerrado_at ?? now()))->addDays(30)->toDateString(),
+                    'fecha_emision' => $fechaEmision,
+                    'fecha_vencimiento' => $fechaVenc,
                     'estado' => 'pendiente',
                     'subtotal' => $total,
+                    'descuento' => 0,
+                    'impuestos' => 0,
                     'total' => $total,
                     'saldo' => $total,
                     'origen_type' => DropiCorte::class,
@@ -85,6 +102,9 @@ class GenerarFacturasB2BDeCorte
                         'subtotal' => (float) $p->monto_esperado_proveedor,
                     ]);
                 }
+
+                // Re-audit C1 · asiento contable EXPLÍCITO después de items.
+                $factura->ensureAsiento();
 
                 $facturasCreadas++;
                 $valorTotal += $total;

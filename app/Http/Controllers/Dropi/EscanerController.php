@@ -6,10 +6,10 @@ use App\Http\Controllers\Controller;
 use App\Modules\Dropi\Enums\EstadoPedidoDropi;
 use App\Modules\Dropi\Events\PedidoDespachado;
 use App\Modules\Dropi\Jobs\NotificarClienteDespachoJob;
-use App\Modules\Dropi\Models\DropiEstadoBitacora;
 use App\Modules\Dropi\Models\DropiPedido;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Throwable;
 
 class EscanerController extends Controller
 {
@@ -25,7 +25,7 @@ class EscanerController extends Controller
 
     public function analizar(Request $request): JsonResponse
     {
-        $guia = trim($request->input('guia', ''));
+        $guia = strtoupper(trim($request->input('guia', '')));
         if ($guia === '') {
             return response()->json(['accion' => 'no_encontrada', 'titulo' => 'Guía vacía', 'color' => 'gray'], 200);
         }
@@ -42,11 +42,11 @@ class EscanerController extends Controller
             ]);
         }
 
+        // S9 · no revelar monto en la respuesta del escáner.
         $ctx = [
             'cliente' => $pedido->cliente_nombre,
             'ciudad' => $pedido->cliente_ciudad,
             'estado' => $pedido->estado->label(),
-            'monto' => (float) $pedido->monto_esperado_proveedor,
         ];
 
         $recienDespachado = $pedido->despachado_at && $pedido->despachado_at->isSameDay(now());
@@ -78,27 +78,47 @@ class EscanerController extends Controller
 
     public function despachar(Request $request): JsonResponse
     {
-        $pedido = DropiPedido::find($request->input('pedido_id'));
+        // N4 · guía REQUIRED — antes era nullable y hacía el guard opcional.
+        // Ahora exigimos siempre la guía y validamos que coincida con el pedido.
+        $data = $request->validate([
+            'pedido_id' => ['required', 'integer', 'exists:dropi_pedidos,id'],
+            'guia' => ['required', 'string', 'max:100'],
+        ]);
+
+        $pedido = DropiPedido::find($data['pedido_id']);
         if (! $pedido) {
             return response()->json(['ok' => false, 'mensaje' => 'Pedido no encontrado.'], 404);
         }
 
-        $anterior = $pedido->estado->value;
-        $pedido->update([
-            'estado' => EstadoPedidoDropi::Despachado,
-            'despachado_at' => now(),
-        ]);
+        $incoming = strtoupper(trim($data['guia']));
+        if ($incoming !== $pedido->guia) {
+            return response()->json([
+                'ok' => false,
+                'mensaje' => 'La guía escaneada no coincide con el pedido.',
+            ], 422);
+        }
 
-        DropiEstadoBitacora::create([
-            'pedido_id' => $pedido->id,
-            'estado_desde' => $anterior,
-            'estado_hasta' => EstadoPedidoDropi::Despachado->value,
-            'fuente' => 'manual',
-            'user_id' => auth()->id(),
-            'payload' => ['origen' => 'escaner_camara'],
-        ]);
+        // Sólo Empacado puede pasar a Despachado (regla de negocio del flujo real).
+        if (! in_array($pedido->estado, [EstadoPedidoDropi::Empacado], true)) {
+            return response()->json([
+                'ok' => false,
+                'mensaje' => 'El pedido debe estar Empacado antes de despacharlo.',
+            ], 422);
+        }
 
-        event(new PedidoDespachado($pedido));
+        try {
+            $pedido->transicionar(
+                EstadoPedidoDropi::Despachado,
+                'manual',
+                auth()->id(),
+                ['origen' => 'escaner_camara'],
+                ['despachado_at' => now()],
+            );
+        } catch (Throwable $e) {
+            return response()->json(['ok' => false, 'mensaje' => $e->getMessage()], 422);
+        }
+
+        event(new PedidoDespachado($pedido->fresh()));
         NotificarClienteDespachoJob::dispatch($pedido->id);
 
         return response()->json(['ok' => true, 'guia' => $pedido->guia]);

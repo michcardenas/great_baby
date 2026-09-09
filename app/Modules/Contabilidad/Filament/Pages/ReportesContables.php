@@ -21,7 +21,8 @@ class ReportesContables extends Page
 
     public static function canAccess(): bool
     {
-        return auth()->user()?->esAracely() ?? false;
+        // Re-audit M5 SEG-C2 · unificado con esContable().
+        return auth()->user()?->esContable() ?? false;
     }
 
     public function getReportes(): array

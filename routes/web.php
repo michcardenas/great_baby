@@ -65,38 +65,60 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     Route::post('/cartera/cobranzas', [\App\Http\Controllers\App\CarteraExtrasController::class, 'cobranzaCrear'])->name('app.cartera.cobranza.crear');
     Route::get('/cartera/solicitudes', [\App\Http\Controllers\App\CarteraExtrasController::class, 'solicitudesIndex'])->name('app.cartera.solicitudes');
     Route::post('/cartera/solicitudes/{solicitud}/resolver', [\App\Http\Controllers\App\CarteraExtrasController::class, 'solicitudResolver'])->name('app.cartera.solicitud.resolver');
-    Route::get('/cartera/movimientos', [\App\Http\Controllers\App\CarteraExtrasController::class, 'movimientos'])->name('app.cartera.movimientos');
+    // Re-audit M5 R4 SEG-M4 · throttle en agregados pesados.
+    Route::get('/cartera/movimientos', [\App\Http\Controllers\App\CarteraExtrasController::class, 'movimientos'])->middleware('throttle:30,1')->name('app.cartera.movimientos');
 
     // Compras / Inventario / Contabilidad
     Route::get('/compras', [\App\Http\Controllers\App\ComprasController::class, 'index'])->name('app.compras.index');
-    // FIL-A Compras CRUD + Reporte
-    Route::get('/compras/reporte', [\App\Http\Controllers\App\ComprasGestionController::class, 'reporte'])->name('app.compras.reporte');
+    // Re-audit M2 R3 PATRÓN R (SEG-A5) · throttle en agregados/mutaciones.
+    Route::get('/compras/reporte', [\App\Http\Controllers\App\ComprasGestionController::class, 'reporte'])->middleware('throttle:30,1')->name('app.compras.reporte');
     Route::get('/compras/oc/nueva', [\App\Http\Controllers\App\ComprasGestionController::class, 'ocForm'])->name('app.compras.oc.nueva');
-    Route::post('/compras/oc', [\App\Http\Controllers\App\ComprasGestionController::class, 'ocCrear'])->name('app.compras.oc.crear');
+    Route::post('/compras/oc', [\App\Http\Controllers\App\ComprasGestionController::class, 'ocCrear'])->middleware('throttle:60,1')->name('app.compras.oc.crear');
     Route::get('/compras/oc/{orden}', [\App\Http\Controllers\App\ComprasGestionController::class, 'ocShow'])->name('app.compras.oc.show');
-    Route::post('/compras/oc/{orden}/aprobar', [\App\Http\Controllers\App\ComprasGestionController::class, 'ocAprobar'])->name('app.compras.oc.aprobar');
-    Route::post('/compras/oc/{orden}/anular', [\App\Http\Controllers\App\ComprasGestionController::class, 'ocAnular'])->name('app.compras.oc.anular');
+    Route::post('/compras/oc/{orden}/aprobar', [\App\Http\Controllers\App\ComprasGestionController::class, 'ocAprobar'])->middleware('throttle:60,1')->name('app.compras.oc.aprobar');
+    Route::post('/compras/oc/{orden}/anular', [\App\Http\Controllers\App\ComprasGestionController::class, 'ocAnular'])->middleware('throttle:20,1')->name('app.compras.oc.anular');
     Route::get('/compras/recepcion/nueva', [\App\Http\Controllers\App\ComprasGestionController::class, 'recepcionForm'])->name('app.compras.recepcion.nueva');
-    Route::post('/compras/recepcion', [\App\Http\Controllers\App\ComprasGestionController::class, 'recepcionCrear'])->name('app.compras.recepcion.crear');
+    Route::post('/compras/recepcion', [\App\Http\Controllers\App\ComprasGestionController::class, 'recepcionCrear'])->middleware('throttle:60,1')->name('app.compras.recepcion.crear');
     Route::get('/compras/recepcion/{recepcion}', [\App\Http\Controllers\App\ComprasGestionController::class, 'recepcionShow'])->name('app.compras.recepcion.show');
+    Route::get('/compras/importacion/nueva', [\App\Http\Controllers\App\ComprasGestionController::class, 'importacionForm'])->name('app.compras.importacion.nueva');
     Route::get('/compras/importacion/{importacion}', [\App\Http\Controllers\App\ComprasGestionController::class, 'importacionShow'])->name('app.compras.importacion.show');
-    Route::post('/compras/importacion', [\App\Http\Controllers\App\ComprasGestionController::class, 'importacionCrear'])->name('app.compras.importacion.crear');
-    Route::post('/compras/importacion/{importacion}/gasto', [\App\Http\Controllers\App\ComprasGestionController::class, 'importacionGastoAgregar'])->name('app.compras.importacion.gasto');
-    Route::post('/compras/importacion/{importacion}/liquidar', [\App\Http\Controllers\App\ComprasGestionController::class, 'importacionLiquidar'])->name('app.compras.importacion.liquidar');
+    Route::post('/compras/importacion', [\App\Http\Controllers\App\ComprasGestionController::class, 'importacionCrear'])->middleware('throttle:60,1')->name('app.compras.importacion.crear');
+    Route::post('/compras/importacion/{importacion}/gasto', [\App\Http\Controllers\App\ComprasGestionController::class, 'importacionGastoAgregar'])->middleware('throttle:60,1')->name('app.compras.importacion.gasto');
+    Route::post('/compras/importacion/{importacion}/liquidar', [\App\Http\Controllers\App\ComprasGestionController::class, 'importacionLiquidar'])->middleware('throttle:20,1')->name('app.compras.importacion.liquidar');
     Route::get('/inventario', [\App\Http\Controllers\App\InventarioController::class, 'index'])->name('app.inventario.index');
-    // FIL-B Inventario
-    Route::get('/inventario/kardex', [\App\Http\Controllers\App\InventarioGestionController::class, 'kardex'])->name('app.inventario.kardex');
-    Route::get('/inventario/reporte-stock', [\App\Http\Controllers\App\InventarioGestionController::class, 'reporteStock'])->name('app.inventario.reporte');
-    Route::get('/inventario/conteos', [\App\Http\Controllers\App\InventarioGestionController::class, 'conteosIndex'])->name('app.inventario.conteos');
-    Route::post('/inventario/conteos', [\App\Http\Controllers\App\InventarioGestionController::class, 'conteoCrear'])->name('app.inventario.conteo.crear');
-    Route::get('/inventario/traslados', [\App\Http\Controllers\App\InventarioGestionController::class, 'trasladosIndex'])->name('app.inventario.traslados');
-    Route::post('/inventario/traslados', [\App\Http\Controllers\App\InventarioGestionController::class, 'trasladoCrear'])->name('app.inventario.traslado.crear');
-    Route::get('/inventario/alertas', [\App\Http\Controllers\App\InventarioGestionController::class, 'alertasIndex'])->name('app.inventario.alertas');
-    Route::get('/contabilidad', [\App\Http\Controllers\App\ContabilidadController::class, 'index'])->name('app.contabilidad.index');
-    // FIL-D · Contabilidad extras
-    Route::get('/contabilidad/panel', [\App\Http\Controllers\App\ContabilidadExtrasController::class, 'panel'])->name('app.contabilidad.panel');
+    // Re-audit M3 PATRÓN θ (SEG-A3) · throttle en /app/inventario/* — antes sin
+    //   límite; kardex agregaba 500 movs, reporte-stock hacía SUM group by sobre
+    //   todo el kardex. Un actor autenticado saturaba la DB con requests.
+    Route::get('/inventario/kardex', [\App\Http\Controllers\App\InventarioGestionController::class, 'kardex'])->middleware('throttle:30,1')->name('app.inventario.kardex');
+    Route::get('/inventario/reporte-stock', [\App\Http\Controllers\App\InventarioGestionController::class, 'reporteStock'])->middleware('throttle:30,1')->name('app.inventario.reporte');
+    Route::get('/inventario/conteos', [\App\Http\Controllers\App\InventarioGestionController::class, 'conteosIndex'])->middleware('throttle:60,1')->name('app.inventario.conteos');
+    Route::post('/inventario/conteos', [\App\Http\Controllers\App\InventarioGestionController::class, 'conteoCrear'])->middleware('throttle:30,1')->name('app.inventario.conteo.crear');
+    Route::get('/inventario/traslados', [\App\Http\Controllers\App\InventarioGestionController::class, 'trasladosIndex'])->middleware('throttle:60,1')->name('app.inventario.traslados');
+    Route::post('/inventario/traslados', [\App\Http\Controllers\App\InventarioGestionController::class, 'trasladoCrear'])->middleware('throttle:30,1')->name('app.inventario.traslado.crear');
+    // PATRÓN α · UI operativa traslados (Show + repeater items + state machine).
+    Route::get('/inventario/traslados/{id}', [\App\Http\Controllers\App\InventarioGestionController::class, 'trasladoShow'])->middleware('throttle:60,1')->name('app.inventario.traslado.show');
+    Route::post('/inventario/traslados/{id}/items', [\App\Http\Controllers\App\InventarioGestionController::class, 'trasladoItemGuardar'])->middleware('throttle:60,1')->name('app.inventario.traslado.item.guardar');
+    Route::delete('/inventario/traslados/{id}/items/{itemId}', [\App\Http\Controllers\App\InventarioGestionController::class, 'trasladoItemEliminar'])->middleware('throttle:60,1')->name('app.inventario.traslado.item.eliminar');
+    Route::post('/inventario/traslados/{id}/enviar', [\App\Http\Controllers\App\InventarioGestionController::class, 'trasladoEnviar'])->middleware('throttle:30,1')->name('app.inventario.traslado.enviar');
+    Route::post('/inventario/traslados/{id}/recibir', [\App\Http\Controllers\App\InventarioGestionController::class, 'trasladoRecibir'])->middleware('throttle:30,1')->name('app.inventario.traslado.recibir');
+    Route::post('/inventario/traslados/{id}/anular', [\App\Http\Controllers\App\InventarioGestionController::class, 'trasladoAnular'])->middleware('throttle:30,1')->name('app.inventario.traslado.anular');
+    // PATRÓN α · UI captura conteo físico (Show + iniciar + guardar item + cerrar).
+    Route::get('/inventario/conteos/{id}', [\App\Http\Controllers\App\InventarioGestionController::class, 'conteoShow'])->middleware('throttle:60,1')->name('app.inventario.conteo.show');
+    Route::post('/inventario/conteos/{id}/iniciar', [\App\Http\Controllers\App\InventarioGestionController::class, 'conteoIniciar'])->middleware('throttle:20,1')->name('app.inventario.conteo.iniciar');
+    Route::post('/inventario/conteos/{id}/items/{itemId}', [\App\Http\Controllers\App\InventarioGestionController::class, 'conteoItemGuardar'])->middleware('throttle:120,1')->name('app.inventario.conteo.item');
+    Route::post('/inventario/conteos/{id}/cerrar', [\App\Http\Controllers\App\InventarioGestionController::class, 'conteoCerrar'])->middleware('throttle:20,1')->name('app.inventario.conteo.cerrar');
+    Route::get('/inventario/alertas', [\App\Http\Controllers\App\InventarioGestionController::class, 'alertasIndex'])->middleware('throttle:60,1')->name('app.inventario.alertas');
+    Route::post('/inventario/alertas', [\App\Http\Controllers\App\InventarioGestionController::class, 'alertaGuardar'])->middleware('throttle:30,1')->name('app.inventario.alerta.guardar');
+    Route::delete('/inventario/alertas/{id}', [\App\Http\Controllers\App\InventarioGestionController::class, 'alertaEliminar'])->middleware('throttle:30,1')->name('app.inventario.alerta.eliminar');
+    Route::get('/inventario/buscar-variantes', [\App\Http\Controllers\App\InventarioGestionController::class, 'buscarVariantes'])->middleware('throttle:60,1')->name('app.inventario.buscar.variantes');
+    // Re-audit M5 SEG-A1 · throttle:30,1 en agregados pesados. Sin él, un
+    // usuario autenticado puede tumbar la DB spammeando reportes con rangos
+    // de años. `reportes` (landing estática) queda sin throttle porque no
+    // consulta agregados.
+    Route::get('/contabilidad', [\App\Http\Controllers\App\ContabilidadController::class, 'index'])->middleware('throttle:30,1')->name('app.contabilidad.index');
+    Route::get('/contabilidad/panel', [\App\Http\Controllers\App\ContabilidadExtrasController::class, 'panel'])->middleware('throttle:30,1')->name('app.contabilidad.panel');
     Route::get('/contabilidad/reportes', [\App\Http\Controllers\App\ContabilidadExtrasController::class, 'reportes'])->name('app.contabilidad.reportes');
-    Route::get('/contabilidad/reporte-detalle', [\App\Http\Controllers\App\ContabilidadExtrasController::class, 'reporteDetalle'])->name('app.contabilidad.detalle');
+    Route::get('/contabilidad/reporte-detalle', [\App\Http\Controllers\App\ContabilidadExtrasController::class, 'reporteDetalle'])->middleware('throttle:60,1')->name('app.contabilidad.detalle');
 
     // Plantillas de documento WYSIWYG (Aracely)
     Route::get('/plantillas', [\App\Http\Controllers\App\PlantillasController::class, 'index'])->name('app.plantillas.index');
@@ -109,6 +131,9 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     Route::get('/dropi', [\App\Http\Controllers\App\DropiController::class, 'index'])->name('app.dropi.index');
     // Dropi · Operación (DRP-A: Alistador, Devolución, Escáner cámara, Discrepancias)
     Route::get('/dropi/alistador', [\App\Http\Controllers\App\DropiOperacionController::class, 'alistador'])->name('app.dropi.alistador');
+    Route::post('/dropi/alistador/heartbeat', [\App\Http\Controllers\App\DropiOperacionController::class, 'heartbeat'])
+        ->middleware('throttle:120,1')  // Re-audit N8/H5 · 2 req/s por IP tope
+        ->name('app.dropi.alistador.heartbeat');
     Route::post('/dropi/alistador/pedido/{pedido}/tomar', [\App\Http\Controllers\App\DropiOperacionController::class, 'tomarPedido'])->name('app.dropi.alistador.tomar');
     Route::post('/dropi/alistador/pedido/{pedido}/empacar', [\App\Http\Controllers\App\DropiOperacionController::class, 'empacarPedido'])->name('app.dropi.alistador.empacar');
     Route::post('/dropi/alistador/pedido/{pedido}/despachar', [\App\Http\Controllers\App\DropiOperacionController::class, 'despacharPedido'])->name('app.dropi.alistador.despachar');
@@ -194,7 +219,9 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     Route::get('/crm', [\App\Http\Controllers\App\CrmController::class, 'index'])->name('app.crm.index');
     Route::post('/crm/interaccion', [\App\Http\Controllers\App\CrmController::class, 'crearInteraccion'])->name('app.crm.interaccion.crear');
     Route::post('/crm/segmentar', [\App\Http\Controllers\App\CrmController::class, 'segmentarAhora'])->name('app.crm.segmentar');
-    Route::get('/api/contactos/buscar', [\App\Http\Controllers\App\ContactosController::class, 'buscarApi'])->name('app.contactos.buscar');
+    // Re-audit SEG A3 · rate-limit anti-enumeración.
+    Route::get('/api/contactos/buscar', [\App\Http\Controllers\App\ContactosController::class, 'buscarApi'])
+        ->middleware('throttle:60,1')->name('app.contactos.buscar');
 
     // Estación de Empaque (escaneo con throttle generoso — pistola dispara ~30/min real)
     Route::get('/estacion-empaque', [\App\Http\Controllers\App\EstacionEmpaqueController::class, 'index'])->name('app.estacion');
@@ -212,7 +239,20 @@ Route::post('/logout', [\App\Http\Controllers\App\AuthController::class, 'logout
 // ============================================================
 Route::middleware(['web', 'guest:cliente'])->prefix('portal')->group(function () {
     Route::get('/login', [\App\Http\Controllers\Portal\PortalAuthController::class, 'showLogin'])->name('portal.login');
-    Route::post('/login', [\App\Http\Controllers\Portal\PortalAuthController::class, 'login'])->middleware('throttle:8,1');
+    // Re-audit SEG A2 · dos throttles combinados:
+    //   - throttle:portal-login → 5 intentos por (IP + email documento) por minuto
+    //   - throttle:portal-login-ip → 15 intentos por IP por 10 min (defensa distribuida)
+    Route::post('/login', [\App\Http\Controllers\Portal\PortalAuthController::class, 'login'])
+        ->middleware(['throttle:portal-login', 'throttle:portal-login-ip']);
+
+    // H3 · reset password del portal (3 pasos: solicitar → form → submit).
+    // Throttle: 5 solicitudes por hora por IP (anti-spam / anti-enumeración).
+    Route::post('/password/olvide', [\App\Http\Controllers\Portal\PortalAuthController::class, 'olvidePassword'])
+        ->middleware('throttle:5,60')->name('portal.password.olvide');
+    Route::get('/password/reset', [\App\Http\Controllers\Portal\PortalAuthController::class, 'resetForm'])
+        ->middleware('signed')->name('portal.password.reset.form');
+    Route::post('/password/reset', [\App\Http\Controllers\Portal\PortalAuthController::class, 'resetSubmit'])
+        ->middleware('throttle:10,60')->name('portal.password.reset.submit');
 });
 
 Route::middleware(['web', 'auth:cliente'])->prefix('portal')->group(function () {
@@ -233,6 +273,12 @@ Route::middleware(['web', 'auth:cliente'])->prefix('portal')->group(function () 
 
     // Facturas del cliente
     Route::get('/facturas', [\App\Http\Controllers\Portal\PortalFacturasController::class, 'index'])->name('portal.facturas');
+    // H2 · detalle de factura (items + pagos + saldo) para el portal.
+    Route::get('/facturas/{factura}', [\App\Http\Controllers\Portal\PortalFacturasController::class, 'show'])->name('portal.facturas.show');
+    // Re-audit UX#1 · descarga PDF de la factura desde el portal.
+    Route::get('/factura/{factura}/pdf', [\App\Http\Controllers\Portal\PortalFacturasController::class, 'pdf'])
+        ->middleware('throttle:30,1')
+        ->name('portal.factura.pdf');
 });
 
 
@@ -276,16 +322,23 @@ Route::get('/factura/publica/{token}', [FacturaPdfController::class, 'publica'])
     ->name('cartera.factura.publica');
 
 Route::middleware(['web', 'auth'])->group(function () {
-    Route::get('/dropi/manifiesto/{corte}', [ManifiestoController::class, 'descargar'])
-        ->name('dropi.manifiesto.descargar');
+    // P5 · manifiesto + plantilla productos: sólo equipo administrativo (Aracely/Gerencia).
+    Route::middleware([\App\Http\Middleware\SoloAracely::class])->group(function () {
+        Route::get('/dropi/manifiesto/{corte}', [ManifiestoController::class, 'descargar'])
+            ->name('dropi.manifiesto.descargar');
+        Route::get('/dropi/plantilla/productos', [PlantillaImportProductosController::class, 'descargar'])
+            ->name('dropi.plantilla.productos');
+    });
 
-    Route::get('/dropi/plantilla/productos', [PlantillaImportProductosController::class, 'descargar'])
-        ->name('dropi.plantilla.productos');
+    // P9 · escáner con throttle para evitar despacho masivo o enumeración de guías.
+    Route::post('/dropi/escaner/analizar', [EscanerController::class, 'analizar'])
+        ->middleware('throttle:60,1')->name('dropi.escaner.analizar');
+    Route::post('/dropi/escaner/despachar', [EscanerController::class, 'despachar'])
+        ->middleware('throttle:30,1')->name('dropi.escaner.despachar');
 
-    Route::post('/dropi/escaner/analizar', [EscanerController::class, 'analizar'])->name('dropi.escaner.analizar');
-    Route::post('/dropi/escaner/despachar', [EscanerController::class, 'despachar'])->name('dropi.escaner.despachar');
-
+    // Re-audit SEG C1 · rate-limit para bloquear enumeración de estados de cuenta.
     Route::get('/cartera/estado-cuenta/{contacto}', [EstadoCuentaController::class, 'pdf'])
+        ->middleware('throttle:20,1')
         ->name('cartera.estado-cuenta');
     Route::get('/cartera/plantilla/contactos', [PlantillaContactosController::class, 'descargar'])
         ->name('cartera.plantilla.contactos');
@@ -299,10 +352,11 @@ Route::middleware(['web', 'auth'])->group(function () {
 
     // Compras: sólo Aracely/Gerencia (fix auditor #19 — antes cualquier autenticado veía costos de proveedor)
     Route::middleware(['auth', \App\Http\Middleware\SoloAracely::class])->group(function () {
-        Route::get('/compras/orden/{orden}/pdf', [OrdenCompraPdfController::class, 'pdf'])->name('compras.orden.pdf');
-        Route::get('/compras/recepcion/{recepcion}/pdf', [RecepcionPdfController::class, 'pdf'])->name('compras.recepcion.pdf');
-        Route::get('/compras/importacion/{importacion}/pdf', [ImportacionPdfController::class, 'pdf'])->name('compras.importacion.pdf');
+        // Re-audit M2 R3 PATRÓN R (SEG-A6) · throttle en PDFs (DomPDF es CPU-heavy).
+        Route::get('/compras/orden/{orden}/pdf', [OrdenCompraPdfController::class, 'pdf'])->middleware('throttle:20,1')->name('compras.orden.pdf');
+        Route::get('/compras/recepcion/{recepcion}/pdf', [RecepcionPdfController::class, 'pdf'])->middleware('throttle:20,1')->name('compras.recepcion.pdf');
+        Route::get('/compras/importacion/{importacion}/pdf', [ImportacionPdfController::class, 'pdf'])->middleware('throttle:20,1')->name('compras.importacion.pdf');
         Route::get('/compras/plantilla/oc', [PlantillaImportOCController::class, 'descargar'])->name('compras.plantilla.oc');
-        Route::post('/compras/import/oc', [ImportOCController::class, 'importar'])->name('compras.import.oc');
+        Route::post('/compras/import/oc', [ImportOCController::class, 'importar'])->middleware('throttle:10,1')->name('compras.import.oc');
     });
 });

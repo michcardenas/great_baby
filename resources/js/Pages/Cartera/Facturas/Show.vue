@@ -1,5 +1,6 @@
 <script setup>
 import { Head, Link } from '@inertiajs/vue3';
+import { useMoney } from '@/composables/useMoney';
 import { ArrowLeft, Download, Phone, Mail, MapPin, User, FileText, CreditCard, QrCode } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 
@@ -10,7 +11,7 @@ const props = defineProps({
     pagos: { type: Array, required: true },
 });
 
-const fmtCOP = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('es-CO');
+const { money: fmtCOP } = useMoney();
 const badgeEstado = {
     warning: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200',
     success: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200',

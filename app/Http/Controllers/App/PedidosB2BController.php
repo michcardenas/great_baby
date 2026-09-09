@@ -204,14 +204,20 @@ class PedidosB2BController extends Controller implements HasMiddleware
         return back()->with('success', "Facturado como {$factura->numero}.");
     }
 
-    /** Consecutivo diario FV-YYMMDD-#### con lock. Reemplaza random_int(1,9999) que colisiona. */
+    /**
+     * Re-audit DATOS C3/C4 · consecutivo transaccional real, con validación de
+     * rango DIAN de la empresa. Reemplaza el SELECT MAX+1 anterior (race +
+     * ancho fijo se rompe en 10 000).
+     */
     private function siguienteNumeroFactura(): string
     {
         $prefijo = (setting('empresa.prefijo_dian') ?: 'FV') . '-' . now()->format('ymd') . '-';
-        $ultimo = FacturaVenta::where('numero', 'like', $prefijo . '%')
-            ->lockForUpdate()
-            ->orderByDesc('id')->value('numero');
-        $sig = $ultimo ? ((int) substr($ultimo, -4)) + 1 : 1;
-        return $prefijo . str_pad((string) $sig, 4, '0', STR_PAD_LEFT);
+        $rangoHasta = (int) setting('empresa.rango_hasta', 0) ?: null;
+
+        return \App\Modules\Cartera\Actions\SiguienteConsecutivoFactura::run(
+            $prefijo,
+            4,
+            $rangoHasta,
+        );
     }
 }

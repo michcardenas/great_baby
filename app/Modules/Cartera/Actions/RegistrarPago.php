@@ -37,15 +37,32 @@ class RegistrarPago
         return DB::transaction(function () use ($facturaId, $montoRecibido, $fecha, $medioPago, $referencia, $banco, $userId, $override, $notas) {
             $factura = FacturaVenta::with('contacto.condicionVigente')->lockForUpdate()->findOrFail($facturaId);
 
+            // Re-audit RAÍZ A/C (FUNC N1 / DATOS #1) · guard duro. Sin este
+            // check un pago sobre Borrador/Anulada creaba débito caja + crédito
+            // 1305 sin asiento de emisión previo → CxC negativa permanente.
+            if (! $factura->puedeRecibirPago()) {
+                $estadoActual = $factura->estado instanceof \App\Modules\Cartera\Enums\EstadoFactura
+                    ? $factura->estado->value
+                    : (string) $factura->estado;
+                throw new \RuntimeException(
+                    "Factura {$factura->numero} en estado '{$estadoActual}' no puede recibir pagos. Emítela o revierte la anulación primero."
+                );
+            }
+
             $saldoAntes = (float) $factura->saldo;
             $diferencia = round($saldoAntes - $montoRecibido, 2);
             $clasificacion = $override ?? $this->clasificar($factura, $diferencia, $fecha);
 
-            // Aplicado = lo que cierra el saldo (para clasificaciones que consumen la diferencia)
+            // Re-audit FUNC C2 / DATOS A10 · DescuentoFueraPlazo YA NO cierra
+            // la factura automáticamente. Antes cualquier pago corto tras el
+            // plazo pronto-pago se "regalaba" al cliente como descuento. Ahora
+            // requiere override explícito de Aracely.
             $consumeDiferencia = in_array($clasificacion, [
                 ClasificacionDiferencia::DescuentoProntoPago,
                 ClasificacionDiferencia::FleteAsumidoGb,
-                ClasificacionDiferencia::DescuentoFueraPlazo,
+                // DescuentoFueraPlazo: solo cierra si viene por $override manual.
+                ...($override === ClasificacionDiferencia::DescuentoFueraPlazo
+                    ? [ClasificacionDiferencia::DescuentoFueraPlazo] : []),
             ], true);
 
             $montoAplicado = $consumeDiferencia ? $saldoAntes : min($montoRecibido, $saldoAntes);
@@ -83,18 +100,31 @@ class RegistrarPago
         $cond = $factura->contacto->condicionVigente;
         if ($cond) {
             $diasHastaPago = $factura->fecha_emision->diffInDays($fecha, false);
+
+            // Re-audit DATOS A8 · guard días negativos (fecha_pago < fecha_emision).
+            // Antes clasificaba como pronto-pago un pago con fecha errada.
+            if ($diasHastaPago < 0) {
+                return ClasificacionDiferencia::SaldoPendiente;
+            }
+
             $descuentoEsperado = round((float) $factura->total * ((float) $cond->descuento_pronto_pago_pct / 100), 2);
+            // Re-audit DATOS A8 · tolerancia relativa (1% del descuento esperado o COP 500),
+            // no fija en 100 pesos. Evita clasificar mal pagos con dif de $99.
+            $tolerancia = max(500.0, $descuentoEsperado * 0.01);
 
             if ($cond->descuento_pronto_pago_pct > 0
                 && $diasHastaPago <= $cond->plazo_pronto_pago_dias
-                && abs($diferencia - $descuentoEsperado) < 100) {
+                && abs($diferencia - $descuentoEsperado) < $tolerancia) {
                 return ClasificacionDiferencia::DescuentoProntoPago;
             }
             if ($cond->flete_asumido_gb && $diferencia > 0 && $diferencia < 50000) {
                 return ClasificacionDiferencia::FleteAsumidoGb;
             }
+            // Re-audit FUNC C2 · antes de plazo pero cortos NO se clasifican
+            // como DescuentoFueraPlazo por default — quedan como SaldoPendiente
+            // hasta que Aracely lo apruebe explícitamente vía override.
             if ($cond->descuento_pronto_pago_pct > 0 && $diasHastaPago > $cond->plazo_pronto_pago_dias) {
-                return ClasificacionDiferencia::DescuentoFueraPlazo;
+                return ClasificacionDiferencia::SaldoPendiente;
             }
         }
 

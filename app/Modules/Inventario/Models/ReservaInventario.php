@@ -8,16 +8,18 @@ use App\Modules\Dropi\Models\ProductoVariante;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
+use OwenIt\Auditing\Auditable;
+use OwenIt\Auditing\Contracts\Auditable as AuditableContract;
 
-class ReservaInventario extends Model
+// Re-audit M3 PATRÓN η (DATOS-C7) · Auditable + $guarded — antes bulk
+//   update ->update(['activa'=>false]) desactivaba reservas sin traza DIAN.
+class ReservaInventario extends Model implements AuditableContract
 {
+    use Auditable;
+
     protected $table = 'reservas_inventario';
 
-    protected $fillable = [
-        'variante_id', 'ubicacion_id', 'cantidad',
-        'origen_type', 'origen_id',
-        'expira_at', 'activa', 'user_id',
-    ];
+    protected $guarded = ['id'];
 
     protected $casts = [
         'cantidad' => 'integer',

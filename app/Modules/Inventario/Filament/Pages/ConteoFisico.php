@@ -36,10 +36,19 @@ class ConteoFisico extends Page
 
     public function mount(int $toma): void
     {
-        abort_unless(auth()->user()?->esAracely(), 403);
-
+        // Re-audit M3 λ (SEG-B1) · alinear autorización con el controller web:
+        //   Aracely/Gerencia siempre; Alistador si la toma está en una de sus
+        //   bodegas asignadas. Antes: sólo `esAracely()` bloqueaba a Contador
+        //   que sí puede cerrar la toma → matriz incoherente.
+        $u = auth()->user();
         $this->toma = $toma;
         $this->tomaModel = TomaFisica::with(['items.variante.producto', 'ubicacion'])->findOrFail($toma);
+
+        $puede = $u && ($u->esAracely() || $u->esContable());
+        if (! $puede && $u && $u->esAlistador()) {
+            $puede = in_array((int) $this->tomaModel->ubicacion_id, $u->bodegasAsignadasIds(), true);
+        }
+        abort_unless($puede, 403, 'No autorizado para operar esta toma.');
 
         foreach ($this->tomaModel->items as $item) {
             $this->cantidades[$item->id] = $item->cantidad_contada;
@@ -48,8 +57,20 @@ class ConteoFisico extends Page
 
     public function guardar(int $itemId): void
     {
+        // Re-audit M3 λ (FUNC-C7) · IDOR fix.
+        //   Antes: `findOrFail($itemId)` sin verificar toma ni estado. Un
+        //   usuario podía sobrescribir cantidad_contada de tomas AJENAS o
+        //   ya cerradas (Ajustada) desde la URL de otra toma abierta.
         $item = TomaFisicaItem::findOrFail($itemId);
-        $item->cantidad_contada = $this->cantidades[$itemId] !== null ? (int) $this->cantidades[$itemId] : null;
+        abort_unless(
+            $item->toma_id === $this->tomaModel->id
+            && $this->tomaModel->estado === EstadoTomaFisica::EnConteo,
+            403,
+            'Sólo se pueden capturar cantidades de items de la toma actual y mientras esté En Conteo.'
+        );
+
+        $raw = $this->cantidades[$itemId] ?? null;
+        $item->cantidad_contada = ($raw === null || $raw === '') ? null : round((float) $raw, 4);
         $item->save();
 
         Notification::make()->title('Cantidad guardada')->success()->send();
@@ -86,6 +107,8 @@ class ConteoFisico extends Page
 
     public static function canAccess(): bool
     {
-        return auth()->user()?->esAracely() ?? false;
+        $u = auth()->user();
+        if (! $u) return false;
+        return $u->esAracely() || $u->esContable() || $u->esAlistador();
     }
 }

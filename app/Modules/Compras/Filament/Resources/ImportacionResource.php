@@ -34,6 +34,22 @@ class ImportacionResource extends Resource
 
     protected static ?string $model = Importacion::class;
 
+    /**
+     * Re-audit M2 PATRÓN E (SEG-C1 / FUNC-M2) · Importaciones LIQUIDADAS son
+     * inmutables (asiento + kardex generados). Solo EnTransito/EnPuerto/
+     * Nacionalizada admiten edición/borrado. Previene cambio de fecha
+     * liquidación post-cierre fiscal.
+     */
+    public static function canEdit(\Illuminate\Database\Eloquent\Model $record): bool
+    {
+        return $record->estado !== \App\Modules\Compras\Enums\EstadoImportacion::Liquidada;
+    }
+
+    public static function canDelete(\Illuminate\Database\Eloquent\Model $record): bool
+    {
+        return $record->estado === \App\Modules\Compras\Enums\EstadoImportacion::EnTransito;
+    }
+
     protected static string|BackedEnum|null $navigationIcon = 'heroicon-o-globe-alt';
 
     protected static ?string $navigationLabel = 'Importaciones';

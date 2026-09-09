@@ -7,7 +7,6 @@ use App\Modules\Cartera\Models\MovimientoContable;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controllers\HasMiddleware;
 use Illuminate\Routing\Controllers\Middleware;
-use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -16,8 +15,11 @@ class ContabilidadController extends Controller implements HasMiddleware
     public static function middleware(): array
     {
         return [
+            // Re-audit M5 SEG-C2 · usar `esContable()` unificado (Aracely, Gerencia,
+            // Gerente, Contador). Antes solo `esAracely()` → un Contador legítimo
+            // recibía 403 accediendo a Balance general.
             new Middleware(function (Request $r, \Closure $next) {
-                abort_unless($r->user()?->esAracely(), 403);
+                abort_unless($r->user()?->esContable(), 403);
                 return $next($r);
             }),
         ];
@@ -25,36 +27,67 @@ class ContabilidadController extends Controller implements HasMiddleware
 
     public function index(Request $request): Response
     {
-        $desde = $request->input('desde', now('America/Bogota')->startOfMonth()->toDateString());
-        $hasta = $request->input('hasta', now('America/Bogota')->toDateString());
+        // Re-audit M5 SEG-A3 · validar tipo `date`. Sin esto un `desde=abc`
+        // produce SQLSTATE excepción no manejada que expone stack en debug.
+        $data = $request->validate([
+            'desde' => ['nullable', 'date'],
+            'hasta' => ['nullable', 'date', 'after_or_equal:desde'],
+            'incluir_anulados' => ['nullable', 'boolean'],
+        ]);
+
+        $desde = $data['desde'] ?? now('America/Bogota')->startOfMonth()->toDateString();
+        $hasta = $data['hasta'] ?? now('America/Bogota')->toDateString();
+        $incluirAnulados = (bool) ($data['incluir_anulados'] ?? false);
+
+        // Re-audit R4 SEG-M1 · bitácora consulta con anulados (dato sensible DIAN).
+        if ($incluirAnulados) {
+            \Illuminate\Support\Facades\Log::channel(config('logging.channels.audit') ? 'audit' : 'stack')
+                ->info('contabilidad.index.incluir_anulados', [
+                    'user_id' => $request->user()?->id, 'rango' => [$desde, $hasta],
+                ]);
+        }
 
         return Inertia::render('Contabilidad/Index', [
-            'filtros' => ['desde' => $desde, 'hasta' => $hasta],
-            'kpis' => $this->kpis($desde, $hasta),
-            'porCuenta' => $this->balanceComprobacion($desde, $hasta),
-            'movimientosRecientes' => $this->movimientosRecientes($desde, $hasta),
+            'filtros' => ['desde' => $desde, 'hasta' => $hasta, 'incluir_anulados' => $incluirAnulados],
+            'kpis' => $this->kpis($desde, $hasta, $incluirAnulados),
+            'porCuenta' => $this->balanceComprobacion($desde, $hasta, $incluirAnulados),
+            'movimientosRecientes' => $this->movimientosRecientes($desde, $hasta, 50, $incluirAnulados),
         ]);
     }
 
-    private function kpis(string $desde, string $hasta): array
+    /**
+     * Re-audit M5 PATRÓN A · TODOS los métodos usan Eloquent + `withTrashed()`
+     * opcional. Antes `balanceComprobacion` usaba `DB::table()` crudo que
+     * IGNORA SoftDeletes → KPIs (Eloquent) excluían anulados pero el balance
+     * los incluía → descuadre fantasma imposible de cuadrar.
+     *
+     * Re-audit M5 DATOS-A3 · 1 sola query para los 3 KPIs (antes 3 full-scans).
+     */
+    private function kpis(string $desde, string $hasta, bool $incluirAnulados = false): array
     {
-        $q = MovimientoContable::query()->whereBetween('fecha', [$desde, $hasta]);
-        $totalDebe = (float) (clone $q)->sum('debe');
-        $totalHaber = (float) (clone $q)->sum('haber');
+        $r = MovimientoContable::query()
+            ->when($incluirAnulados, fn ($q) => $q->withTrashed())
+            ->whereBetween('fecha', [$desde, $hasta])
+            ->selectRaw('COALESCE(SUM(debe),0) d, COALESCE(SUM(haber),0) h, COUNT(*) n')
+            ->first();
+
+        $totalDebe = (float) $r->d;
+        $totalHaber = (float) $r->h;
         $balance = round($totalDebe - $totalHaber, 2);
+
         return [
             'total_debe' => $totalDebe,
             'total_haber' => $totalHaber,
             'balance' => $balance,
-            // QA-D Bloque3: flag UNBALANCED — tolerancia 1 centavo por drift de round().
             'unbalanced' => abs($balance) > 0.01,
-            'movimientos' => (int) $q->count(),
+            'movimientos' => (int) $r->n,
         ];
     }
 
-    private function balanceComprobacion(string $desde, string $hasta): array
+    private function balanceComprobacion(string $desde, string $hasta, bool $incluirAnulados = false): array
     {
-        return DB::table('movimientos_contables')
+        return MovimientoContable::query()
+            ->when($incluirAnulados, fn ($q) => $q->withTrashed())
             ->whereBetween('fecha', [$desde, $hasta])
             ->selectRaw('cuenta_puc, SUM(debe) as debe, SUM(haber) as haber, SUM(debe - haber) as saldo')
             ->groupBy('cuenta_puc')
@@ -68,9 +101,10 @@ class ContabilidadController extends Controller implements HasMiddleware
             ])->all();
     }
 
-    private function movimientosRecientes(string $desde, string $hasta, int $limit = 50): array
+    private function movimientosRecientes(string $desde, string $hasta, int $limit = 50, bool $incluirAnulados = false): array
     {
         return MovimientoContable::query()
+            ->when($incluirAnulados, fn ($q) => $q->withTrashed())
             ->with(['user:id,name'])
             ->whereBetween('fecha', [$desde, $hasta])
             ->orderByDesc('fecha')->orderByDesc('id')
@@ -85,6 +119,8 @@ class ContabilidadController extends Controller implements HasMiddleware
                 'descripcion' => $m->descripcion,
                 'origen' => class_basename($m->origen_type ?? ''),
                 'usuario' => $m->user?->name,
+                // Re-audit M5 PATRÓN A · flag anulado explícito para pintar badge en UI.
+                'anulado' => $m->deleted_at !== null,
             ])->all();
     }
 }

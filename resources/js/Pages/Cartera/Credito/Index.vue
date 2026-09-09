@@ -1,6 +1,7 @@
 <script setup>
 import { ref } from 'vue';
 import { Head, Link } from '@inertiajs/vue3';
+import { useMoney } from '@/composables/useMoney';
 import { CreditCard, MessageCircle, ShieldAlert, Check, Clock } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 
@@ -12,7 +13,7 @@ const props = defineProps({
 });
 
 const tabAct = ref(props.tab);
-const fmtCOP = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('es-CO');
+const { money: fmtCOP } = useMoney();
 
 const badgeEstado = (e) => {
     const map = {

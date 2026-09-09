@@ -1,7 +1,10 @@
 <script setup>
 import { Head, Link, router } from '@inertiajs/vue3';
-import { Package, Truck, CheckCircle, Boxes } from 'lucide-vue-next';
+import { onMounted, onBeforeUnmount, ref } from 'vue';
+import { Package, Truck, Boxes, ScanLine } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import { useMoney } from '@/composables/useMoney';
+import { usePedidoBadge } from '@/composables/usePedidoBadge';
 
 const props = defineProps({
     modo: { type: String, required: true },
@@ -10,13 +13,63 @@ const props = defineProps({
     empaque: { type: Array, required: true },
 });
 
-const money = (n) => '$' + Number(n || 0).toLocaleString('es-CO', { maximumFractionDigits: 0 });
+const { money } = useMoney();
+const { badge } = usePedidoBadge();
 
-const cambiarModo = (m) => router.get('/app/dropi/alistador', { modo: m }, { preserveState: false });
+const cambiarModo = (m) => router.get('/app/dropi/alistador', { modo: m }, { preserveState: true, preserveScroll: true });
 
-const tomar = (id) => router.post(`/app/dropi/alistador/pedido/${id}/tomar`, {}, { preserveScroll: true });
-const empacar = (id) => router.post(`/app/dropi/alistador/pedido/${id}/empacar`, {}, { preserveScroll: true });
-const despachar = (id) => router.post(`/app/dropi/alistador/pedido/${id}/despachar`, {}, { preserveScroll: true });
+// Anti doble-click: mantiene un id "en proceso" para deshabilitar botones.
+const procesandoId = ref(null);
+
+const tomar = (id) => {
+    if (procesandoId.value) return;
+    procesandoId.value = id;
+    router.post(`/app/dropi/alistador/pedido/${id}/tomar`, {}, {
+        preserveScroll: true,
+        onFinish: () => (procesandoId.value = null),
+    });
+};
+
+const despachar = (id) => {
+    if (procesandoId.value) return;
+    procesandoId.value = id;
+    router.post(`/app/dropi/alistador/pedido/${id}/despachar`, {}, {
+        preserveScroll: true,
+        onFinish: () => (procesandoId.value = null),
+    });
+};
+
+// P8 · Heartbeat: mientras el alistador tenga la pestaña abierta, mantiene vivos
+// sus locks (evita que el cron dropi:liberar-locks los mate en pleno empaque).
+let heartbeatInterval;
+let pollInterval;
+onMounted(() => {
+    heartbeatInterval = setInterval(() => {
+        // Re-audit UX#6 · si la pestaña está oculta no enviamos heartbeat.
+        // Deja que el cron libere los locks del alistador que ya no está mirando.
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+        fetch('/app/dropi/alistador/heartbeat', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '',
+                Accept: 'application/json',
+            },
+        }).catch(() => {});
+    }, 60_000);
+
+    // U26 · polling suave de la cola cada 30s SÓLO en modo empaque, así dos
+    // alistadores no compiten por el mismo pedido a segundos de diferencia.
+    if (props.modo === 'empaque') {
+        pollInterval = setInterval(() => {
+            router.reload({ only: ['empaque'], preserveScroll: true });
+        }, 30_000);
+    }
+});
+onBeforeUnmount(() => {
+    heartbeatInterval && clearInterval(heartbeatInterval);
+    pollInterval && clearInterval(pollInterval);
+});
 </script>
 
 <template>
@@ -36,19 +89,22 @@ const despachar = (id) => router.post(`/app/dropi/alistador/pedido/${id}/despach
                 <div class="card p-1 flex">
                     <button @click="cambiarModo('recoleccion')"
                         :class="['px-4 py-2 rounded text-sm font-semibold',
-                            modo === 'recoleccion' ? 'bg-brand-600 text-white' : 'text-surface-600']">
+                            modo === 'recoleccion' ? 'bg-brand-600 text-white' : 'text-surface-600 dark:text-surface-300']">
                         🛒 Recolección
                     </button>
                     <button @click="cambiarModo('empaque')"
                         :class="['px-4 py-2 rounded text-sm font-semibold',
-                            modo === 'empaque' ? 'bg-brand-600 text-white' : 'text-surface-600']">
+                            modo === 'empaque' ? 'bg-brand-600 text-white' : 'text-surface-600 dark:text-surface-300']">
                         📦 Empaque
                     </button>
                 </div>
             </div>
 
-            <div v-if="$page.props.flash?.success" class="p-3 rounded-lg bg-emerald-500/15 border-l-4 border-emerald-500 text-emerald-700 text-sm">
+            <div v-if="$page.props.flash?.success" class="p-3 rounded-lg bg-emerald-500/15 border-l-4 border-emerald-500 text-emerald-700 dark:text-emerald-300 text-sm">
                 {{ $page.props.flash.success }}
+            </div>
+            <div v-if="$page.props.flash?.error" class="p-3 rounded-lg bg-red-500/15 border-l-4 border-red-500 text-red-700 dark:text-red-300 text-sm">
+                {{ $page.props.flash.error }}
             </div>
 
             <!-- Modo recolección: totales por producto -->
@@ -70,7 +126,7 @@ const despachar = (id) => router.post(`/app/dropi/alistador/pedido/${id}/despach
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-surface-100 dark:divide-surface-800">
-                            <tr v-for="r in recoleccion" :key="r.sku">
+                            <tr v-for="r in recoleccion" :key="r.sku" class="hover:bg-surface-50 dark:hover:bg-surface-800/50">
                                 <td class="p-3 font-mono text-xs">{{ r.sku }}</td>
                                 <td class="p-3">
                                     <div class="font-medium">{{ r.producto }}</div>
@@ -84,7 +140,7 @@ const despachar = (id) => router.post(`/app/dropi/alistador/pedido/${id}/despach
                 </div>
             </div>
 
-            <!-- Modo empaque: cola de pedidos -->
+            <!-- Modo empaque: cola de pedidos. Empacar se hace SOLO en la Estación (P2). -->
             <div v-if="modo === 'empaque'" class="card p-5">
                 <div class="text-xs uppercase tracking-widest font-bold text-brand-600 mb-3">
                     Cola de empaque compartida ({{ empaque.length }})
@@ -93,30 +149,49 @@ const despachar = (id) => router.post(`/app/dropi/alistador/pedido/${id}/despach
                     Sin pedidos pendientes de empacar (o todos tomados por otros alistadores).
                 </div>
                 <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div v-for="p in empaque" :key="p.id" class="border border-surface-200 dark:border-surface-800 rounded-lg p-4 hover:shadow-md">
+                    <div v-for="p in empaque" :key="p.id" class="border border-surface-200 dark:border-surface-800 rounded-lg p-4 hover:shadow-md dark:bg-surface-900">
                         <div class="flex items-start justify-between mb-2">
                             <div>
                                 <div class="text-xs text-surface-500">Guía</div>
                                 <div class="font-mono font-bold">{{ p.guia }}</div>
                             </div>
-                            <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-blue-100 text-blue-800">{{ p.estado }}</span>
+                            <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase" :class="badge(p.estado).cls">
+                                {{ badge(p.estado).label }}
+                            </span>
                         </div>
                         <div class="text-sm font-medium">{{ p.cliente }}</div>
                         <div class="text-xs text-surface-500">{{ p.ciudad }}</div>
-                        <div class="text-sm font-bold text-brand-600 mt-1">{{ money(p.monto) }}</div>
+                        <div class="flex items-center justify-between mt-1">
+                            <div class="text-sm font-bold text-brand-600">{{ money(p.monto) }}</div>
+                            <div class="text-[11px] text-surface-500">
+                                {{ p.items_count || 0 }} ítem{{ (p.items_count || 0) === 1 ? '' : 's' }} · {{ p.items_unidades || 0 }} und
+                            </div>
+                        </div>
                         <div class="mt-3 flex items-center gap-2">
-                            <button v-if="p.estado === 'pending'" @click="tomar(p.id)" class="btn-primary flex-1 text-xs">
-                                <Package class="h-3 w-3"/> Tomar
+                            <button v-if="p.estado === 'pending' || p.estado === 'pendiente_inventario'"
+                                @click="tomar(p.id)"
+                                :disabled="procesandoId === p.id"
+                                class="btn-primary flex-1 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
+                                <Package class="h-3 w-3"/> {{ procesandoId === p.id ? 'Tomando…' : 'Tomar' }}
                             </button>
-                            <button v-if="p.estado === 'alistando'" @click="empacar(p.id)" class="btn-primary flex-1 text-xs">
-                                <CheckCircle class="h-3 w-3"/> Empacar
-                            </button>
-                            <button v-if="p.estado === 'empacado'" @click="despachar(p.id)" class="btn-primary flex-1 text-xs bg-emerald-600 hover:bg-emerald-700">
-                                <Truck class="h-3 w-3"/> Despachar
+                            <Link v-else-if="p.estado === 'alistando'"
+                                :href="`/app/estacion-empaque?pedido=${p.id}`"
+                                class="btn-primary flex-1 text-xs bg-indigo-600 hover:bg-indigo-700 text-center">
+                                <ScanLine class="h-3 w-3 inline"/> Ir a Estación
+                            </Link>
+                            <button v-if="p.estado === 'empacado'"
+                                @click="despachar(p.id)"
+                                :disabled="procesandoId === p.id"
+                                class="btn-primary flex-1 text-xs bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed">
+                                <Truck class="h-3 w-3"/> {{ procesandoId === p.id ? 'Despachando…' : 'Despachar' }}
                             </button>
                         </div>
                     </div>
                 </div>
+                <p class="mt-4 text-[11px] text-surface-500 italic">
+                    Nota: para <b>Empacar</b> el pedido, escanea los ítems en la <b>Estación de Empaque</b> —
+                    no se puede saltar ese paso.
+                </p>
             </div>
         </div>
     </AppLayout>

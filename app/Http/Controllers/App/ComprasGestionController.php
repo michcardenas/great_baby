@@ -78,6 +78,9 @@ class ComprasGestionController extends Controller implements HasMiddleware
             'proveedores' => \App\Models\Contacto::where('es_proveedor', true)->where('activo', true)
                 ->orderBy('nombre_completo')->limit(200)->get(['id', 'nombre_completo', 'razon_social'])
                 ->map(fn ($c) => ['id' => $c->id, 'nombre' => $c->razon_social ?: $c->nombre_completo]),
+            // Re-audit M2 UX-A4 · bodegas destino para elección explícita en OC.
+            'bodegas' => \App\Modules\Dropi\Models\InventarioUbicacion::orderBy('nombre')->get(['id', 'nombre'])
+                ->map(fn ($b) => ['id' => $b->id, 'nombre' => $b->nombre]),
         ]);
     }
 
@@ -85,6 +88,8 @@ class ComprasGestionController extends Controller implements HasMiddleware
     {
         $data = $r->validate([
             'proveedor_id' => ['required', 'integer', 'exists:contactos,id'],
+            // Re-audit M2 UX-A4 · bodega ahora obligatoria al crear (antes silenciosa).
+            'bodega_id' => ['required', 'integer', 'exists:inventario_ubicaciones,id'],
             'tipo' => ['required', 'string', 'max:30'],
             'moneda' => ['required', 'string', 'size:3'],
             'tasa_cambio' => ['required', 'numeric', 'min:0'],
@@ -114,8 +119,26 @@ class ComprasGestionController extends Controller implements HasMiddleware
     {
         $data = $r->validate(['motivo' => ['required', 'string', 'min:10', 'max:300']]);
         $o = OrdenCompra::findOrFail($orden);
-        abort_if(in_array($o->estado, [EstadoOrdenCompra::Recibida, EstadoOrdenCompra::Cerrada]), 422, 'OC ya recibida/cerrada.');
-        $o->update(['estado' => EstadoOrdenCompra::Anulada, 'observaciones' => ($o->observaciones . "\n[ANULADA] " . $data['motivo'])]);
+        // Re-audit M2 FUNC-C4 · agregado Anulada (idempotencia — evita re-anular).
+        abort_if(in_array($o->estado, [EstadoOrdenCompra::Recibida, EstadoOrdenCompra::Cerrada, EstadoOrdenCompra::Anulada]), 422, 'OC ya recibida/cerrada/anulada.');
+        // Re-audit M2 PATRÓN B (DATOS-C2) · asignación DIRECTA. Antes `$o->update(['estado'=>...])`
+        // era mass-assign silencioso: `estado` no estaba en fillable y Laravel lo DESCARTABA
+        // → la OC quedaba "anulada" solo en observaciones pero seguía viva. Con $guarded=['id']
+        // + asignación directa el estado se persiste correcto.
+        $o->estado = EstadoOrdenCompra::Anulada;
+        $o->anulado_at = now();
+        $o->anulado_por = auth()->id();
+        $o->motivo_anulacion = $data['motivo'];
+        $o->observaciones = trim(($o->observaciones ?? '') . "\n[ANULADA " . now()->toDateString() . " por " . auth()->user()?->name . "] " . $data['motivo']);
+        $o->save();
+        // Re-audit M2 R3 PATRÓN R (SEG-M2) · usa array_key_exists — antes
+        // `config('logging.channels.audit')` returnaba truthy incluso si `[]`.
+        \Illuminate\Support\Facades\Log::channel(
+            array_key_exists('audit', config('logging.channels') ?? []) ? 'audit' : 'stack'
+        )->info('compras.oc.anular', [
+            'user_id' => auth()->id(), 'orden_id' => $o->id, 'numero' => $o->numero,
+            'total' => (float) $o->total, 'motivo' => $data['motivo'],
+        ]);
         return back()->with('success', "OC {$o->numero} anulada.");
     }
 
@@ -171,6 +194,25 @@ class ComprasGestionController extends Controller implements HasMiddleware
 
     public function recepcionCrear(Request $r): RedirectResponse
     {
+        // Re-audit M2 R3 PATRÓN Q (FUNC-C3) · TX UNIFICADA. Antes había una tx
+        //   externa que committeaba `RecepcionCompra` + items, y DESPUÉS otra
+        //   tx en `RecibirMercancia::handle`. Si el Action tronaba, quedaba
+        //   recepción huérfana en `borrador` + cada retry creaba OTRA con nuevo
+        //   consecutivo → acumulación de "recepciones fantasma".
+        //   Ahora TODO va bajo el mismo `DB::transaction` — o se persiste el
+        //   flujo completo o se rollea todo. `RecibirMercancia` sigue haciendo
+        //   su propia tx anidada (Laravel las combina, sin doble commit).
+        //
+        // Re-audit M2 R3 PATRÓN Q (FUNC-A3) · dedupe `orden_item_id` — antes un
+        //   payload con duplicados pasaba items y el Action detectaba
+        //   sobre-recepción en el segundo intento, pero la recepción ya estaba
+        //   committeada. Ahora fusionamos duplicados sumando cantidades ANTES
+        //   de crear la recepción.
+        //
+        // Re-audit M2 R3 PATRÓN M (FUNC-C1) · fillable clave = `recibido_por`.
+        //   Antes pasaba `'creado_por'` → mass-assign silencioso lo descartaba,
+        //   la columna quedaba NULL y perdíamos trazabilidad de autor.
+
         $data = $r->validate([
             'orden_id' => ['required', 'integer', 'exists:compras_ordenes,id'],
             'remision_proveedor' => ['nullable', 'string', 'max:100'],
@@ -178,11 +220,71 @@ class ComprasGestionController extends Controller implements HasMiddleware
             'transportista' => ['nullable', 'string', 'max:100'],
             'observaciones' => ['nullable', 'string', 'max:1000'],
             'items' => ['required', 'array', 'min:1'],
-            'items.*.orden_item_id' => ['required', 'integer'],
+            'items.*.orden_item_id' => ['required', 'integer', 'exists:compras_orden_items,id'],
             'items.*.cantidad_recibida' => ['required', 'numeric', 'min:0.001'],
             'items.*.lote' => ['nullable', 'string', 'max:80'],
         ]);
-        $rc = RecibirMercancia::run($data);
+
+        $orden = OrdenCompra::with('items')->findOrFail($data['orden_id']);
+        abort_unless(in_array($orden->estado, [EstadoOrdenCompra::Aprobada, EstadoOrdenCompra::Parcial, EstadoOrdenCompra::Enviada]), 422, 'La OC no está en estado receptable.');
+        abort_if($orden->bodega_id === null, 422, 'La OC no tiene bodega destino asignada.');
+
+        $itemsOc = $orden->items->pluck('id')->all();
+        foreach ($data['items'] as $it) {
+            abort_unless(in_array((int) $it['orden_item_id'], $itemsOc, true), 422, 'Item de recepción no pertenece a esta OC.');
+        }
+
+        // Dedupe: si vienen 2 líneas con mismo orden_item_id, fusionamos qty.
+        $itemsFusionados = [];
+        foreach ($data['items'] as $it) {
+            $key = (int) $it['orden_item_id'];
+            if (isset($itemsFusionados[$key])) {
+                $itemsFusionados[$key]['cantidad_recibida'] += (float) $it['cantidad_recibida'];
+                // conservar lote no-vacío si aparece
+                $itemsFusionados[$key]['lote'] = $itemsFusionados[$key]['lote'] ?: ($it['lote'] ?? null);
+            } else {
+                $itemsFusionados[$key] = [
+                    'cantidad_recibida' => (float) $it['cantidad_recibida'],
+                    'lote' => $it['lote'] ?? null,
+                ];
+            }
+        }
+
+        $rc = \Illuminate\Support\Facades\DB::transaction(function () use ($data, $orden, $itemsFusionados) {
+            $rc = RecepcionCompra::create([
+                'numero' => RecepcionCompra::siguienteNumero(),
+                'orden_id' => $orden->id,
+                'bodega_id' => $orden->bodega_id,
+                'estado' => 'borrador',
+                'fecha_recepcion' => now(),
+                'remision_proveedor' => $data['remision_proveedor'] ?? null,
+                'factura_proveedor' => $data['factura_proveedor'] ?? null,
+                'transportista' => $data['transportista'] ?? null,
+                'observaciones' => $data['observaciones'] ?? null,
+                // Clave real del $fillable (antes 'creado_por' se descartaba).
+                'recibido_por' => auth()->id(),
+            ]);
+            foreach ($itemsFusionados as $ocItemId => $it) {
+                $ocItem = $orden->items->firstWhere('id', $ocItemId);
+                $costoUnit = (float) $ocItem->precio_unit;
+                $cantidad = (float) $it['cantidad_recibida'];
+                $rc->items()->create([
+                    'orden_item_id' => $ocItem->id,
+                    'variante_id' => $ocItem->variante_id,
+                    // 'descripcion' NO existe en RecepcionCompraItem; NO enviar
+                    // para evitar la falla silenciosa del mass-assign.
+                    'cantidad_recibida' => $cantidad,
+                    'costo_unit' => $costoUnit,
+                    'subtotal' => round($costoUnit * $cantidad, 2),
+                    'lote' => $it['lote'] ?? null,
+                ]);
+            }
+
+            // Confirmación dentro de la MISMA tx externa. Si esto truena,
+            // rollback total incluida la recepción recién creada.
+            return RecibirMercancia::run($rc);
+        });
+
         return redirect()->route('app.compras.recepcion.show', $rc->id)->with('success', "Recepción {$rc->numero} creada.");
     }
 
@@ -225,6 +327,14 @@ class ComprasGestionController extends Controller implements HasMiddleware
         ]);
     }
 
+    /**
+     * Re-audit M2 UX-C1 · pantalla nueva importación (antes solo por Filament).
+     */
+    public function importacionForm(): Response
+    {
+        return Inertia::render('Compras/Importacion/Nueva');
+    }
+
     public function importacionCrear(Request $r): RedirectResponse
     {
         $data = $r->validate([
@@ -239,26 +349,43 @@ class ComprasGestionController extends Controller implements HasMiddleware
             'fecha_zarpe' => ['nullable', 'date'],
             'eta' => ['nullable', 'date'],
         ]);
-        // Consecutivo simple
-        $numero = 'IMP-' . now()->format('Ym') . '-' . str_pad((string) (Importacion::whereYear('created_at', now()->year)->count() + 1), 4, '0', STR_PAD_LEFT);
+        // Re-audit M2 PATRÓN C + I · usa siguienteNumero() atómico del modelo
+        // (con lockForUpdate + año en TZ Colombia). Antes: `count()+1` sin lock =
+        // colisión concurrente; `whereYear('created_at')` sin TZ = 31-dic 20:00
+        // Bogotá cruzaba al año siguiente en UTC → salto de secuencia.
+        $numero = Importacion::siguienteNumero();
         $imp = Importacion::create([...$data, 'numero' => $numero, 'creado_por' => auth()->id()]);
         return redirect()->route('app.compras.importacion.show', $imp->id)->with('success', "Importación {$imp->numero} creada.");
     }
 
     public function importacionGastoAgregar(Request $r, int $importacion): RedirectResponse
     {
+        // Re-audit M2 PATRÓN L (FUNC-A6 / DATOS-A7) · unificado con Action:
+        // valor|cantidad|peso|volumen (antes HTTP aceptaba "fob" que caía al
+        // default silenciosamente y rechazaba "peso" que Filament sí ofrece).
         $data = $r->validate([
             'concepto' => ['required', 'string', 'max:50'],
             'descripcion' => ['nullable', 'string', 'max:200'],
             'moneda' => ['required', 'string', 'size:3'],
             'monto' => ['required', 'numeric', 'min:0'],
             'capitalizable' => ['boolean'],
-            'metodo_prorrateo' => ['required', 'string', 'in:cantidad,fob,volumen'],
+            'metodo_prorrateo' => ['required', 'string', 'in:valor,cantidad,peso,volumen'],
             'factura_proveedor' => ['nullable', 'string', 'max:100'],
             'fecha' => ['required', 'date'],
             'proveedor_id' => ['nullable', 'integer'],
         ]);
         $imp = Importacion::findOrFail($importacion);
+        abort_if(
+            $imp->estado === EstadoImportacion::Liquidada,
+            422,
+            'La importación ya está liquidada. Requiere reversar liquidación (a definir) para agregar gastos.'
+        );
+        // Re-audit M2 R3 PATRÓN R (SEG-B2) · si moneda ≠ COP y no hay TRM
+        // definida, ABORTA — antes se usaba 1 silenciosamente y USD 1200
+        // entraba al asiento como COP 1200 (subvaluación grave del costo).
+        if ($data['moneda'] !== 'COP' && ((float) $imp->tasa_cambio_liquidacion) <= 0) {
+            abort(422, "Falta definir la tasa de cambio de la importación (moneda={$data['moneda']}). Edítala y agrega TRM antes de agregar gastos en moneda extranjera.");
+        }
         $data['monto_base'] = $data['monto'] * (float) ($imp->tasa_cambio_liquidacion ?: 1);
         $imp->gastos()->create($data);
         return back()->with('success', 'Gasto agregado.');

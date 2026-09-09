@@ -59,8 +59,12 @@ class ConfirmarEmpaqueYSiguiente
                 'items_totales' => $totalUnidades,
             ]);
 
-            $pedido->estado = EstadoPedidoDropi::Empacado;
-            $pedido->save();
+            $pedido->transicionar(
+                EstadoPedidoDropi::Empacado,
+                'manual',
+                $operarioId,
+                ['origen' => 'estacion_empaque', 'duracion_seg' => $duracion, 'items' => $totalUnidades],
+            );
 
             return [
                 'duracion_seg' => $duracion,

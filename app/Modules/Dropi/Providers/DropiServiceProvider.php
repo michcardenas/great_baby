@@ -5,8 +5,14 @@ namespace App\Modules\Dropi\Providers;
 use App\Modules\Dropi\Clients\DropiApiClient;
 use App\Modules\Dropi\Clients\DropiClientInterface;
 use App\Modules\Dropi\Clients\DropiMockClient;
+use App\Modules\Dropi\Events\PedidoDropiTransicionado;
+use App\Modules\Dropi\Listeners\DescontarInventarioAlEmpacar;
+use App\Modules\Dropi\Listeners\RecalcularContadoresCorte;
+use App\Modules\Dropi\Listeners\RegistrarAsientoWalletDropi;
+use App\Modules\Dropi\Listeners\RevertirEgresoAlDesempacar;
 use App\Modules\Facturacion\Emisores\AriEmisor;
 use App\Support\Contracts\EmisorDocumentoFiscal;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\ServiceProvider;
 
@@ -41,6 +47,12 @@ class DropiServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        //
+        // Side-effects del cambio de estado van SIEMPRE por listener.
+        //  - DescontarInventarioAlEmpacar (P3): Empacado → egreso.
+        //  - RevertirEgresoAlDesempacar (Re-audit H4): Empacado → Alistando → ingreso reverso.
+        //  - RecalcularContadoresCorte (A4): actualiza contadores del corte activo.
+        Event::listen(PedidoDropiTransicionado::class, DescontarInventarioAlEmpacar::class);
+        Event::listen(PedidoDropiTransicionado::class, RevertirEgresoAlDesempacar::class);
+        Event::listen(PedidoDropiTransicionado::class, RecalcularContadoresCorte::class);
     }
 }

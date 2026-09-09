@@ -61,12 +61,24 @@ class FacturaVentaResource extends Resource
     {
         return $schema->components([
             Section::make('Datos generales')->schema([
-                TextInput::make('numero')->required()->unique(ignoreRecord: true)->helperText('Ej: FV-000001'),
+                TextInput::make('numero')
+                    ->required()->unique(ignoreRecord: true)->helperText('Ej: FV-000001')
+                    // Re-audit RAÍZ F (DATOS #5) · post-emisión el consecutivo es intocable (DIAN).
+                    ->disabled(fn (?FacturaVenta $record) => $record?->emitida_at !== null)
+                    ->dehydrated(fn (?FacturaVenta $record) => $record?->emitida_at === null),
                 Select::make('contacto_id')
                     ->label('Cliente')
                     ->relationship('contacto', 'nombre_completo', fn ($query) => $query->where('es_cliente', true))
-                    ->searchable()->required()->preload(),
-                DatePicker::make('fecha_emision')->required()->native(false),
+                    ->searchable()->required()->preload()
+                    // Re-audit R3-02 · post-emisión el tercero DIAN es inmutable
+                    // (el saving() del modelo también lo bloquea — defensa en profundidad).
+                    ->disabled(fn (?FacturaVenta $record) => $record?->emitida_at !== null)
+                    ->dehydrated(fn (?FacturaVenta $record) => $record?->emitida_at === null),
+                DatePicker::make('fecha_emision')->required()->native(false)
+                    // Re-audit RAÍZ F (DATOS #5) · post-emisión inmutable — la fecha
+                    // de emisión determina el mes fiscal y NO puede cambiarse.
+                    ->disabled(fn (?FacturaVenta $record) => $record?->emitida_at !== null)
+                    ->dehydrated(fn (?FacturaVenta $record) => $record?->emitida_at === null),
                 DatePicker::make('fecha_vencimiento')->required()->native(false),
                 Select::make('vendedor_id')->relationship('vendedor', 'name')->searchable(),
                 Textarea::make('observaciones')->columnSpanFull(),
@@ -96,10 +108,21 @@ class FacturaVentaResource extends Resource
             ]),
 
             Section::make('Valores')->schema([
-                TextInput::make('subtotal')->numeric()->prefix('$')->default(0)->required(),
-                TextInput::make('descuento')->numeric()->prefix('$')->default(0),
-                TextInput::make('impuestos')->numeric()->prefix('$')->default(0),
-                TextInput::make('total')->numeric()->prefix('$')->required()->helperText('subtotal - descuento + impuestos'),
+                // Re-audit R3-02 · valores económicos DIAN son inmutables post-emisión.
+                // El saving() del modelo lanza RuntimeException; disabled aquí
+                // hace la restricción visible en UI y evita el 500.
+                TextInput::make('subtotal')->numeric()->prefix('$')->default(0)->required()
+                    ->disabled(fn (?FacturaVenta $record) => $record?->emitida_at !== null)
+                    ->dehydrated(fn (?FacturaVenta $record) => $record?->emitida_at === null),
+                TextInput::make('descuento')->numeric()->prefix('$')->default(0)
+                    ->disabled(fn (?FacturaVenta $record) => $record?->emitida_at !== null)
+                    ->dehydrated(fn (?FacturaVenta $record) => $record?->emitida_at === null),
+                TextInput::make('impuestos')->numeric()->prefix('$')->default(0)
+                    ->disabled(fn (?FacturaVenta $record) => $record?->emitida_at !== null)
+                    ->dehydrated(fn (?FacturaVenta $record) => $record?->emitida_at === null),
+                TextInput::make('total')->numeric()->prefix('$')->required()->helperText('subtotal - descuento + impuestos')
+                    ->disabled(fn (?FacturaVenta $record) => $record?->emitida_at !== null)
+                    ->dehydrated(fn (?FacturaVenta $record) => $record?->emitida_at === null),
                 TextInput::make('saldo')->numeric()->prefix('$')->disabled()->dehydrated(false)->helperText('Se recalcula con los pagos'),
             ])->columns(2),
         ]);
@@ -249,6 +272,24 @@ class FacturaVentaResource extends Resource
                                 ->body("Aplicado $" . number_format((float) $pago->monto_aplicado, 0, ',', '.') .
                                        " · Diferencia clasificada como: " . ($pago->clasificacion_diferencia?->label() ?? '—'))
                                 ->success()->send();
+                        } catch (\RuntimeException $e) {
+                            // Re-audit UX N1 · antes las guardas de negocio
+                            // (factura no puede recibir pago, saving inmutable,
+                            // partida doble descuadrada) reventaban con la
+                            // pantalla roja Laravel Whoops. Ahora se traducen
+                            // a Notification::danger con el mensaje humano.
+                            Notification::make()
+                                ->title('No se pudo registrar el pago')
+                                ->body($e->getMessage())
+                                ->danger()->persistent()->send();
+                        } catch (\Throwable $e) {
+                            \Illuminate\Support\Facades\Log::error('[Filament pago] error inesperado', [
+                                'factura_id' => $record->id, 'error' => $e->getMessage(),
+                            ]);
+                            Notification::make()
+                                ->title('Error inesperado al registrar el pago')
+                                ->body('Se registró el error para revisión. Intenta de nuevo.')
+                                ->danger()->send();
                         } finally {
                             \Illuminate\Support\Facades\Cache::forget($key);
                         }

@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed } from 'vue';
 import { Head, router, Link } from '@inertiajs/vue3';
+import { useMoney } from '@/composables/useMoney';
 import { useIntervalFn } from '@vueuse/core';
 import { Wallet, TrendingUp, AlertCircle, Calendar, Phone, ExternalLink, FileText } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
@@ -34,7 +35,7 @@ useIntervalFn(() => {
     });
 }, () => Math.max(10, props.refreshSeg) * 1000);
 
-const fmtCOP = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('es-CO');
+const { money: fmtCOP } = useMoney();
 const fmtHora = (d) => d ? d.toLocaleTimeString('es-CO') : '—';
 
 const cobradoDatasets = computed(() => [{

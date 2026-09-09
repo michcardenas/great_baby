@@ -1,5 +1,6 @@
 <script setup>
 import { Head } from '@inertiajs/vue3';
+import { useMoney } from '@/composables/useMoney';
 import { BarChart3, AlertTriangle, DollarSign, Users } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 
@@ -10,7 +11,7 @@ const props = defineProps({
     consignaciones: { type: Array, required: true },
 });
 
-const money = (n) => '$' + Number(n || 0).toLocaleString('es-CO', { maximumFractionDigits: 0 });
+const { money } = useMoney();
 </script>
 
 <template>
@@ -47,7 +48,7 @@ const money = (n) => '$' + Number(n || 0).toLocaleString('es-CO', { maximumFract
                             <tr v-for="m in topMorosos" :key="m.contacto_id">
                                 <td class="p-2">
                                     <div class="font-medium truncate max-w-[200px]" :title="m.nombre">{{ m.nombre }}</div>
-                                    <a v-if="m.telefono" :href="`https://wa.me/57${m.telefono.replace(/\\D/g,'')}`" target="_blank" class="text-xs text-emerald-600 hover:underline">{{ m.telefono }}</a>
+                                    <a v-if="m.telefono" :href="`https://wa.me/57${m.telefono.replace(/\D/g,'')}`" target="_blank" class="text-xs text-emerald-600 hover:underline">{{ m.telefono }}</a>
                                 </td>
                                 <td class="p-2 text-right">{{ m.facturas }}</td>
                                 <td class="p-2 text-right font-bold text-red-600">{{ money(m.saldo) }}</td>

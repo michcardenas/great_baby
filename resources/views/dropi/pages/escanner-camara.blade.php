@@ -174,7 +174,7 @@
         }
 
         window.confirmarDespacho = async function (pedidoId) {
-            const r = await postJson('/dropi/escaner/despachar', { pedido_id: pedidoId });
+            const r = await postJson('/dropi/escaner/despachar', { pedido_id: pedidoId, guia: ultimaGuia });
             if (r.ok) {
                 feedback('ok'); ultimaGuia = '';
                 document.getElementById('scanner-resultado').innerHTML =

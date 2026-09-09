@@ -8,15 +8,14 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
+/**
+ * Re-audit M3 PATRÓN κ · $guarded reemplaza $fillable (consistencia η).
+ */
 class AlertaStockConfig extends Model
 {
     protected $table = 'alertas_stock_config';
 
-    protected $fillable = [
-        'variante_id', 'ubicacion_id',
-        'stock_minimo', 'stock_maximo', 'punto_reorden', 'cantidad_reorden',
-        'notificar_email', 'notificar_whatsapp', 'activa',
-    ];
+    protected $guarded = ['id', 'created_at', 'updated_at'];
 
     protected $casts = [
         'stock_minimo' => 'integer',

@@ -1,8 +1,10 @@
 <script setup>
 import { ref } from 'vue';
 import { Head, Link, router } from '@inertiajs/vue3';
-import { Users, MessageSquare, TrendingUp, Zap, Clock, User, RefreshCw } from 'lucide-vue-next';
+import { Users, MessageSquare, TrendingUp, Zap, Clock, User, RefreshCw, AlertTriangle } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import { useEscClose } from '@/composables/useEscClose';
+import { useMoney } from '@/composables/useMoney';
 
 const props = defineProps({
     segmentos: { type: Array, required: true },
@@ -13,7 +15,7 @@ const props = defineProps({
 
 const tab = ref('segmentacion'); // segmentacion | interacciones | comisiones
 
-const fmtCOP = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('es-CO');
+const { money: fmtCOP } = useMoney();
 
 const segColor = (color) => ({
     emerald: 'bg-emerald-50 border-emerald-500 text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200',
@@ -24,18 +26,24 @@ const segColor = (color) => ({
     gray: 'bg-slate-50 border-slate-400 text-slate-700 dark:bg-slate-900/30 dark:text-slate-200',
 }[color] || 'bg-slate-50 border-slate-400');
 
+// Re-audit UX #11 · modal Vue en vez de window.confirm nativo.
 const segmentando = ref(false);
-const segmentar = () => {
-    if (! window.confirm('¿Ejecutar re-segmentación de todos los clientes? Puede tardar unos segundos.')) return;
+const modalSegmentar = ref(false);
+useEscClose(modalSegmentar);
+const solicitarSegmentar = () => { modalSegmentar.value = true; };
+const confirmarSegmentar = () => {
+    if (segmentando.value) return;
     segmentando.value = true;
     router.post('/app/crm/segmentar', {}, {
         preserveScroll: true,
+        onSuccess: () => { modalSegmentar.value = false; },
         onFinish: () => { segmentando.value = false; },
     });
 };
 
 // Formulario rápido interacción
 const modalNueva = ref(false);
+useEscClose(modalNueva);
 const form = ref({ contacto_id: '', tipo: 'llamada', asunto: '', detalle: '', resultado: '', proxima_accion_at: '', proxima_accion_nota: '' });
 const contactosBusqueda = ref([]);
 const buscarContacto = ref('');
@@ -99,7 +107,7 @@ const guardarInteraccion = () => {
                     <p class="text-sm text-surface-500 mt-1">Segmentación de clientes, bitácora de interacciones y comisiones.</p>
                 </div>
                 <div class="flex items-center gap-2">
-                    <button v-if="tab === 'segmentacion'" @click="segmentar" :disabled="segmentando"
+                    <button v-if="tab === 'segmentacion'" @click="solicitarSegmentar" :disabled="segmentando"
                             class="btn-secondary text-sm">
                         <RefreshCw :class="['h-4 w-4', segmentando ? 'animate-spin' : '']"/>
                         Re-segmentar
@@ -133,7 +141,7 @@ const guardarInteraccion = () => {
                 <div v-if="! segmentos.length" class="card p-12 text-center text-surface-500">
                     <Users class="h-10 w-10 mx-auto opacity-40"/>
                     <div class="text-sm mt-2">Todavía no se ha ejecutado la segmentación.</div>
-                    <button @click="segmentar" class="btn-primary mt-4 mx-auto">Ejecutar ahora</button>
+                    <button @click="solicitarSegmentar" class="btn-primary mt-4 mx-auto">Ejecutar ahora</button>
                 </div>
                 <div v-else class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
                     <div v-for="s in segmentos" :key="s.segmento"
@@ -291,6 +299,29 @@ const guardarInteraccion = () => {
                     <button @click="guardarInteraccion" :disabled="! form.contacto_id || ! form.asunto || procesandoCrm"
                             class="btn-primary flex-[2] disabled:opacity-40">
                         {{ procesandoCrm ? 'Guardando…' : 'Registrar' }}
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Re-audit UX #11 · Modal re-segmentar (reemplaza window.confirm nativo). -->
+        <div v-if="modalSegmentar" @click.self="modalSegmentar = false"
+             class="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+            <div class="card p-6 max-w-md w-full border-l-4 border-amber-500">
+                <div class="flex items-start gap-3 mb-3">
+                    <AlertTriangle class="h-6 w-6 text-amber-500 flex-shrink-0"/>
+                    <div>
+                        <h3 class="text-lg font-bold">Re-segmentar clientes</h3>
+                        <p class="text-sm text-surface-500 dark:text-surface-400 mt-1">
+                            Recalcula los segmentos VIP/Riesgo/Nuevo/Dormido de TODOS los clientes.
+                            Puede tardar unos segundos. Segmentos previos se sobrescribirán.
+                        </p>
+                    </div>
+                </div>
+                <div class="flex items-center justify-end gap-2 mt-4">
+                    <button @click="modalSegmentar = false" class="btn-ghost">Cancelar</button>
+                    <button @click="confirmarSegmentar" :disabled="segmentando" class="btn-primary bg-amber-600 hover:bg-amber-700 disabled:opacity-50">
+                        {{ segmentando ? 'Segmentando…' : 'Sí, re-segmentar' }}
                     </button>
                 </div>
             </div>

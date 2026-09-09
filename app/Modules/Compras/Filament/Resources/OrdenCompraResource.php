@@ -36,6 +36,22 @@ class OrdenCompraResource extends Resource
 
     protected static ?string $model = OrdenCompra::class;
 
+    /**
+     * Re-audit M2 PATRÓN E (SEG-C1) · sobrescribe `canEdit/canDelete` del trait
+     * `HeredaAutorizacion` para verificar ESTADO. Antes esconder el botón
+     * `->visible()` no cerraba la URL Livewire → admin editaba OC Aprobada/
+     * Recibida por URL directa y quedaba inconsistente vs asientos.
+     */
+    public static function canEdit(\Illuminate\Database\Eloquent\Model $record): bool
+    {
+        return $record->estado === EstadoOrdenCompra::Borrador;
+    }
+
+    public static function canDelete(\Illuminate\Database\Eloquent\Model $record): bool
+    {
+        return $record->estado === EstadoOrdenCompra::Borrador;
+    }
+
     protected static string|BackedEnum|null $navigationIcon = 'heroicon-o-shopping-cart';
 
     protected static ?string $navigationLabel = 'Órdenes de compra';
@@ -230,7 +246,13 @@ class OrdenCompraResource extends Resource
                     ->url(fn (OrdenCompra $r) => route('compras.orden.pdf', $r))
                     ->openUrlInNewTab(),
                 ViewAction::make(),
-                EditAction::make()->after(fn (OrdenCompra $record) => RecalcularTotalesOC::run($record)),
+                // Re-audit M2 PATRÓN E (SEG-C1 / FUNC-A1) · Edit/Delete solo si
+                // estado = Borrador. `visible()` esconde botón pero la ruta Livewire
+                // seguía abierta; Blindaje adicional en el modelo (`saving()` bloquea
+                // campos inmutables post-estado). Aquí visual + soft para el usuario.
+                EditAction::make()
+                    ->visible(fn (OrdenCompra $r) => $r->estado === EstadoOrdenCompra::Borrador)
+                    ->after(fn (OrdenCompra $record) => RecalcularTotalesOC::run($record)),
                 DeleteAction::make()->visible(fn (OrdenCompra $r) => $r->estado === EstadoOrdenCompra::Borrador),
             ])
             ->toolbarActions([

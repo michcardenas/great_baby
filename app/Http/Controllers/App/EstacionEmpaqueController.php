@@ -38,7 +38,23 @@ class EstacionEmpaqueController extends Controller implements HasMiddleware
 
     public function index(Request $request): Response
     {
+        // Re-audit UX#1 · deep-link `?pedido=X` desde Alistador → si el pedido
+        // pertenece a este operario y está en estado empacable, se pre-selecciona
+        // en sesión, cerrando el flujo Tomar → Ir a Estación.
+        $deepLinkPedido = (int) $request->input('pedido', 0);
         $pedidoActivoId = (int) $request->session()->get('empaque.pedidoActivoId', 0) ?: null;
+
+        if ($deepLinkPedido > 0) {
+            $ownsLock = \App\Modules\Dropi\Models\DropiAlistadorLock::where('pedido_id', $deepLinkPedido)
+                ->where('alistador_id', $request->user()->id)->exists();
+            $pedidoOkDeep = DropiPedido::where('id', $deepLinkPedido)
+                ->whereIn('estado', [EstadoPedidoDropi::Pending, EstadoPedidoDropi::Alistando])
+                ->exists();
+            if ($ownsLock && $pedidoOkDeep) {
+                $request->session()->put('empaque.pedidoActivoId', $deepLinkPedido);
+                $pedidoActivoId = $deepLinkPedido;
+            }
+        }
 
         // Validar que el pedido sigue siendo del operario y en estado empacable.
         // Si no, limpiar la sesión para evitar UI fantasma.
@@ -50,7 +66,10 @@ class EstacionEmpaqueController extends Controller implements HasMiddleware
             $pedidoOk = DropiPedido::where('id', $pedidoActivoId)
                 ->whereIn('estado', [EstadoPedidoDropi::Pending, EstadoPedidoDropi::Alistando])
                 ->exists();
-            if (! $registro || ! $pedidoOk) {
+            // Si el deep-link acaba de guardar pero aún no hay EmpaqueRegistro,
+            // dejamos pasar sin borrar la sesión — el usuario todavía no escaneó.
+            $recienDeepLinked = $deepLinkPedido === $pedidoActivoId;
+            if ((! $registro && ! $recienDeepLinked) || ! $pedidoOk) {
                 $request->session()->forget('empaque.pedidoActivoId');
                 $pedidoActivoId = null;
             }

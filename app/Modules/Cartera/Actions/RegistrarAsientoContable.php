@@ -9,10 +9,14 @@ use Illuminate\Support\Facades\DB;
 use Lorisleiva\Actions\Concerns\AsAction;
 
 /**
- * Registra los asientos de partida doble en movimientos_contables.
- * Cuentas usadas (PUC colombiano estándar):
- *   1355 - Impuestos anticipos y saldos a favor
+ * Registra los asientos de partida doble en movimientos_contables usando
+ * el helper atómico `MovimientoContable::registrarAsientoAtomico` que valida
+ * ΣDebe = ΣHaber ANTES de commitear. Esto convierte cualquier factura mal
+ * armada en excepción — nada de asientos silenciosamente descuadrados.
+ *
+ * Cuentas PUC usadas (PUC colombiano estándar):
  *   1305 - Clientes B2B (CxC)
+ *   1355 - Impuestos anticipos y saldos a favor
  *   4135 - Comercio al por mayor y menor (ingreso)
  *   2408 - IVA por pagar
  *   1105 - Caja / 1110 - Bancos
@@ -29,41 +33,45 @@ class RegistrarAsientoContable
         return DB::transaction(function () use ($factura) {
             $this->limpiarPrevios($factura);
             $terceroTipo = 'App\\Models\\Contacto';
+            $userId = auth()->id();
+
+            $lineas = [];
 
             // CxC al cliente
-            MovimientoContable::create([
+            $lineas[] = [
                 'fecha' => $factura->fecha_emision,
                 'cuenta_puc' => '1305', 'tercero_type' => $terceroTipo, 'tercero_id' => $factura->contacto_id,
-                'debe' => $factura->total, 'haber' => 0,
+                'debe' => (float) $factura->total, 'haber' => 0,
                 'origen_type' => FacturaVenta::class, 'origen_id' => $factura->id,
                 'descripcion' => "Factura {$factura->numero} — {$factura->contacto?->nombreDisplay()}",
-                'user_id' => auth()->id(),
-            ]);
+                'user_id' => $userId,
+            ];
 
             // Ingreso por venta
             $ingreso = (float) $factura->subtotal - (float) $factura->descuento;
-            MovimientoContable::create([
+            $lineas[] = [
                 'fecha' => $factura->fecha_emision,
                 'cuenta_puc' => '4135', 'tercero_type' => $terceroTipo, 'tercero_id' => $factura->contacto_id,
                 'debe' => 0, 'haber' => $ingreso,
                 'origen_type' => FacturaVenta::class, 'origen_id' => $factura->id,
                 'descripcion' => "Venta {$factura->numero}",
-                'user_id' => auth()->id(),
-            ]);
+                'user_id' => $userId,
+            ];
 
             // IVA por pagar (si aplica)
             if ((float) $factura->impuestos > 0) {
-                MovimientoContable::create([
+                $lineas[] = [
                     'fecha' => $factura->fecha_emision,
                     'cuenta_puc' => '2408', 'tercero_type' => $terceroTipo, 'tercero_id' => $factura->contacto_id,
-                    'debe' => 0, 'haber' => $factura->impuestos,
+                    'debe' => 0, 'haber' => (float) $factura->impuestos,
                     'origen_type' => FacturaVenta::class, 'origen_id' => $factura->id,
                     'descripcion' => "IVA factura {$factura->numero}",
-                    'user_id' => auth()->id(),
-                ]);
+                    'user_id' => $userId,
+                ];
             }
 
-            return 2 + ((float) $factura->impuestos > 0 ? 1 : 0);
+            // Raíz C · valida partida doble antes de commit.
+            return MovimientoContable::registrarAsientoAtomico($lineas);
         });
     }
 
@@ -73,29 +81,30 @@ class RegistrarAsientoContable
             $this->limpiarPrevios($pago);
             $terceroTipo = 'App\\Models\\Contacto';
             $cuentaCaja = $pago->medio_pago === 'efectivo' ? '1105' : '1110';
+            $userId = auth()->id();
+
+            $lineas = [];
 
             // Ingreso a caja/banco
-            MovimientoContable::create([
+            $lineas[] = [
                 'fecha' => $pago->fecha,
                 'cuenta_puc' => $cuentaCaja, 'tercero_type' => $terceroTipo, 'tercero_id' => $pago->contacto_id,
-                'debe' => $pago->monto_recibido, 'haber' => 0,
+                'debe' => (float) $pago->monto_recibido, 'haber' => 0,
                 'origen_type' => PagoVenta::class, 'origen_id' => $pago->id,
                 'descripcion' => "Pago {$pago->medio_pago} — factura {$pago->factura?->numero}",
-                'user_id' => auth()->id(),
-            ]);
+                'user_id' => $userId,
+            ];
 
             // Cierre de CxC por el monto aplicado
-            MovimientoContable::create([
+            $lineas[] = [
                 'fecha' => $pago->fecha,
                 'cuenta_puc' => '1305', 'tercero_type' => $terceroTipo, 'tercero_id' => $pago->contacto_id,
-                'debe' => 0, 'haber' => $pago->monto_aplicado,
+                'debe' => 0, 'haber' => (float) $pago->monto_aplicado,
                 'origen_type' => PagoVenta::class, 'origen_id' => $pago->id,
                 'descripcion' => "Aplicación pago factura {$pago->factura?->numero}",
-                'user_id' => auth()->id(),
-            ]);
+                'user_id' => $userId,
+            ];
 
-            // Si hay diferencia clasificada como descuento o flete, asiento adicional
-            $movs = 2;
             $dif = (float) $pago->diferencia;
             if ($dif > 0 && $pago->clasificacion_diferencia) {
                 $cuenta = match ($pago->clasificacion_diferencia->value) {
@@ -104,42 +113,45 @@ class RegistrarAsientoContable
                     default => null,
                 };
                 if ($cuenta) {
-                    MovimientoContable::create([
+                    $lineas[] = [
                         'fecha' => $pago->fecha,
                         'cuenta_puc' => $cuenta, 'tercero_type' => $terceroTipo, 'tercero_id' => $pago->contacto_id,
                         'debe' => $dif, 'haber' => 0,
                         'origen_type' => PagoVenta::class, 'origen_id' => $pago->id,
                         'descripcion' => "Ajuste: " . $pago->clasificacion_diferencia->label(),
-                        'user_id' => auth()->id(),
-                    ]);
-                    $movs++;
+                        'user_id' => $userId,
+                    ];
                 }
             }
 
-            // SOBREPAGO: si el cliente pagó de más, cuadramos la partida doble con 2805 anticipos
-            // Antes: recibido(debe) > aplicado(haber) → descuadre. Ahora: haber 2805 = |dif|.
+            // SOBREPAGO → 2805 anticipos
             $sobrepago = (float) $pago->monto_recibido - (float) $pago->monto_aplicado - max($dif, 0);
             if ($sobrepago > 0.009) {
-                MovimientoContable::create([
+                $lineas[] = [
                     'fecha' => $pago->fecha,
                     'cuenta_puc' => '2805', 'tercero_type' => $terceroTipo, 'tercero_id' => $pago->contacto_id,
                     'debe' => 0, 'haber' => $sobrepago,
                     'origen_type' => PagoVenta::class, 'origen_id' => $pago->id,
                     'descripcion' => "Sobrepago cliente — anticipo a favor por \${$sobrepago}",
-                    'user_id' => auth()->id(),
-                ]);
-                $movs++;
+                    'user_id' => $userId,
+                ];
             }
 
-            return $movs;
+            // Raíz C · valida partida doble antes de commit.
+            return MovimientoContable::registrarAsientoAtomico($lineas);
         });
     }
 
     protected function limpiarPrevios($modelo): void
     {
+        // Re-audit RAÍZ Y (R3-1 datos) · forceDelete físico. Antes soft-borraba
+        // → cada re-corrida acumulaba filas soft-deleted + vivas (shadow rows),
+        // hinchaba `audits`, y `MovimientoContable::withTrashed()` mostraba
+        // versiones contradictorias del mismo hecho. Un asiento previo a la
+        // re-corrida es basura — el libro DIAN vive en NC/facturas emitidas.
         MovimientoContable::query()
             ->where('origen_type', get_class($modelo))
             ->where('origen_id', $modelo->id)
-            ->delete();
+            ->forceDelete();
     }
 }

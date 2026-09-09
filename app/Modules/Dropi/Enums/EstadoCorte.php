@@ -2,21 +2,23 @@
 
 namespace App\Modules\Dropi\Enums;
 
+/**
+ * Estados del corte diario Dropi. Sólo dos estados reales:
+ *  - Abierto : puede recibir pedidos.
+ *  - Cerrado : congelado (hash + manifiesto DIAN + remisiones ARI). No se puede editar.
+ *
+ * P6 · Los estados intermedios que existían antes (alistando/empacando/despachado)
+ * nunca se seteaban en el flujo — código muerto que confundía a los widgets. Eliminados.
+ */
 enum EstadoCorte: string
 {
     case Abierto = 'abierto';
-    case Alistando = 'alistando';
-    case Empacando = 'empacando';
-    case Despachado = 'despachado';
     case Cerrado = 'cerrado';
 
     public function label(): string
     {
         return match ($this) {
             self::Abierto => 'Abierto',
-            self::Alistando => 'Alistando',
-            self::Empacando => 'Empacando',
-            self::Despachado => 'Despachado',
             self::Cerrado => 'Cerrado',
         };
     }

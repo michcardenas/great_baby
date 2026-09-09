@@ -17,20 +17,38 @@ class RecepcionCompra extends Model implements AuditableContract
 
     protected $table = 'compras_recepciones';
 
-    // Fix auditor #20: 'estado', 'confirmada_at', 'total_recibido' sólo se setean desde RecibirMercancia.
-    protected $fillable = [
-        'numero', 'orden_id', 'bodega_id', 'recibido_por',
-        'fecha_recepcion', 'remision_proveedor', 'factura_proveedor', 'transportista',
-        'observaciones',
-    ];
-
-    protected static array $backendOnly = ['estado', 'confirmada_at', 'total_recibido'];
+    // Re-audit M2 R3 PATRÓN Q (DATOS-A3) · $guarded + guard post-confirmada.
+    //   Antes $rc->update(['estado'=>'borrador']) revertía sin reversar el
+    //   InventarioMovimiento ni el MovimientoContable → stock/asiento huérfanos.
+    protected $guarded = ['id'];
 
     protected $casts = [
         'fecha_recepcion' => 'date',
         'confirmada_at' => 'datetime',
         'total_recibido' => 'decimal:2',
     ];
+
+    /**
+     * Re-audit M2 R3 PATRÓN Q · una vez confirmada, sólo `observaciones` puede
+     *   cambiar. Sin esto un update revertía estado sin reversar kardex/contab.
+     */
+    protected static function booted(): void
+    {
+        static::saving(function (RecepcionCompra $rc) {
+            if (! $rc->exists) return;
+            if ($rc->getOriginal('estado') !== 'confirmada') return;
+
+            $mutables = ['observaciones', 'updated_at'];
+            foreach ($rc->getDirty() as $campo => $_) {
+                if (! in_array($campo, $mutables, true)) {
+                    throw new \RuntimeException(sprintf(
+                        'Recepción %s (confirmada): campo "%s" es inmutable. Crea una nueva recepción o anula.',
+                        $rc->getOriginal('numero'), $campo,
+                    ));
+                }
+            }
+        });
+    }
 
     public function orden(): BelongsTo
     {
@@ -52,16 +70,20 @@ class RecepcionCompra extends Model implements AuditableContract
         return $this->hasMany(RecepcionCompraItem::class, 'recepcion_id');
     }
 
+    /**
+     * Re-audit M2 PATRÓN C + I · consecutivo atómico en TZ Colombia.
+     */
     public static function siguienteNumero(): string
     {
-        $year = now()->year;
-        $ultimo = static::query()
-            ->where('numero', 'like', "REC-{$year}-%")
-            ->orderByDesc('id')
-            ->value('numero');
-
-        $seq = $ultimo ? ((int) substr($ultimo, -6)) + 1 : 1;
-
-        return sprintf('REC-%d-%06d', $year, $seq);
+        $year = now('America/Bogota')->year;
+        return \Illuminate\Support\Facades\DB::transaction(function () use ($year) {
+            $ultimo = static::query()
+                ->where('numero', 'like', "REC-{$year}-%")
+                ->lockForUpdate()
+                ->orderByDesc('id')
+                ->value('numero');
+            $seq = $ultimo ? ((int) substr($ultimo, -6)) + 1 : 1;
+            return sprintf('REC-%d-%06d', $year, $seq);
+        });
     }
 }

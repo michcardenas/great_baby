@@ -31,6 +31,20 @@ class RecepcionResource extends Resource
 
     protected static ?string $model = RecepcionCompra::class;
 
+    /**
+     * Re-audit M2 PATRÓN E (SEG-C1) · Recepciones confirmadas son inmutables
+     * (kardex + asiento generados). Solo `borrador` puede editarse/eliminarse.
+     */
+    public static function canEdit(\Illuminate\Database\Eloquent\Model $record): bool
+    {
+        return ($record->estado ?? '') === 'borrador';
+    }
+
+    public static function canDelete(\Illuminate\Database\Eloquent\Model $record): bool
+    {
+        return ($record->estado ?? '') === 'borrador';
+    }
+
     protected static string|BackedEnum|null $navigationIcon = 'heroicon-o-inbox-arrow-down';
 
     protected static ?string $navigationLabel = 'Recepciones';

@@ -6,9 +6,14 @@ use App\Modules\Dropi\Models\Producto;
 use App\Modules\Dropi\Models\ProductoVariante;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use OwenIt\Auditing\Auditable;
+use OwenIt\Auditing\Contracts\Auditable as AuditableContract;
 
-class ImportacionLinea extends Model
+// Re-audit M2 R3 PATRÓN R · Auditable — traza cambios costo prorrateado post-liquidación.
+class ImportacionLinea extends Model implements AuditableContract
 {
+    use Auditable;
+
     protected $table = 'compras_importacion_lineas';
 
     protected $fillable = [

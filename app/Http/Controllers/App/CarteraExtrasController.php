@@ -133,7 +133,7 @@ class CarteraExtrasController extends Controller implements HasMiddleware
     public function solicitudesIndex(Request $request): Response
     {
         $estado = (string) $request->input('estado', '');
-        $sols = SolicitudCredito::with(['contacto:id,nombre_completo,razon_social', 'solicitadaPor:id,name'])
+        $sols = SolicitudCredito::with(['contacto:id,nombre_completo,razon_social', 'solicitante:id,name'])
             ->when($estado, fn ($q) => $q->where('estado', $estado))
             ->orderByDesc('id')->paginate(30);
 
@@ -144,7 +144,7 @@ class CarteraExtrasController extends Controller implements HasMiddleware
                 'monto_pedido' => (float) $s->monto_pedido,
                 'motivo' => $s->motivo_retencion,
                 'estado' => $s->estado, 'nivel' => $s->nivel_actual,
-                'solicitada_por' => $s->solicitadaPor?->name,
+                'solicitada_por' => $s->solicitante?->name,
                 'creada' => $s->created_at?->format('Y-m-d H:i'),
                 'resuelta' => $s->resuelta_at?->format('Y-m-d H:i'),
             ]),
@@ -158,7 +158,23 @@ class CarteraExtrasController extends Controller implements HasMiddleware
             'decision' => ['required', 'in:aprobar,rechazar,escalar'],
             'notas' => ['required', 'string', 'min:10', 'max:500'],
         ]);
-        $s = SolicitudCredito::findOrFail($solicitud);
+
+        // Re-audit FUNC C5 · guard estado + guard nivel vs rol del usuario.
+        $s = SolicitudCredito::where('estado', 'pendiente')->findOrFail($solicitud);
+
+        // Nivel_actual del escalamiento determina qué rol puede resolver.
+        //   supervisor  → Cobrador, Aracely, Gerencia
+        //   gerencia    → SOLO Aracely / Gerencia
+        //   direccion   → SOLO Aracely / Gerencia (Director si existe)
+        $u = auth()->user();
+        $nivel = strtolower((string) $s->nivel_actual);
+        $puedeResolver = match ($nivel) {
+            'gerencia', 'direccion' => $u->esAracely() || $u->hasRole('Gerente'),
+            default => $u->esAracely() || $u->hasAnyRole(['Cobrador', 'Contador', 'Gerente']),
+        };
+        abort_unless($puedeResolver, 403,
+            "Tu rol no puede resolver solicitudes escaladas a {$nivel}. Escalar a Gerencia.");
+
         $nuevo = ['aprobar' => 'aprobada', 'rechazar' => 'rechazada', 'escalar' => 'escalada'][$data['decision']];
         $s->update([
             'estado' => $nuevo,
@@ -172,13 +188,77 @@ class CarteraExtrasController extends Controller implements HasMiddleware
     // ---------- MOVIMIENTO CONTABLE ----------
     public function movimientos(Request $request): Response
     {
-        $desde = $request->input('desde', now()->startOfMonth()->toDateString());
-        $hasta = $request->input('hasta', now()->endOfMonth()->toDateString());
-        $cuenta = trim((string) $request->input('cuenta', ''));
+        // Re-audit M5 SEG-A3 + R2 SEG-M1 · regex numérico BLOQUEA inyección LIKE.
+        // Sin regex, `?cuenta=%` o `?cuentas=_305` interpretaba wildcards LIKE y
+        // devolvía TODAS las cuentas (nómina, IVA, patrimonio) — enumeración
+        // silenciosa del PUC completo, peor aún para roles no-esContable.
+        $data = $request->validate([
+            'desde' => ['nullable', 'date'],
+            'hasta' => ['nullable', 'date', 'after_or_equal:desde'],
+            'cuenta' => ['nullable', 'string', 'regex:/^[0-9]{1,10}$/'],
+            'cuentas' => ['nullable', 'string', 'regex:/^[0-9]{1,10}(,[0-9]{1,10}){0,20}$/'],
+            'incluir_anulados' => ['nullable', 'boolean'],
+        ]);
 
-        $movs = MovimientoContable::whereBetween('fecha', [$desde, $hasta])
+        $desde = $data['desde'] ?? now('America/Bogota')->startOfMonth()->toDateString();
+        $hasta = $data['hasta'] ?? now('America/Bogota')->endOfMonth()->toDateString();
+        $cuenta = trim((string) ($data['cuenta'] ?? ''));
+        // Re-audit R2 PATRÓN α · toggle propagado al drill-down. Antes el hub
+        // saltaba a esta vista y perdía los reversos silenciosamente.
+        $incluirAnulados = (bool) ($data['incluir_anulados'] ?? false);
+
+        // Re-audit M5 FUNC-A4 · aceptar `cuentas=2365,2367,2368` para retenciones DIAN.
+        $cuentasMulti = collect(explode(',', (string) ($data['cuentas'] ?? '')))
+            ->map(fn ($c) => trim($c))
+            ->filter()
+            ->values();
+
+        // Re-audit R2 SEG-M3 · scope de CUENTA (Cobrador solo ve 13xx).
+        // Re-audit R4 SEG-A1 · limitación conocida: NO hay scope por tercero
+        // porque no existe modelo cobrador↔contactos (requeriría fase de RRHH).
+        // Cobrador legítimo ve toda la cartera de todos los vendedores. Registro
+        // en audit para trazabilidad hasta que negocio defina si necesita
+        // aislamiento por cartera asignada.
+        $u = $request->user();
+        $scopeCartera = ! ($u?->esContable() ?? false);
+
+        // Re-audit R4 SEG-M1 · bitácora de consulta con anulados.
+        if ($incluirAnulados) {
+            \Illuminate\Support\Facades\Log::channel(config('logging.channels.audit') ? 'audit' : 'stack')
+                ->info('cartera.movimientos.incluir_anulados', [
+                    'user_id' => $u?->id, 'rango' => [$desde, $hasta],
+                    'cuenta' => $cuenta ?: null, 'cuentas' => $cuentasMulti->join(','),
+                ]);
+        }
+
+        $base = MovimientoContable::query()
+            ->when($incluirAnulados, fn ($q) => $q->withTrashed())
+            ->whereBetween('fecha', [$desde, $hasta])
+            ->when($scopeCartera, fn ($q) => $q->where('cuenta_puc', 'like', '13%'))
+            // Re-audit R2 DATOS-A2 · whereIn cuando son códigos exactos (aprovecha
+            // el índice compuesto inverso). Solo cae a LIKE prefix cuando el usuario
+            // pasa 1 código y quiere el árbol completo (?cuenta=13 → todo cartera).
+            // Notación PUC: prefijos generan LIKE `X%` — 2365 captura 236505 (RETEFTE
+            // compras) y 236525 (servicios). Seguro contra injection porque el regex
+            // del validate limita a dígitos. whereIn no serviría acá (asientos van
+            // a subcuentas, no al grupo padre).
             ->when($cuenta, fn ($q) => $q->where('cuenta_puc', 'like', $cuenta . '%'))
-            ->orderByDesc('fecha')->orderByDesc('id')->paginate(100);
+            ->when($cuentasMulti->isNotEmpty(), function ($q) use ($cuentasMulti) {
+                $q->where(function ($qq) use ($cuentasMulti) {
+                    foreach ($cuentasMulti as $c) {
+                        $qq->orWhere('cuenta_puc', 'like', $c . '%');
+                    }
+                });
+            });
+
+        // H8 · totales del rango filtrado (∑ debe / ∑ haber / diferencia / count).
+        // Antes: la UI solo mostraba la suma de la página actual → inútil para
+        // conciliar un mes. Ahora `totales` viene del backend con el rango completo.
+        $totales = (clone $base)
+            ->selectRaw('COALESCE(SUM(debe),0) AS suma_debe, COALESCE(SUM(haber),0) AS suma_haber, COUNT(*) AS total_filas')
+            ->first();
+
+        $movs = $base->orderByDesc('fecha')->orderByDesc('id')->paginate(100)->withQueryString();
 
         return Inertia::render('Cartera/Movimientos/Index', [
             'movimientos' => $movs->through(fn ($m) => [
@@ -190,7 +270,13 @@ class CarteraExtrasController extends Controller implements HasMiddleware
                 'descripcion' => $m->descripcion,
                 'origen' => $m->origen_type ? class_basename($m->origen_type) . '#' . $m->origen_id : '—',
             ]),
-            'filtros' => ['desde' => $desde, 'hasta' => $hasta, 'cuenta' => $cuenta ?: null],
+            'filtros' => ['desde' => $desde, 'hasta' => $hasta, 'cuenta' => $cuenta ?: null, 'cuentas' => $cuentasMulti->isNotEmpty() ? $cuentasMulti->join(',') : null, 'incluir_anulados' => $incluirAnulados],
+            'totales' => [
+                'suma_debe' => (float) ($totales->suma_debe ?? 0),
+                'suma_haber' => (float) ($totales->suma_haber ?? 0),
+                'diferencia' => (float) (($totales->suma_debe ?? 0) - ($totales->suma_haber ?? 0)),
+                'total_filas' => (int) ($totales->total_filas ?? 0),
+            ],
         ]);
     }
 }

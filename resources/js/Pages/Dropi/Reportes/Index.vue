@@ -1,7 +1,9 @@
 <script setup>
-import { Head } from '@inertiajs/vue3';
-import { BarChart3, TrendingUp, TrendingDown, AlertTriangle, Banknote } from 'lucide-vue-next';
+import { ref, computed } from 'vue';
+import { Head, router } from '@inertiajs/vue3';
+import { BarChart3, TrendingUp, TrendingDown, AlertTriangle, Banknote, Download } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import { useMoney } from '@/composables/useMoney';
 
 const props = defineProps({
     periodo: { type: Object, required: true },
@@ -11,42 +13,82 @@ const props = defineProps({
     vendedores: { type: Array, required: true },
 });
 
-const money = (n) => '$' + Number(n || 0).toLocaleString('es-CO', { maximumFractionDigits: 0 });
+const { money } = useMoney();
+
+// U19 · selector de periodo.
+const desde = ref(props.periodo.inicio ?? new Date().toISOString().slice(0, 10));
+const hasta = ref(props.periodo.fin ?? new Date().toISOString().slice(0, 10));
+const filtrar = () => router.get('/app/dropi/reportes', { desde: desde.value, hasta: hasta.value }, { preserveState: true });
+
+// U19 · export CSV — arma el archivo en el cliente, no requiere endpoint extra.
+const exportarCsv = (rows, nombre) => {
+    if (!rows.length) return;
+    const cols = Object.keys(rows[0]);
+    const csv = [
+        cols.join(','),
+        ...rows.map(r => cols.map(c => `"${String(r[c] ?? '').replace(/"/g, '""')}"`).join(',')),
+    ].join('\n');
+    const blob = new Blob(["﻿" + csv], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    // Re-audit UX#9 · timestamp evita colisión al re-exportar el mismo periodo.
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    a.download = `dropi_${nombre}_${desde.value}_${hasta.value}_${ts}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+};
 </script>
 
 <template>
     <Head title="Reportes Dropi"/>
     <AppLayout>
         <div class="space-y-4">
-            <h1 class="text-2xl font-bold flex items-center gap-2">
-                <BarChart3 class="h-6 w-6 text-brand-600"/>
-                Reportes Dropi
-            </h1>
-            <p class="text-sm text-surface-500">Periodo: {{ periodo.inicio }} → {{ periodo.fin }}</p>
+            <div class="flex items-start justify-between flex-wrap gap-3">
+                <div>
+                    <h1 class="text-2xl font-bold flex items-center gap-2">
+                        <BarChart3 class="h-6 w-6 text-brand-600"/>
+                        Reportes Dropi
+                    </h1>
+                    <p class="text-sm text-surface-500 dark:text-surface-400">
+                        Periodo: <b>{{ periodo.inicio }}</b> → <b>{{ periodo.fin }}</b>
+                    </p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <input type="date" v-model="desde" class="input"/>
+                    <input type="date" v-model="hasta" class="input"/>
+                    <button @click="filtrar" class="btn-primary">Aplicar</button>
+                </div>
+            </div>
 
             <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <div class="card p-4">
-                    <div class="text-xs uppercase text-surface-500 flex items-center gap-2"><TrendingUp class="h-3 w-3"/> Ventas mes</div>
+                    <div class="text-xs uppercase text-surface-500 dark:text-surface-400 flex items-center gap-2"><TrendingUp class="h-3 w-3"/> Ventas mes</div>
                     <div class="text-2xl font-bold mt-1 text-emerald-600">{{ money(kpis.ventas) }}</div>
                 </div>
                 <div class="card p-4">
-                    <div class="text-xs uppercase text-surface-500 flex items-center gap-2"><TrendingDown class="h-3 w-3"/> Devoluciones</div>
+                    <div class="text-xs uppercase text-surface-500 dark:text-surface-400 flex items-center gap-2"><TrendingDown class="h-3 w-3"/> Devoluciones</div>
                     <div class="text-2xl font-bold mt-1 text-red-600">{{ money(kpis.devoluciones) }}</div>
                 </div>
                 <div class="card p-4">
-                    <div class="text-xs uppercase text-surface-500 flex items-center gap-2"><Banknote class="h-3 w-3"/> Retiros banco</div>
+                    <div class="text-xs uppercase text-surface-500 dark:text-surface-400 flex items-center gap-2"><Banknote class="h-3 w-3"/> Retiros banco</div>
                     <div class="text-2xl font-bold mt-1">{{ money(kpis.retiros) }}</div>
                 </div>
-                <div class="card p-4" :class="kpis.sanciones > 0 ? 'ring-2 ring-red-500' : ''">
-                    <div class="text-xs uppercase text-surface-500 flex items-center gap-2"><AlertTriangle class="h-3 w-3"/> Sanciones</div>
+                <div class="card p-4" :class="kpis.sanciones > 0 ? 'ring-2 ring-red-500' : ''"
+                    title="Suma de diferencias por sanción Dropi (dif. precio, indemnizaciones, pagos sobre devueltos)">
+                    <div class="text-xs uppercase text-surface-500 dark:text-surface-400 flex items-center gap-2"><AlertTriangle class="h-3 w-3"/> Sanciones</div>
                     <div class="text-2xl font-bold mt-1" :class="kpis.sanciones > 0 ? 'text-red-600' : ''">{{ money(kpis.sanciones) }}</div>
                 </div>
             </div>
 
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <!-- Transportadoras -->
                 <div class="card p-4">
-                    <div class="text-xs uppercase tracking-widest font-bold text-brand-600 mb-3">🚚 Por transportadora</div>
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="text-xs uppercase tracking-widest font-bold text-brand-600">🚚 Por transportadora</div>
+                        <button @click="exportarCsv(transportadoras, 'transportadoras')" v-if="transportadoras.length"
+                            class="text-[10px] text-brand-600 hover:underline">
+                            <Download class="h-3 w-3 inline"/> CSV
+                        </button>
+                    </div>
                     <div v-if="!transportadoras.length" class="text-center py-4 text-surface-500 text-xs">Sin datos</div>
                     <table v-else class="w-full text-sm">
                         <thead class="text-[10px] text-surface-500 uppercase">
@@ -57,7 +99,7 @@ const money = (n) => '$' + Number(n || 0).toLocaleString('es-CO', { maximumFract
                             </tr>
                         </thead>
                         <tbody>
-                            <tr v-for="t in transportadoras" :key="t.nombre" class="border-t border-surface-100">
+                            <tr v-for="t in transportadoras" :key="t.nombre" class="border-t border-surface-100 dark:border-surface-800">
                                 <td class="p-1 text-xs">{{ t.nombre }}</td>
                                 <td class="p-1 text-right text-xs">{{ t.pedidos }}</td>
                                 <td class="p-1 text-right font-bold text-xs">{{ money(t.total) }}</td>
@@ -66,9 +108,14 @@ const money = (n) => '$' + Number(n || 0).toLocaleString('es-CO', { maximumFract
                     </table>
                 </div>
 
-                <!-- Ciudades -->
                 <div class="card p-4">
-                    <div class="text-xs uppercase tracking-widest font-bold text-brand-600 mb-3">🏙 Top ciudades</div>
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="text-xs uppercase tracking-widest font-bold text-brand-600">🏙 Top ciudades</div>
+                        <button @click="exportarCsv(ciudades, 'ciudades')" v-if="ciudades.length"
+                            class="text-[10px] text-brand-600 hover:underline">
+                            <Download class="h-3 w-3 inline"/> CSV
+                        </button>
+                    </div>
                     <div v-if="!ciudades.length" class="text-center py-4 text-surface-500 text-xs">Sin datos</div>
                     <table v-else class="w-full text-sm">
                         <thead class="text-[10px] text-surface-500 uppercase">
@@ -79,7 +126,7 @@ const money = (n) => '$' + Number(n || 0).toLocaleString('es-CO', { maximumFract
                             </tr>
                         </thead>
                         <tbody>
-                            <tr v-for="c in ciudades" :key="c.nombre" class="border-t border-surface-100">
+                            <tr v-for="c in ciudades" :key="c.nombre" class="border-t border-surface-100 dark:border-surface-800">
                                 <td class="p-1 text-xs">{{ c.nombre }}</td>
                                 <td class="p-1 text-right text-xs">{{ c.pedidos }}</td>
                                 <td class="p-1 text-right font-bold text-xs">{{ money(c.total) }}</td>
@@ -88,9 +135,14 @@ const money = (n) => '$' + Number(n || 0).toLocaleString('es-CO', { maximumFract
                     </table>
                 </div>
 
-                <!-- Vendedores -->
                 <div class="card p-4">
-                    <div class="text-xs uppercase tracking-widest font-bold text-brand-600 mb-3">👤 Top vendedores</div>
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="text-xs uppercase tracking-widest font-bold text-brand-600">👤 Top vendedores</div>
+                        <button @click="exportarCsv(vendedores, 'vendedores')" v-if="vendedores.length"
+                            class="text-[10px] text-brand-600 hover:underline">
+                            <Download class="h-3 w-3 inline"/> CSV
+                        </button>
+                    </div>
                     <div v-if="!vendedores.length" class="text-center py-4 text-surface-500 text-xs">Sin datos</div>
                     <table v-else class="w-full text-sm">
                         <thead class="text-[10px] text-surface-500 uppercase">
@@ -101,8 +153,8 @@ const money = (n) => '$' + Number(n || 0).toLocaleString('es-CO', { maximumFract
                             </tr>
                         </thead>
                         <tbody>
-                            <tr v-for="v in vendedores" :key="v.nombre" class="border-t border-surface-100">
-                                <td class="p-1 text-xs truncate max-w-[100px]" :title="v.nombre">{{ v.nombre }}</td>
+                            <tr v-for="v in vendedores" :key="v.nombre" class="border-t border-surface-100 dark:border-surface-800">
+                                <td class="p-1 text-xs truncate max-w-[140px]" :title="v.nombre">{{ v.nombre }}</td>
                                 <td class="p-1 text-right text-xs">{{ v.pedidos }}</td>
                                 <td class="p-1 text-right font-bold text-xs">{{ money(v.total) }}</td>
                             </tr>

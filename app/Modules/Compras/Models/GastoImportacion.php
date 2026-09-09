@@ -6,9 +6,18 @@ use App\Models\Contacto;
 use App\Modules\Compras\Enums\ConceptoGastoImportacion;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\SoftDeletes;
+use OwenIt\Auditing\Auditable;
+use OwenIt\Auditing\Contracts\Auditable as AuditableContract;
 
-class GastoImportacion extends Model
+class GastoImportacion extends Model implements AuditableContract
 {
+    // Re-audit M2 PATRÓN K (DATOS-A5) · SoftDeletes + Auditable en gasto:
+    //   Antes: eliminar un gasto post-liquidación borraba la evidencia contable
+    //   de flete/arancel — el asiento 1435/2205 quedaba sin soporte. Ahora se
+    //   soft-borra (DIAN 5 años) y se audita el cambio.
+    use SoftDeletes, Auditable;
+
     protected $table = 'compras_importacion_gastos';
 
     protected $fillable = [

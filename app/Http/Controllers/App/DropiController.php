@@ -126,8 +126,18 @@ class DropiController extends Controller implements HasMiddleware
     private function wallet(): array
     {
         $total = (float) DropiWalletMovimiento::sum('monto');
+        // Re-audit H3 func · SOLO restar sanciones cuyo monto NO entró al wallet.
+        // `diferencia_precio` ya está reflejada en el `wallet.monto` menor recibido
+        // (restarla dos veces = doble contabilidad). `pago_sobre_devuelto` y
+        // `categoria_explicita` (indemnizaciones) sí requieren resta explícita.
+        $sanciones = (float) \App\Modules\Dropi\Models\DropiSancion::query()
+            ->whereIn('tipo', ['pago_sobre_devuelto', 'categoria_explicita'])
+            ->sum('diferencia');
+        $saldoNeto = $total - $sanciones;
         return [
-            'saldo' => $total,
+            'saldo' => $saldoNeto,
+            'saldo_bruto' => $total,
+            'sanciones_total' => $sanciones,
             'movimientos' => DropiWalletMovimiento::orderByDesc('fecha')->limit(20)->get()->map(function ($m) {
                 $tipo = is_object($m->tipo) ? ($m->tipo->value ?? (string) $m->tipo) : (string) $m->tipo;
                 $fuente = is_array($m->fuente) ? json_encode($m->fuente, JSON_UNESCAPED_UNICODE) : (string) ($m->fuente ?? '');

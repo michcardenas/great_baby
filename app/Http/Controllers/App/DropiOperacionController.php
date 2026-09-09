@@ -3,35 +3,55 @@
 namespace App\Http\Controllers\App;
 
 use App\Http\Controllers\Controller;
+use App\Modules\Dropi\Actions\ConfirmarEmpaqueYSiguiente;
+use App\Modules\Dropi\Actions\RegistrarDevolucion;
+use App\Modules\Dropi\Enums\DestinoDevolucion;
 use App\Modules\Dropi\Enums\EstadoPedidoDropi;
 use App\Modules\Dropi\Models\DropiAlistadorLock;
 use App\Modules\Dropi\Models\DropiCorte;
 use App\Modules\Dropi\Models\DropiDevolucion;
-use App\Modules\Dropi\Models\DropiEstadoBitacora;
 use App\Modules\Dropi\Models\DropiPedido;
+use App\Modules\Dropi\Models\DropiWalletMovimiento;
 use Illuminate\Http\Request;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Routing\Controllers\HasMiddleware;
 use Illuminate\Routing\Controllers\Middleware;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 use Inertia\Inertia;
 use Inertia\Response;
+use Throwable;
 
 /**
- * Controladora de operación Dropi (paridad con Filament Vue migrado):
+ * Operación Dropi (paridad Vue con Filament):
  *  - Vista del Alistador (recolección + empaque)
- *  - Registrar Devolución
+ *  - Registrar Devolución (delega a Action canónica)
  *  - Escáner cámara
  *  - Discrepancias wallet
+ *
+ * REGLA DE ORO: los cambios de estado se hacen SIEMPRE con $pedido->transicionar(),
+ * y las Actions canónicas (RegistrarDevolucion, ConfirmarEmpaqueYSiguiente) mandan
+ * sobre cualquier atajo. Nada de $pedido->update(['estado' => ...]) suelto.
  */
 class DropiOperacionController extends Controller implements HasMiddleware
 {
     public static function middleware(): array
     {
+        // N2 · Discrepancias muestra PII de clientes + montos por cobrar → SOLO Aracely.
+        //     El resto (alistador, tomar, empacar, devolucionForm/Guardar, escanerCamara/Buscar)
+        //     puede seguir habilitado para Alistador.
         return [
             new Middleware(function (Request $r, \Closure $next) {
                 $u = $r->user();
-                abort_unless($u && ($u->esAracely() || method_exists($u, 'esAlistador') && $u->esAlistador()), 403);
+                abort_unless($u, 403);
+
+                $endpointsSoloAdmin = ['discrepancias'];
+                $accion = $r->route()->getActionMethod();
+                if (in_array($accion, $endpointsSoloAdmin, true) && ! $u->esAracely()) {
+                    abort(403, 'Solo Aracely/Gerencia puede ver discrepancias.');
+                }
+
+                abort_unless($u->esAracely() || (method_exists($u, 'esAlistador') && $u->esAlistador()), 403);
                 return $next($r);
             }),
         ];
@@ -84,7 +104,7 @@ class DropiOperacionController extends Controller implements HasMiddleware
                 ->pluck('pedido_id');
 
             $empaque = DropiPedido::where('corte_id', $corteId)
-                ->whereIn('estado', [EstadoPedidoDropi::Pending, EstadoPedidoDropi::Alistando])
+                ->whereIn('estado', [EstadoPedidoDropi::Pending, EstadoPedidoDropi::PendienteInventario, EstadoPedidoDropi::Alistando])
                 ->whereNotIn('id', $bloqueadosPorOtros)
                 ->orderBy('created_at')
                 ->limit(20)
@@ -96,6 +116,8 @@ class DropiOperacionController extends Controller implements HasMiddleware
                     'ciudad' => $p->cliente_ciudad,
                     'monto' => (float) $p->monto_esperado_proveedor,
                     'estado' => is_object($p->estado) ? $p->estado->value : $p->estado,
+                    'items_count' => (int) $p->items()->count(),
+                    'items_unidades' => (int) $p->items()->sum('cantidad'),
                 ])->all();
         }
 
@@ -107,63 +129,79 @@ class DropiOperacionController extends Controller implements HasMiddleware
         ]);
     }
 
+    /**
+     * Alistador reclama un pedido para empacar. Toma el lock y transiciona el
+     * estado a Alistando (idempotente).
+     */
     public function tomarPedido(int $pedidoId): RedirectResponse
     {
         $userId = auth()->id();
-        DB::transaction(function () use ($pedidoId, $userId) {
-            $lock = DropiAlistadorLock::firstOrCreate(['pedido_id' => $pedidoId], ['alistador_id' => $userId]);
-            if ($lock->alistador_id !== $userId) {
-                abort(409, 'Otro alistador ya está empacando este pedido.');
-            }
-            $lock->update(['heartbeat_at' => now()]);
-            $p = DropiPedido::find($pedidoId);
-            if ($p && $p->estado !== EstadoPedidoDropi::Alistando) {
-                $anterior = is_object($p->estado) ? $p->estado->value : $p->estado;
-                $p->update(['estado' => EstadoPedidoDropi::Alistando]);
-                DropiEstadoBitacora::create([
-                    'pedido_id' => $pedidoId,
-                    'estado_desde' => $anterior,
-                    'estado_hasta' => EstadoPedidoDropi::Alistando->value,
-                    'fuente' => 'manual',
-                    'user_id' => $userId,
-                ]);
-            }
-        });
+        try {
+            DB::transaction(function () use ($pedidoId, $userId) {
+                $lock = DropiAlistadorLock::firstOrCreate(['pedido_id' => $pedidoId], ['alistador_id' => $userId]);
+                if ($lock->alistador_id !== $userId) {
+                    abort(409, 'Otro alistador ya está empacando este pedido.');
+                }
+                $lock->update(['heartbeat_at' => now()]);
+                $p = DropiPedido::find($pedidoId);
+                if ($p && (! ($p->estado instanceof EstadoPedidoDropi) || $p->estado !== EstadoPedidoDropi::Alistando)) {
+                    $p->transicionar(EstadoPedidoDropi::Alistando, 'manual', $userId);
+                }
+            });
+        } catch (Throwable $e) {
+            return back()->with('error', $e->getMessage());
+        }
         return back()->with('success', 'Pedido tomado');
     }
 
+    /**
+     * Heartbeat del alistador — mantiene vivo el lock mientras trabaja.
+     * El comando dropi:liberar-locks corre cada 2 min contra heartbeat > 10 min.
+     */
+    public function heartbeat(): RedirectResponse
+    {
+        $userId = auth()->id();
+        DropiAlistadorLock::where('alistador_id', $userId)->update(['heartbeat_at' => now()]);
+        return back(status: 204);
+    }
+
+    /**
+     * Este endpoint YA NO cambia estado directo. Delega a
+     * ConfirmarEmpaqueYSiguiente, que exige items pickeados.
+     * Si el flujo no completó la Estación, devuelve error legible.
+     */
     public function empacarPedido(int $pedidoId): RedirectResponse
     {
         $userId = auth()->id();
-        DB::transaction(function () use ($pedidoId, $userId) {
+        try {
             $miLock = DropiAlistadorLock::where('pedido_id', $pedidoId)->where('alistador_id', $userId)->exists();
             abort_unless($miLock, 409, 'El pedido lo tomó otro alistador o expiró.');
-            $p = DropiPedido::find($pedidoId);
-            if (! $p) return;
-            $anterior = is_object($p->estado) ? $p->estado->value : $p->estado;
-            $p->update(['estado' => EstadoPedidoDropi::Empacado]);
-            DropiEstadoBitacora::create([
-                'pedido_id' => $pedidoId, 'estado_desde' => $anterior,
-                'estado_hasta' => EstadoPedidoDropi::Empacado->value, 'fuente' => 'manual', 'user_id' => $userId,
-            ]);
+
+            ConfirmarEmpaqueYSiguiente::run($pedidoId, $userId);
             DropiAlistadorLock::where('pedido_id', $pedidoId)->delete();
-        });
+        } catch (Throwable $e) {
+            return back()->with('error', $e->getMessage());
+        }
         return back()->with('success', 'Pedido empacado');
     }
 
     public function despacharPedido(int $pedidoId): RedirectResponse
     {
-        DB::transaction(function () use ($pedidoId) {
+        $userId = auth()->id();
+        try {
             $p = DropiPedido::find($pedidoId);
-            if (! $p) return;
-            $anterior = is_object($p->estado) ? $p->estado->value : $p->estado;
-            $p->update(['estado' => EstadoPedidoDropi::Despachado, 'despachado_at' => now()]);
-            DropiEstadoBitacora::create([
-                'pedido_id' => $pedidoId, 'estado_desde' => $anterior,
-                'estado_hasta' => EstadoPedidoDropi::Despachado->value, 'fuente' => 'manual', 'user_id' => auth()->id(),
-            ]);
-        });
-        // Job de WhatsApp si existe la clase
+            abort_unless($p, 404, 'Pedido no encontrado.');
+            // Sólo puede despachar quien lo empacó (o Aracely).
+            $puedeDespachar = auth()->user()?->esAracely()
+                || \App\Modules\Dropi\Models\EmpaqueRegistro::where('pedido_id', $pedidoId)
+                    ->where('operario_id', $userId)->exists();
+            abort_unless($puedeDespachar, 409, 'Solo el alistador que empacó (o Aracely) puede despachar.');
+
+            $p->transicionar(EstadoPedidoDropi::Despachado, 'manual', $userId, [], ['despachado_at' => now()]);
+        } catch (Throwable $e) {
+            return back()->with('error', $e->getMessage());
+        }
+
         if (class_exists(\App\Modules\Dropi\Jobs\NotificarClienteDespachoJob::class)) {
             \App\Modules\Dropi\Jobs\NotificarClienteDespachoJob::dispatch($pedidoId);
         }
@@ -171,12 +209,12 @@ class DropiOperacionController extends Controller implements HasMiddleware
     }
 
     // ============================================================
-    // REGISTRAR DEVOLUCIÓN
+    // REGISTRAR DEVOLUCIÓN — DELEGA A LA ACTION CANÓNICA
     // ============================================================
 
     public function devolucionForm(Request $request): Response
     {
-        $guiaBuscar = trim((string) $request->input('guia', ''));
+        $guiaBuscar = strtoupper(trim((string) $request->input('guia', '')));
         $pedido = null;
         if ($guiaBuscar) {
             $pedido = DropiPedido::where('guia', $guiaBuscar)
@@ -200,6 +238,7 @@ class DropiOperacionController extends Controller implements HasMiddleware
                 ])->all(),
                 'devolucion_existente' => DropiDevolucion::where('pedido_id', $pedido->id)->exists(),
             ] : null,
+            'destinos' => array_map(fn ($d) => ['value' => $d->value, 'label' => $d->label()], DestinoDevolucion::cases()),
         ]);
     }
 
@@ -207,30 +246,21 @@ class DropiOperacionController extends Controller implements HasMiddleware
     {
         $data = $request->validate([
             'pedido_id' => ['required', 'integer', 'exists:dropi_pedidos,id'],
-            'destino_inventario' => ['required', 'in:reingresa,averiado,perdido'],
+            'destino_inventario' => ['required', Rule::in(array_map(fn ($d) => $d->value, DestinoDevolucion::cases()))],
             'notas' => ['nullable', 'string', 'max:500'],
         ]);
 
-        DB::transaction(function () use ($data) {
-            $existe = DropiDevolucion::where('pedido_id', $data['pedido_id'])->exists();
-            abort_if($existe, 422, 'Este pedido ya tiene una devolución registrada.');
-
-            DropiDevolucion::create([
-                'pedido_id' => $data['pedido_id'],
-                'destino_inventario' => $data['destino_inventario'],
-                'notas' => $data['notas'] ?? null,
-                'recibido_at' => now(),
-                'decision_por' => auth()->id(),
-            ]);
-
-            $pedido = DropiPedido::find($data['pedido_id']);
-            if ($pedido) {
-                $pedido->update([
-                    'estado' => EstadoPedidoDropi::Devuelto,
-                    'devuelto_at' => now(),
-                ]);
-            }
-        });
+        try {
+            $pedido = DropiPedido::findOrFail($data['pedido_id']);
+            RegistrarDevolucion::run(
+                $pedido->guia,
+                DestinoDevolucion::from($data['destino_inventario']),
+                (int) auth()->id(),
+                $data['notas'] ?? null,
+            );
+        } catch (Throwable $e) {
+            return back()->with('error', $e->getMessage())->withInput();
+        }
 
         return redirect()->route('app.dropi.devolucion.registrar')->with('success', 'Devolución registrada.');
     }
@@ -249,58 +279,83 @@ class DropiOperacionController extends Controller implements HasMiddleware
         $data = $request->validate([
             'codigo' => ['required', 'string', 'max:100'],
         ]);
-        $codigo = trim($data['codigo']);
+        $codigo = strtoupper(trim($data['codigo']));
         $pedido = DropiPedido::where('guia', $codigo)
             ->orWhere('dropi_orden_id', $codigo)
             ->with(['items.variante.producto'])
             ->first();
 
+        // N3/UX#2 · el monto SOLO se devuelve a Aracely (para Wallet-autocomplete).
+        // Un Alistador que use este endpoint desde el escáner cámara NO lo recibe.
+        $incluirMonto = auth()->user()?->esAracely() === true;
+
         return response()->json([
             'encontrado' => (bool) $pedido,
-            'pedido' => $pedido ? [
+            'pedido' => $pedido ? array_filter([
                 'id' => $pedido->id,
                 'guia' => $pedido->guia,
                 'cliente' => $pedido->cliente_nombre,
                 'ciudad' => $pedido->cliente_ciudad,
-                'monto' => (float) $pedido->monto_esperado_proveedor,
+                'monto' => $incluirMonto ? (float) $pedido->monto_esperado_proveedor : null,
                 'estado' => is_object($pedido->estado) ? $pedido->estado->value : $pedido->estado,
                 'items' => $pedido->items->map(fn ($i) => [
                     'sku' => $i->sku_dropi,
                     'descripcion' => trim(($i->variante?->producto?->nombre ?? '') . ' · ' . ($i->variante?->color_nombre ?? '') . ' ' . ($i->variante?->talla ?? '')),
                     'cantidad' => (int) $i->cantidad,
                 ])->all(),
-            ] : null,
+            ], fn ($v) => $v !== null) : null,
         ]);
     }
 
     // ============================================================
-    // DISCREPANCIAS WALLET
+    // DISCREPANCIAS WALLET (filtrado en SQL, no en PHP · fix F11)
     // ============================================================
 
-    public function discrepancias(): Response
+    public function discrepancias(Request $request): Response
     {
-        // Cruce: pedidos Pagado sin movimiento wallet asociado
-        $pedidosPagados = DropiPedido::where('estado', EstadoPedidoDropi::Pagado)
-            ->whereNotNull('pagado_at')
-            ->select('id', 'guia', 'dropi_orden_id', 'cliente_nombre', 'monto_esperado_proveedor', 'pagado_at')
-            ->orderByDesc('pagado_at')
-            ->limit(200)
-            ->get();
+        // U27 · filtros de fecha (default: mes actual).
+        $desde = $request->input('desde', now('America/Bogota')->startOfMonth()->toDateString());
+        $hasta = $request->input('hasta', now('America/Bogota')->endOfDay()->toDateString());
 
-        $pedidoIds = $pedidosPagados->pluck('id')->all();
-        $conMovimiento = \App\Modules\Dropi\Models\DropiWalletMovimiento::whereIn('pedido_id', $pedidoIds)
-            ->pluck('pedido_id')->flip();
+        // F21 · pedidos que YA se debieron cobrar sin movimiento wallet:
+        // - Pagado sin fila en wallet
+        // - Entregado con más de 40 días sin cobro (fecha configurable en Reglas)
+        $diasEsperaCobro = (int) (\App\Support\Reglas::get('dropi.dias_espera_cobro', 40));
+        $limiteEntregado = now('America/Bogota')->subDays($diasEsperaCobro);
 
-        $sinCobrar = $pedidosPagados->filter(fn ($p) => ! isset($conMovimiento[$p->id]))
+        $sinCobrar = DropiPedido::query()
+            ->leftJoin('dropi_wallet_movimientos as w', 'w.pedido_id', '=', 'dropi_pedidos.id')
+            ->whereNull('w.id')
+            ->where(function ($q) use ($limiteEntregado, $desde, $hasta) {
+                $q->where(function ($qq) use ($desde, $hasta) {
+                    $qq->where('dropi_pedidos.estado', EstadoPedidoDropi::Pagado->value)
+                        ->whereNotNull('dropi_pedidos.pagado_at')
+                        ->whereBetween('dropi_pedidos.pagado_at', [$desde . ' 00:00:00', $hasta . ' 23:59:59']);
+                })->orWhere(function ($qq) use ($limiteEntregado) {
+                    $qq->where('dropi_pedidos.estado', EstadoPedidoDropi::Entregado->value)
+                        ->whereNotNull('dropi_pedidos.entregado_at')
+                        ->where('dropi_pedidos.entregado_at', '<=', $limiteEntregado);
+                });
+            })
+            ->select([
+                'dropi_pedidos.id', 'dropi_pedidos.guia', 'dropi_pedidos.dropi_orden_id',
+                'dropi_pedidos.cliente_nombre', 'dropi_pedidos.monto_esperado_proveedor',
+                'dropi_pedidos.pagado_at', 'dropi_pedidos.entregado_at', 'dropi_pedidos.estado',
+            ])
+            ->orderByDesc(DB::raw('COALESCE(dropi_pedidos.pagado_at, dropi_pedidos.entregado_at)'))
+            ->limit(500)
+            ->get()
             ->map(fn ($p) => [
                 'id' => $p->id, 'guia' => $p->guia, 'dropi_id' => $p->dropi_orden_id,
                 'cliente' => $p->cliente_nombre, 'monto' => (float) $p->monto_esperado_proveedor,
                 'pagado' => $p->pagado_at?->format('Y-m-d'),
-            ])->values();
+                'entregado' => $p->entregado_at?->format('Y-m-d'),
+                'estado' => is_object($p->estado) ? $p->estado->value : $p->estado,
+            ]);
 
-        // Movimientos wallet huérfanos (sin pedido)
-        $movHuerfanos = \App\Modules\Dropi\Models\DropiWalletMovimiento::whereNull('pedido_id')
-            ->orderByDesc('fecha')->limit(100)->get()
+        // Movimientos wallet huérfanos (sin pedido).
+        $movHuerfanos = DropiWalletMovimiento::whereNull('pedido_id')
+            ->orderByDesc('fecha')->limit(200)->get()
             ->map(function ($m) {
                 $tipo = is_object($m->tipo) ? ($m->tipo->value ?? (string) $m->tipo) : (string) $m->tipo;
                 return [
@@ -318,6 +373,8 @@ class DropiOperacionController extends Controller implements HasMiddleware
                 'monto_faltante' => (float) $sinCobrar->sum('monto'),
                 'movimientos_huerfanos' => $movHuerfanos->count(),
             ],
+            'periodo' => ['desde' => $desde, 'hasta' => $hasta],
+            'dias_espera_cobro' => $diasEsperaCobro,
         ]);
     }
 }

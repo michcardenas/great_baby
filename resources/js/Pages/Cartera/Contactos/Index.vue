@@ -2,7 +2,7 @@
 import { ref, computed, watch } from 'vue';
 import { Head, router, Link } from '@inertiajs/vue3';
 import { useDebounceFn } from '@vueuse/core';
-import { Users, Search, Phone, Mail, MapPin, ExternalLink } from 'lucide-vue-next';
+import { Users, Search, Phone, Mail, MapPin, ExternalLink, Plus } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 
 const props = defineProps({
@@ -59,6 +59,10 @@ const wa = (t) => t ? `https://wa.me/${(t.startsWith('57') ? t : '57' + t).repla
                     </h1>
                     <p class="text-sm text-surface-500 mt-1">Clientes, B2B, proveedores, empleados y vendedores Dropi.</p>
                 </div>
+                <!-- H4 · CTA "Nuevo contacto" directo desde Index -->
+                <a href="/admin/contactos/create" target="_blank" rel="noopener" class="btn-primary">
+                    <Plus class="h-4 w-4"/> Nuevo contacto
+                </a>
             </div>
 
             <!-- Tabs -->

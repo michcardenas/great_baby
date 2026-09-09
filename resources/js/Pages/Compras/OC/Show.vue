@@ -1,40 +1,56 @@
 <script setup>
 import { ref } from 'vue';
 import { Head, Link, router } from '@inertiajs/vue3';
-import { ArrowLeft, CheckCircle, XCircle, Truck, ShoppingCart } from 'lucide-vue-next';
+import { ArrowLeft, CheckCircle, XCircle, Truck, ShoppingCart, AlertTriangle } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import { useMoney } from '@/composables/useMoney';
+import { fechaCorta } from '@/composables/useFecha';
+import { useEscClose } from '@/composables/useEscClose';
 
 const props = defineProps({ orden: { type: Object, required: true } });
 
 const modalAnular = ref(false);
+const modalAprobar = ref(false);
+useEscClose(modalAnular);
+useEscClose(modalAprobar);
 const motivo = ref('');
 const procesando = ref(false);
 
-const money = (n) => '$' + Number(n || 0).toLocaleString('es-CO', { maximumFractionDigits: 0 });
+// Re-audit M2 UX-C2 · useMoney (paridad con Cartera/Contabilidad).
+const { money } = useMoney();
 
-const aprobar = () => {
-    if (!confirm('¿Aprobar esta OC?')) return;
+// Re-audit M2 UX-C4 · modal propio en lugar de confirm() nativo (consistencia
+// con Anular). Muestra el monto que se compromete al aprobar.
+const abrirAprobar = () => { modalAprobar.value = true; };
+const confirmarAprobar = () => {
+    if (procesando.value) return;
     procesando.value = true;
-    router.post(`/app/compras/oc/${props.orden.id}/aprobar`, {}, { onFinish: () => procesando.value = false });
+    router.post(`/app/compras/oc/${props.orden.id}/aprobar`, {}, {
+        preserveScroll: true,
+        onSuccess: () => { modalAprobar.value = false; },
+        onFinish: () => procesando.value = false,
+    });
 };
 const anular = () => {
-    if (motivo.value.trim().length < 10) return;
+    if (motivo.value.trim().length < 10 || procesando.value) return;
     procesando.value = true;
     router.post(`/app/compras/oc/${props.orden.id}/anular`, { motivo: motivo.value }, {
+        preserveScroll: true,
         onSuccess: () => { modalAnular.value = false; motivo.value = ''; },
         onFinish: () => procesando.value = false,
     });
 };
 
+// Re-audit M2 UX-B11 · dark mode consistente (paridad con Index.vue badges).
 const badge = (e) => ({
-    borrador: 'bg-surface-100 text-surface-700',
-    enviada: 'bg-blue-100 text-blue-800',
-    aprobada: 'bg-emerald-100 text-emerald-800',
-    parcial: 'bg-amber-100 text-amber-800',
-    recibida: 'bg-brand-100 text-brand-800',
-    cerrada: 'bg-surface-200 text-surface-600',
-    anulada: 'bg-red-100 text-red-800',
-}[e] || 'bg-surface-100');
+    borrador: 'bg-surface-100 text-surface-700 dark:bg-surface-800 dark:text-surface-300',
+    enviada: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200',
+    aprobada: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200',
+    parcial: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200',
+    recibida: 'bg-brand-100 text-brand-800 dark:bg-brand-900/40 dark:text-brand-200',
+    cerrada: 'bg-surface-200 text-surface-600 dark:bg-surface-800 dark:text-surface-400',
+    anulada: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200',
+}[e] || 'bg-surface-100 dark:bg-surface-800');
 </script>
 
 <template>
@@ -63,8 +79,8 @@ const badge = (e) => ({
                     </div>
                 </div>
 
-                <div class="flex items-center gap-2 border-t pt-3">
-                    <button v-if="orden.estado === 'borrador' || orden.estado === 'enviada'" @click="aprobar" :disabled="procesando" class="btn-primary">
+                <div class="flex items-center gap-2 border-t border-surface-200 dark:border-surface-800 pt-3 flex-wrap">
+                    <button v-if="orden.estado === 'borrador' || orden.estado === 'enviada'" @click="abrirAprobar" :disabled="procesando" class="btn-primary">
                         <CheckCircle class="h-4 w-4"/> Aprobar
                     </button>
                     <Link v-if="['aprobada','parcial'].includes(orden.estado)" :href="`/app/compras/recepcion/nueva?oc=${orden.id}`" class="btn-primary bg-emerald-600 hover:bg-emerald-700">
@@ -73,7 +89,7 @@ const badge = (e) => ({
                     <button v-if="!['recibida','cerrada','anulada'].includes(orden.estado)" @click="modalAnular = true" class="btn-ghost text-red-600 border border-red-300">
                         <XCircle class="h-4 w-4"/> Anular
                     </button>
-                    <a :href="`/compras/orden/${orden.id}/pdf`" target="_blank" class="btn-ghost">PDF</a>
+                    <a :href="`/compras/orden/${orden.id}/pdf`" target="_blank" rel="noopener" class="btn-ghost">PDF</a>
                 </div>
             </div>
 
@@ -111,13 +127,52 @@ const badge = (e) => ({
             </div>
         </div>
 
+        <!-- Re-audit M2 UX-C4 · modal Aprobar con contexto financiero. -->
+        <div v-if="modalAprobar" @click.self="modalAprobar = false" class="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+            <div class="card p-6 max-w-md w-full">
+                <div class="flex items-start gap-3">
+                    <CheckCircle class="h-6 w-6 text-emerald-600 mt-1 flex-shrink-0"/>
+                    <div>
+                        <h3 class="text-lg font-bold mb-1">¿Aprobar OC {{ orden.numero }}?</h3>
+                        <p class="text-sm text-surface-600 dark:text-surface-400 mb-3">
+                            Comprometes <b>{{ money(orden.total) }}</b> con <b>{{ orden.proveedor }}</b>. Después de aprobar la OC ya no admite edición de precios/cantidades — solo recepción.
+                        </p>
+                    </div>
+                </div>
+                <div class="flex justify-end gap-2 mt-4">
+                    <button @click="modalAprobar = false" class="btn-ghost" :disabled="procesando">Cancelar</button>
+                    <button @click="confirmarAprobar" :disabled="procesando" class="btn-primary">
+                        {{ procesando ? 'Aprobando…' : 'Sí, aprobar' }}
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Re-audit M2 UX-C3 · modal Anular AHORA MUESTRA MONTO + PROVEEDOR (antes solo pedía motivo, Aracely podía anular OC de $52M a ciegas). -->
         <div v-if="modalAnular" @click.self="modalAnular = false" class="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
             <div class="card p-6 max-w-md w-full">
-                <h3 class="text-lg font-bold mb-3">Anular OC</h3>
-                <textarea v-model="motivo" rows="3" class="input w-full" placeholder="Motivo mínimo 10 caracteres..." autofocus/>
+                <div class="flex items-start gap-3">
+                    <AlertTriangle class="h-6 w-6 text-red-600 mt-1 flex-shrink-0"/>
+                    <div class="flex-1">
+                        <h3 class="text-lg font-bold mb-1">¿Anular esta OC?</h3>
+                        <div class="text-xs bg-red-50 dark:bg-red-950/40 rounded p-2 mb-3 space-y-1">
+                            <div class="flex justify-between"><span class="text-surface-500">OC:</span> <b class="font-mono">{{ orden.numero }}</b></div>
+                            <div class="flex justify-between"><span class="text-surface-500">Proveedor:</span> <b>{{ orden.proveedor }}</b></div>
+                            <div class="flex justify-between text-red-700 dark:text-red-400 pt-1 border-t border-red-200 dark:border-red-900"><span>Total comprometido:</span> <b>{{ money(orden.total) }}</b></div>
+                        </div>
+                        <p class="text-[11px] text-surface-500 mb-2">La anulación es definitiva y queda auditada. Se guarda tu usuario, fecha y motivo.</p>
+                        <label class="text-xs font-semibold text-surface-600 dark:text-surface-300">Motivo (obligatorio, mín. 10 caracteres)</label>
+                        <textarea v-model="motivo" rows="3" class="input w-full mt-1" placeholder="Explica por qué se anula esta OC…" autofocus/>
+                        <p class="text-[11px] mt-1" :class="motivo.trim().length >= 10 ? 'text-emerald-600' : 'text-red-600'">
+                            {{ motivo.trim().length }}/10 caracteres
+                        </p>
+                    </div>
+                </div>
                 <div class="flex justify-end gap-2 mt-4">
-                    <button @click="modalAnular = false" class="btn-ghost">Cancelar</button>
-                    <button @click="anular" :disabled="procesando || motivo.trim().length < 10" class="btn-primary bg-red-600 hover:bg-red-700">Anular</button>
+                    <button @click="modalAnular = false" class="btn-ghost" :disabled="procesando">Cancelar</button>
+                    <button @click="anular" :disabled="procesando || motivo.trim().length < 10" class="btn-primary bg-red-600 hover:bg-red-700 disabled:opacity-50">
+                        {{ procesando ? 'Anulando…' : 'Sí, anular' }}
+                    </button>
                 </div>
             </div>
         </div>

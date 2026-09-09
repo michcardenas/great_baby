@@ -18,14 +18,8 @@ class TomaFisica extends Model implements AuditableContract
 
     protected $table = 'tomas_fisicas';
 
-    // Fix auditor #20: 'estado', 'cerrada_at', 'cerrada_por', 'items_diferentes', 'valor_ajuste'
-    // sólo se setean desde CerrarTomaFisica.
-    protected $fillable = [
-        'numero', 'ubicacion_id', 'creada_por',
-        'fecha_conteo', 'tipo', 'alcance', 'observaciones',
-    ];
-
-    protected static array $backendOnly = ['estado', 'cerrada_at', 'cerrada_por', 'items_diferentes', 'valor_ajuste'];
+    // Re-audit M3 PATRÓN η · $guarded (evita mass-assign silencioso).
+    protected $guarded = ['id'];
 
     protected $casts = [
         'fecha_conteo' => 'date',
@@ -33,6 +27,38 @@ class TomaFisica extends Model implements AuditableContract
         'estado' => EstadoTomaFisica::class,
         'valor_ajuste' => 'decimal:2',
     ];
+
+    /**
+     * Re-audit M3 PATRÓN γ + DATOS-M5 · state machine para toma física.
+     *   Borrador → EnConteo | Anulada
+     *   EnConteo → Ajustada | Anulada
+     *   Ajustada / Anulada = finales
+     */
+    protected static function booted(): void
+    {
+        static::saving(function (TomaFisica $t) {
+            if (! $t->exists || ! $t->isDirty('estado')) return;
+            $original = $t->getOriginal('estado');
+            $desde = $original instanceof EstadoTomaFisica ? $original : ($original ? EstadoTomaFisica::tryFrom($original) : null);
+            $hacia = $t->estado instanceof EstadoTomaFisica ? $t->estado : EstadoTomaFisica::tryFrom($t->estado);
+            if (! self::transicionValida($desde, $hacia)) {
+                throw new \RuntimeException(sprintf(
+                    'TomaFisica %s: transición %s → %s no permitida.',
+                    $t->getOriginal('numero'), $desde?->value ?? 'null', $hacia?->value ?? 'null',
+                ));
+            }
+        });
+    }
+
+    public static function transicionValida(?EstadoTomaFisica $desde, ?EstadoTomaFisica $hacia): bool
+    {
+        if ($desde === null || $hacia === null || $desde === $hacia) return $desde === $hacia;
+        return match ($desde) {
+            EstadoTomaFisica::Borrador => in_array($hacia, [EstadoTomaFisica::EnConteo, EstadoTomaFisica::Anulada], true),
+            EstadoTomaFisica::EnConteo => in_array($hacia, [EstadoTomaFisica::Ajustada, EstadoTomaFisica::Anulada], true),
+            default => false, // Ajustada, Anulada = terminales
+        };
+    }
 
     public function ubicacion(): BelongsTo
     {
@@ -54,15 +80,23 @@ class TomaFisica extends Model implements AuditableContract
         return $this->belongsTo(User::class, 'cerrada_por');
     }
 
+    /**
+     * Re-audit M3 PATRÓN π (FUNC-M2) · consecutivo atómico basado en MAX(SUBSTRING)
+     *   por seguridad frente a filas con id físico desordenado (seed/import
+     *   con id alto y año viejo).
+     */
     public static function siguienteNumero(): string
     {
-        $year = now()->year;
-        $ultimo = static::query()
-            ->where('numero', 'like', "TF-{$year}-%")
-            ->orderByDesc('id')
-            ->value('numero');
-        $seq = $ultimo ? ((int) substr($ultimo, -6)) + 1 : 1;
-
-        return sprintf('TF-%d-%06d', $year, $seq);
+        $year = now('America/Bogota')->year;
+        return \Illuminate\Support\Facades\DB::transaction(function () use ($year) {
+            $prefijoLen = strlen("TF-{$year}-");
+            $max = static::query()
+                ->where('numero', 'like', "TF-{$year}-%")
+                ->lockForUpdate()
+                ->selectRaw("COALESCE(MAX(CAST(SUBSTRING(numero, ?) AS UNSIGNED)), 0) AS seq", [$prefijoLen + 1])
+                ->value('seq');
+            $seq = ((int) $max) + 1;
+            return sprintf('TF-%d-%06d', $year, $seq);
+        });
     }
 }

@@ -2,13 +2,24 @@
 
 namespace App\Modules\Cartera\Actions;
 
+use App\Modules\Cartera\Models\NotaCredito;
 use App\Modules\Dropi\Models\DropiDevolucion;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Lorisleiva\Actions\Concerns\AsAction;
 
 /**
- * REU-3: Auto-generar Nota Crédito al recibir una devolución Dropi.
- * Aracely: "si es la devolución, de una vez ya haga la nota crédito, se envíe y ya, o sea, ya tú la tengas."
+ * REU-3 + Re-audit fixes: Auto-generar Nota Crédito al recibir devolución Dropi.
+ *
+ *   Raíz A (FUNC C5 / DATOS C5) · idempotencia atómica: usa UPDATE...WHERE...
+ *     para bloquear la devolución antes de dispatch. Si affectedRows=0, otro
+ *     observer ya la tomó — abort seguro. Antes había ventana check-then-act.
+ *
+ *   Raíz D (DATOS C2) · crea entrada local en `notas_credito` ANTES de despachar
+ *     a SIIGO. Consecutivo `NC-####` transaccional via SiguienteConsecutivoFactura.
+ *     Cumple exigencia DIAN de libro local. Ref para SIIGO es determinista
+ *     (`numeroCompleto`), no `now()->format('YmdHis')` — retry del job NO
+ *     genera otra NC.
  *
  * Reglas configurables:
  *   dropi.auto_nota_credito        → activar/desactivar auto-fire
@@ -20,8 +31,6 @@ class EmitirNotaCreditoDropi
 
     public function handle(DropiDevolucion $devolucion): ?array
     {
-        // Si la regla está OFF: resetear el pre-flag mentiroso que dejó RegistrarDevolucion
-        // (línea 49 pone genero_nota_credito=(bool)$pedido->ari_factura_id sin haber ejecutado NC).
         if (! (bool) setting('dropi.auto_nota_credito', true)) {
             if ($devolucion->genero_nota_credito) {
                 $devolucion->update([
@@ -35,12 +44,6 @@ class EmitirNotaCreditoDropi
         $pedido = $devolucion->pedido;
         if (! $pedido) return null;
 
-        // Si ya se registró NC previa, no duplicar
-        if ($devolucion->genero_nota_credito && $devolucion->nota_credito_ari_id) {
-            return ['status' => 'ya_generada', 'ref' => $devolucion->nota_credito_ari_id];
-        }
-
-        // Fix S-04 (auditor Sec): sin factura ARI/SIIGO no puede haber NC, sería fantasma.
         if (! $pedido->ari_factura_id) {
             $devolucion->update([
                 'genero_nota_credito' => false,
@@ -59,30 +62,79 @@ class EmitirNotaCreditoDropi
             return null;
         }
 
-        // Coordinar dispatch + update del flag DENTRO de afterCommit —
-        // ambos se aplican solo si la tx padre commitea. Si dispatch falla,
-        // el flag no se sube (evita el estado inconsistente que el try/catch
-        // externo no podía capturar, ya que afterCommit registra callback diferido).
-        $refInterna = 'NC-DRP-' . $pedido->guia . '-' . now()->format('YmdHis');
         $devId = $devolucion->id;
-        \Illuminate\Support\Facades\DB::afterCommit(function () use ($devId, $refInterna, $pedido, $valor) {
-            try {
-                \App\Modules\Cartera\Jobs\EnviarNotaCreditoSiigo::dispatch($devId, $refInterna);
-                // Solo tras dispatch OK subir el flag (via query directa para no re-disparar observers).
-                \App\Modules\Dropi\Models\DropiDevolucion::whereKey($devId)->update([
-                    'genero_nota_credito' => true,
-                    'nota_credito_ari_id' => $refInterna,
-                ]);
-                Log::info('[NC-Dropi] Nota crédito encolada', ['pedido' => $pedido->guia, 'valor' => $valor, 'ref' => $refInterna]);
-            } catch (\Throwable $e) {
-                Log::error('[NC-Dropi] Fallo dispatch post-commit', ['pedido' => $pedido->guia, 'error' => $e->getMessage()]);
-                // Marcar en notas para trazabilidad (no crashea el flujo padre — ya commiteó).
-                \App\Modules\Dropi\Models\DropiDevolucion::whereKey($devId)->update([
-                    'notas' => \Illuminate\Support\Facades\DB::raw("CONCAT(COALESCE(notas,''), '\n[NC ERROR dispatch] " . addslashes($e->getMessage()) . "')"),
-                ]);
-            }
-        });
 
-        return ['status' => 'encolada_pending_commit', 'ref' => $refInterna, 'valor' => $valor];
+        // Re-audit RAÍZ D (FUNC N3 / DATOS N3) · TODO el flujo (reserva + consecutivo +
+        // NotaCredito::create + update ref) envuelto en UNA transacción. Si algo
+        // revienta después de consumir el consecutivo, el rollback deshace TODO
+        // — no se quema el folio DIAN.
+        try {
+            return DB::transaction(function () use ($devId, $devolucion, $pedido, $valor) {
+                // Raíz A · reservación atómica del "slot" de NC.
+                $reservado = DropiDevolucion::whereKey($devId)
+                    ->where('genero_nota_credito', false)
+                    ->update(['genero_nota_credito' => true]);
+
+                if ($reservado === 0) {
+                    $devolucion->refresh();
+                    return ['status' => 'ya_generada', 'ref' => $devolucion->nota_credito_ari_id];
+                }
+
+                // Consecutivo transaccional + validación rango DIAN.
+                // Re-audit R3-06 · uppercase + trim del prefijo desde el inicio
+                // para que el guardado en `notas_credito.prefijo` coincida con
+                // el que devuelve SiguienteConsecutivoFactura (que también
+                // uppercasea internamente). Evita case-mismatch.
+                $prefijo = strtoupper(trim((setting('empresa.prefijo_nc_dian') ?: 'NC') . '-'));
+                $rangoNc = (int) setting('empresa.rango_hasta_nc', 0) ?: null;
+                $numeroCompleto = SiguienteConsecutivoFactura::run($prefijo, 4, $rangoNc);
+                $numeroSecuencial = (int) preg_replace('/\D/', '', substr($numeroCompleto, strlen($prefijo)));
+
+                // Re-audit DATOS #4 · popular factura_id local si existe correlación
+                // por ari_factura_id del pedido (join a FacturaVenta local).
+                $facturaLocal = \App\Modules\Cartera\Models\FacturaVenta::query()
+                    ->where('ari_factura_id', $pedido->ari_factura_id)
+                    ->value('id');
+
+                $nc = NotaCredito::create([
+                    'prefijo' => rtrim($prefijo, '-'),
+                    'numero' => $numeroSecuencial,
+                    'factura_id' => $facturaLocal,
+                    'devolucion_dropi_id' => $devId,
+                    'motivo' => "Devolución Dropi guía {$pedido->guia}",
+                    'valor' => $valor,
+                    'estado' => 'emitida',
+                    'emitida_at' => now(),
+                ]);
+
+                DropiDevolucion::whereKey($devId)->update([
+                    'nota_credito_ari_id' => $numeroCompleto,
+                ]);
+
+                // Dispatch a SIIGO SOLO tras commit (post-tx).
+                DB::afterCommit(function () use ($devId, $numeroCompleto, $pedido, $valor, $nc) {
+                    try {
+                        \App\Modules\Cartera\Jobs\EnviarNotaCreditoSiigo::dispatch($devId, $numeroCompleto);
+                        Log::info('[NC-Dropi] NC local + dispatch SIIGO', [
+                            'pedido' => $pedido->guia, 'valor' => $valor, 'ref' => $numeroCompleto, 'nc_id' => $nc->id,
+                        ]);
+                    } catch (\Throwable $e) {
+                        Log::error('[NC-Dropi] Fallo dispatch post-commit', [
+                            'pedido' => $pedido->guia, 'error' => $e->getMessage(),
+                        ]);
+                        DropiDevolucion::whereKey($devId)->update([
+                            'notas' => DB::raw("CONCAT(COALESCE(notas,''), '\n[NC ERROR dispatch] " . addslashes($e->getMessage()) . "')"),
+                        ]);
+                    }
+                });
+
+                return ['status' => 'creada', 'ref' => $numeroCompleto, 'valor' => $valor, 'nc_id' => $nc->id];
+            });
+        } catch (\Throwable $e) {
+            Log::error('[NC-Dropi] Fallo tx creación NC', [
+                'pedido' => $pedido->guia, 'error' => $e->getMessage(),
+            ]);
+            throw $e;
+        }
     }
 }

@@ -1,14 +1,16 @@
 <script setup>
 import { ref, reactive } from 'vue';
 import { Head, router } from '@inertiajs/vue3';
-import { Scissors, Plus, Lock, FileText } from 'lucide-vue-next';
+import { Scissors, Plus, Lock, FileText, AlertTriangle } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import { useEscClose } from '@/composables/useEscClose';
 
 const props = defineProps({
     cortes: { type: Object, required: true },
 });
 
 const modalNuevo = ref(false);
+useEscClose(modalNuevo);
 const form = reactive({ numero: '', fecha: new Date().toISOString().slice(0, 10) });
 const procesando = ref(false);
 
@@ -22,16 +24,30 @@ const crear = () => {
     });
 };
 
-const cerrar = (id, numero) => {
-    if (!confirm(`Cerrar corte ${numero}? Después no se pueden agregar más pedidos.`)) return;
-    router.post(`/app/dropi/cortes/${id}/cerrar`, {}, { preserveScroll: true });
+// U5/U23 · modal explicativo en vez de window.confirm nativo.
+const modalCerrar = ref(false);
+useEscClose(modalCerrar);
+const corteACerrar = ref(null);
+const cerrandoCorte = ref(false);
+
+const solicitarCerrar = (corte) => {
+    corteACerrar.value = corte;
+    modalCerrar.value = true;
+};
+const confirmarCerrar = () => {
+    if (cerrandoCorte.value || !corteACerrar.value) return;
+    cerrandoCorte.value = true;
+    router.post(`/app/dropi/cortes/${corteACerrar.value.id}/cerrar`, {}, {
+        preserveScroll: true,
+        onSuccess: () => { modalCerrar.value = false; corteACerrar.value = null; },
+        onFinish: () => { cerrandoCorte.value = false; },
+    });
 };
 
 const badge = (e) => ({
-    abierto: 'bg-blue-100 text-blue-800',
-    cerrado: 'bg-emerald-100 text-emerald-800',
-    liquidado: 'bg-brand-100 text-brand-800',
-}[e] || 'bg-surface-100');
+    abierto: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200',
+    cerrado: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200',
+}[e] || 'bg-surface-100 text-surface-700 dark:bg-surface-800 dark:text-surface-300');
 </script>
 
 <template>
@@ -46,13 +62,16 @@ const badge = (e) => ({
                 <button @click="modalNuevo = true" class="btn-primary"><Plus class="h-4 w-4"/> Nuevo corte</button>
             </div>
 
-            <div v-if="$page.props.flash?.success" class="p-3 rounded-lg bg-emerald-500/15 border-l-4 border-emerald-500 text-emerald-700 text-sm">
+            <div v-if="$page.props.flash?.success" class="p-3 rounded-lg bg-emerald-500/15 border-l-4 border-emerald-500 text-emerald-700 dark:text-emerald-300 text-sm">
                 {{ $page.props.flash.success }}
+            </div>
+            <div v-if="$page.props.flash?.error" class="p-3 rounded-lg bg-red-500/15 border-l-4 border-red-500 text-red-700 dark:text-red-300 text-sm">
+                {{ $page.props.flash.error }}
             </div>
 
             <div class="card overflow-x-auto">
                 <table class="w-full text-sm">
-                    <thead class="text-xs text-surface-500 uppercase border-b">
+                    <thead class="text-xs text-surface-500 dark:text-surface-400 uppercase border-b border-surface-200 dark:border-surface-800">
                         <tr>
                             <th class="text-left p-3">Número</th>
                             <th class="text-left p-3">Fecha</th>
@@ -62,8 +81,8 @@ const badge = (e) => ({
                             <th class="text-right p-3">Acciones</th>
                         </tr>
                     </thead>
-                    <tbody class="divide-y divide-surface-100">
-                        <tr v-for="c in cortes.data" :key="c.id" class="hover:bg-surface-50">
+                    <tbody class="divide-y divide-surface-100 dark:divide-surface-800">
+                        <tr v-for="c in cortes.data" :key="c.id" class="hover:bg-surface-50 dark:hover:bg-surface-800/50">
                             <td class="p-3 font-bold">{{ c.numero }}</td>
                             <td class="p-3">{{ c.fecha }}</td>
                             <td class="p-3 text-center">
@@ -72,7 +91,7 @@ const badge = (e) => ({
                             <td class="p-3 text-right">{{ c.pedidos_count }}</td>
                             <td class="p-3 text-xs">{{ c.cerrado_at ?? '—' }}</td>
                             <td class="p-3 text-right">
-                                <button v-if="c.estado === 'abierto'" @click="cerrar(c.id, c.numero)"
+                                <button v-if="c.estado === 'abierto'" @click="solicitarCerrar(c)"
                                     class="btn-ghost text-xs text-red-600">
                                     <Lock class="h-3 w-3"/> Cerrar
                                 </button>
@@ -82,11 +101,13 @@ const badge = (e) => ({
                                 </a>
                             </td>
                         </tr>
+                        <tr v-if="!cortes.data.length"><td colspan="6" class="p-6 text-center text-surface-500 text-sm">Sin cortes.</td></tr>
                     </tbody>
                 </table>
             </div>
         </div>
 
+        <!-- Modal Nuevo corte -->
         <div v-if="modalNuevo" @click.self="modalNuevo = false" class="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
             <div class="card p-6 max-w-md w-full">
                 <h3 class="text-lg font-bold mb-3">Nuevo corte</h3>
@@ -102,7 +123,34 @@ const badge = (e) => ({
                 </div>
                 <div class="flex items-center justify-end gap-2 mt-4">
                     <button @click="modalNuevo = false" class="btn-ghost">Cancelar</button>
-                    <button @click="crear" :disabled="procesando" class="btn-primary">{{ procesando ? 'Creando…' : 'Crear' }}</button>
+                    <button @click="crear" :disabled="procesando" class="btn-primary disabled:opacity-50">{{ procesando ? 'Creando…' : 'Crear' }}</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- U5/U23 · Modal cerrar corte con explicación completa -->
+        <div v-if="modalCerrar" @click.self="modalCerrar = false" class="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+            <div class="card p-6 max-w-md w-full border-l-4 border-red-500">
+                <div class="flex items-start gap-3 mb-3">
+                    <AlertTriangle class="h-8 w-8 text-red-500 flex-shrink-0"/>
+                    <div>
+                        <h3 class="text-lg font-bold">Cerrar corte {{ corteACerrar?.numero }}</h3>
+                        <p class="text-sm text-surface-500 dark:text-surface-400 mt-1">Esta acción es irreversible.</p>
+                    </div>
+                </div>
+                <p class="text-sm mb-2">Al cerrar el corte:</p>
+                <ul class="text-sm space-y-1 list-disc list-inside text-surface-700 dark:text-surface-300 mb-4">
+                    <li>Se congelan los pedidos con hash SHA-256 (auditoría).</li>
+                    <li>Se genera el manifiesto DIAN en PDF.</li>
+                    <li>Se crean las remisiones ARI para cada pedido despachado.</li>
+                    <li>Se emiten facturas B2B a vendedores que las requieren.</li>
+                    <li><b>NO se pueden agregar ni editar pedidos</b> luego.</li>
+                </ul>
+                <div class="flex items-center justify-end gap-2">
+                    <button @click="modalCerrar = false" class="btn-ghost">Cancelar</button>
+                    <button @click="confirmarCerrar" :disabled="cerrandoCorte" class="btn-primary bg-red-600 hover:bg-red-700 disabled:opacity-50">
+                        {{ cerrandoCorte ? 'Cerrando…' : 'Sí, cerrar corte' }}
+                    </button>
                 </div>
             </div>
         </div>

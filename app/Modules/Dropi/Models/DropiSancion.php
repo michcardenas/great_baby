@@ -2,6 +2,7 @@
 
 namespace App\Modules\Dropi\Models;
 
+use App\Modules\Dropi\Enums\TipoSancion;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use OwenIt\Auditing\Auditable;
@@ -20,6 +21,7 @@ class DropiSancion extends Model implements AuditableContract
     ];
 
     protected $casts = [
+        'tipo' => TipoSancion::class,
         'monto_esperado' => 'decimal:2',
         'monto_recibido' => 'decimal:2',
         'diferencia' => 'decimal:2',

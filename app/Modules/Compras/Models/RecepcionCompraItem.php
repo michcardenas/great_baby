@@ -6,9 +6,14 @@ use App\Modules\Dropi\Models\Producto;
 use App\Modules\Dropi\Models\ProductoVariante;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use OwenIt\Auditing\Auditable;
+use OwenIt\Auditing\Contracts\Auditable as AuditableContract;
 
-class RecepcionCompraItem extends Model
+// Re-audit M2 R3 PATRÓN R · Auditable — trazabilidad DIAN de cambios post-recepción.
+class RecepcionCompraItem extends Model implements AuditableContract
 {
+    use Auditable;
+
     protected $table = 'compras_recepcion_items';
 
     protected $fillable = [

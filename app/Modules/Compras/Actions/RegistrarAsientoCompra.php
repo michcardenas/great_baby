@@ -39,8 +39,12 @@ class RegistrarAsientoCompra
                 return 0;
             }
 
+            // Re-audit M2 PATRÓN G (FUNC-A3) · en OC de importación el IVA
+            // descontable NO se contabiliza en la recepción — se paga a la DIAN
+            // vía agente aduanero y se registra en `liquidacion()` (1355). Antes
+            // se duplicaba: 2408 en recepción + 1355 en liquidación.
             $ivaProporcion = 0;
-            if ((float) $orden->subtotal > 0) {
+            if (! $orden->esImportacion() && (float) $orden->subtotal > 0) {
                 $ivaProporcion = (float) $orden->iva * ($totalRecibido / (float) $orden->subtotal);
             }
 
@@ -203,11 +207,19 @@ class RegistrarAsientoCompra
         });
     }
 
+    /**
+     * Re-audit M2 PATRÓN D (DATOS-C7) · forceDelete físico, mismo criterio que
+     * M4 Cartera y M5 Contabilidad. Antes `->delete()` soft-borraba dejando
+     * shadow rows que hinchaban `audits` y `MovimientoContable::withTrashed()`
+     * mostraba versiones contradictorias del mismo hecho. Un asiento previo
+     * a la re-ejecución es basura — el libro DIAN vive en las OC/Importaciones
+     * emitidas, no en asientos huérfanos.
+     */
     protected function limpiar($modelo): void
     {
         MovimientoContable::query()
             ->where('origen_type', get_class($modelo))
             ->where('origen_id', $modelo->id)
-            ->delete();
+            ->forceDelete();
     }
 }
