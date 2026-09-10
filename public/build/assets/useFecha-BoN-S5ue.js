@@ -1,0 +1,1 @@
+const c=["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];function s(n){if(!n)return"—";const t=String(n),r=t.match(/^(\d{4})-(\d{2})-(\d{2})/);if(r){const[,e,a,o]=r;return`${parseInt(o,10)}/${c[parseInt(a,10)-1]}/${e}`}return t}function u(){return{fechaCorta:s}}export{s as f,u};

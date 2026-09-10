@@ -89,7 +89,7 @@
 
     {{-- Pedido activo --}}
     @if($p)
-        <div style="margin-top:1rem;padding:1.25rem 1.5rem;background:rgba(180,83,9,.08);border:2px solid #b45309;border-radius:1rem;">
+        <div style="margin-top:1rem;padding:1.25rem 1.5rem;background:linear-gradient(135deg,#1f2937,#111827);border:2px solid #b45309;border-radius:1rem;">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:1rem;">
                 <div>
                     <div style="font-size:.75rem;color:#f59e0b;text-transform:uppercase;letter-spacing:2px;font-weight:700;">📦 Pedido activo</div>
@@ -136,12 +136,12 @@
             <div style="margin-top:1rem;display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:.75rem;">
                 @foreach($p->items as $it)
                     @php $isPicked = ! is_null($it->pickeado_at ?? null); @endphp
-                    <div style="padding:.75rem 1rem;background:{{ $isPicked ? 'rgba(16,185,129,.1)' : 'rgba(255,255,255,.03)' }};border-left:3px solid {{ $isPicked ? '#10b981' : '#6b7280' }};border-radius:.5rem;">
+                    <div style="padding:.75rem 1rem;background:{{ $isPicked ? 'rgba(16,185,129,.18)' : '#0f172a' }};border-left:3px solid {{ $isPicked ? '#10b981' : '#6b7280' }};border-radius:.5rem;">
                         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:.5rem;">
                             <div style="flex:1;min-width:0;">
                                 <div style="font-weight:600;color:#e5e7eb;">{{ $it->variante?->producto?->nombre ?? '—' }}</div>
                                 <div style="font-size:.8rem;color:#9ca3af;">{{ $it->variante?->color_nombre }}@if($it->variante?->talla) · T{{ $it->variante->talla }}@endif</div>
-                                <div style="font-family:monospace;font-size:.7rem;color:#6b7280;margin-top:.25rem;">{{ $it->variante?->codigo_barras ?? '—' }}</div>
+                                <div style="font-family:monospace;font-size:.72rem;color:#cbd5e1;margin-top:.25rem;">{{ $it->variante?->codigo_barras ?? '—' }}</div>
                             </div>
                             <div style="text-align:right;">
                                 <div style="font-size:1.25rem;font-weight:700;color:#f59e0b;">×{{ $it->cantidad ?? 1 }}</div>
@@ -163,13 +163,13 @@
     {{-- Cola sugerida (próximos pedidos por empacar) --}}
     @php $cola = $this->proximosPedidos(6); @endphp
     @if(!empty($cola))
-        <div style="margin-top:1rem;padding:1rem 1.25rem;background:rgba(59,130,246,.06);border:1px solid rgba(59,130,246,.2);border-radius:1rem;">
+        <div style="margin-top:1rem;padding:1rem 1.25rem;background:#111827;border:1px solid rgba(59,130,246,.35);border-radius:1rem;">
             <div style="font-size:.75rem;color:#3b82f6;text-transform:uppercase;letter-spacing:2px;font-weight:700;margin-bottom:.6rem;">
                 🎯 Cola sugerida ({{ count($cola) }})
             </div>
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:.5rem;">
                 @foreach($cola as $q)
-                    <div style="padding:.6rem .75rem;background:rgba(15,23,42,.4);border-left:3px solid #3b82f6;border-radius:.4rem;">
+                    <div style="padding:.6rem .75rem;background:#1e293b;border-left:3px solid #3b82f6;border-radius:.4rem;">
                         <div style="font-family:ui-monospace,monospace;font-weight:700;color:#93c5fd;font-size:.85rem;">{{ $q['guia'] }}</div>
                         <div style="font-size:.8rem;color:#e5e7eb;">{{ \Illuminate\Support\Str::limit($q['cliente'], 22) }}</div>
                         <div style="font-size:.7rem;color:#9ca3af;">{{ $q['ciudad'] }} · {{ $q['items'] }} ítems</div>
@@ -364,7 +364,7 @@
             // 4. Foco de vuelta al input
             setTimeout(() => {
                 const inp = document.querySelector('input[wire\\:model="codigo"]');
-                if (inp) inp.focus();
+                if (inp) inp.focus({ preventScroll: true });
             }, 100);
         });
 
@@ -374,7 +374,7 @@
             if (inp && document.activeElement !== inp
                 && !document.querySelector('.fi-modal-window')
                 && document.getElementById('modal-camara')?.style.display !== 'flex') {
-                inp.focus();
+                inp.focus({ preventScroll: true });
             }
         }, 2000);
 
