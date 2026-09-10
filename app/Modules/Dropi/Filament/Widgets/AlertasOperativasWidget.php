@@ -22,6 +22,9 @@ class AlertasOperativasWidget extends StatsOverviewWidget
 
     protected static ?int $sort = 3;
 
+    // Fix C2 · render inmediato.
+    protected static bool $isLazy = false;
+
     protected function getStats(): array
     {
         $cfg = config('dropi.alertas');

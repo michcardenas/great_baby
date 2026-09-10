@@ -24,6 +24,10 @@ class MetricasFinancierasWidget extends StatsOverviewWidget
 
     protected static ?int $sort = 2;
 
+    // Fix C2 · sin lazy → render inmediato en la primera carga en vez del
+    //   skeleton negro por 5s. En demo con datasets pequeños es mejor así.
+    protected static bool $isLazy = false;
+
     protected function getStats(): array
     {
         [$desde, $hasta, $labelPeriodo] = Periodos::rango(Periodos::actual());

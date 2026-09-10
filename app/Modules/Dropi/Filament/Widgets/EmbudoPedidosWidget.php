@@ -18,6 +18,9 @@ class EmbudoPedidosWidget extends ChartWidget
 
     protected int|string|array $columnSpan = 'full';
 
+    // Fix C2 · render inmediato del chart, sin skeleton previo.
+    protected static bool $isLazy = false;
+
     protected function getData(): array
     {
         $conteos = DropiPedido::query()

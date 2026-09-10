@@ -17,6 +17,9 @@ class ResumenCorteActivoWidget extends StatsOverviewWidget
 {
     protected ?string $heading = 'Corte activo · Estado integral';
 
+    // Fix C2 · render inmediato, sin skeleton negro.
+    protected static bool $isLazy = false;
+
     protected function getStats(): array
     {
         $corte = DropiCorte::query()->orderByDesc('fecha')->orderByDesc('numero')->first();

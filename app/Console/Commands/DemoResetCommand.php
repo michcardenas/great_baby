@@ -93,42 +93,51 @@ class DemoResetCommand extends Command
 
     protected function sembrarKardex(): void
     {
-        // Cada variante tiene al menos 20u en la primera ubicación de venta.
-        $ubic = InventarioUbicacion::where('categoria', CategoriaUbicacion::Venta->value)
-            ->where('activa', true)->orderBy('id')->first();
-        if (! $ubic) { $this->warn('  ⚠ sin ubicación de venta activa'); return; }
+        // Fix demo · sembrar en LAS DOS PRIMERAS ubicaciones activas para que
+        //   los traslados demo tengan origen con stock (antes fallaba porque
+        //   solo se sembraba en la primera Venta y los traslados nacían en
+        //   ubicaciones de bodega sin stock).
+        $ubics = InventarioUbicacion::where('activa', true)->orderBy('id')->take(2)->get();
+        if ($ubics->isEmpty()) { $this->warn('  ⚠ sin ubicaciones activas'); return; }
 
         $agregados = 0;
         foreach (ProductoVariante::inRandomOrder()->take(20)->get() as $v) {
-            $saldo = InventarioMovimiento::where('variante_id', $v->id)
-                ->where('ubicacion_id', $ubic->id)->sum('cantidad');
-            if ($saldo < 15) {
-                InventarioMovimiento::create([
-                    'variante_id' => $v->id,
-                    'ubicacion_id' => $ubic->id,
-                    'tipo' => 'entrada_compra',
-                    'cantidad' => 30 - (int) $saldo,
-                    'costo_unit' => rand(5000, 25000),
-                    'referencia_tipo' => 'demo_seed',
-                    'referencia_id' => 0,
-                    'user_id' => User::first()?->id ?? 1,
-                    'notas' => 'demo:reset · stock inicial',
-                    'created_at' => now()->subDays(rand(1, 20)),
-                ]);
-                $agregados++;
+            foreach ($ubics as $ubic) {
+                $saldo = InventarioMovimiento::where('variante_id', $v->id)
+                    ->where('ubicacion_id', $ubic->id)->sum('cantidad');
+                if ($saldo < 15) {
+                    InventarioMovimiento::create([
+                        'variante_id' => $v->id,
+                        'ubicacion_id' => $ubic->id,
+                        'tipo' => 'entrada_compra',
+                        'cantidad' => 50 - (int) $saldo,
+                        'costo_unit' => rand(5000, 25000),
+                        'referencia_tipo' => 'demo_seed',
+                        'referencia_id' => 0,
+                        'user_id' => User::first()?->id ?? 1,
+                        'notas' => 'demo:reset · stock inicial',
+                        'created_at' => now()->subDays(rand(1, 20)),
+                    ]);
+                    $agregados++;
+                }
             }
         }
-        $this->line("  · Kardex: {$agregados} variantes recibieron stock inicial");
+        $this->line("  · Kardex: {$agregados} movimientos de stock inicial en 2 ubicaciones");
     }
 
     protected function sembrarTraslados(): void
     {
-        $ubics = InventarioUbicacion::where('activa', true)->take(2)->get();
+        $ubics = InventarioUbicacion::where('activa', true)->orderBy('id')->take(2)->get();
         if ($ubics->count() < 2) { $this->warn('  ⚠ faltan ubicaciones'); return; }
         [$o, $d] = [$ubics[0], $ubics[1]];
 
-        $existentes = Traslado::where('numero', 'like', 'TRA-DEMO-%')->count();
-        if ($existentes >= 3) { $this->line("  · Ya existen {$existentes} traslados demo"); return; }
+        // Fix demo · borrar traslados demo previos (sin items ni movs kardex
+        // porque están en Borrador) para regenerarlos con stock garantizado en
+        // el origen específico.
+        Traslado::where('numero', 'like', 'TRA-DEMO-%')->get()->each(function ($t) {
+            TrasladoItem::where('traslado_id', $t->id)->delete();
+            $t->forceDelete();
+        });
 
         $vars = ProductoVariante::inRandomOrder()->limit(6)->get();
         $creados = 0;
@@ -142,11 +151,29 @@ class DemoResetCommand extends Command
                 'observaciones' => 'Traslado de demo para presentación',
             ]);
             foreach ($vars->slice(($i - 1) * 2, 2) as $v) {
-                TrasladoItem::create(['traslado_id' => $t->id, 'variante_id' => $v->id, 'cantidad_solicitada' => rand(3, 8)]);
+                $qty = rand(3, 8);
+                // GARANTIZAR STOCK en el ORIGEN de este traslado.
+                $saldo = InventarioMovimiento::where('variante_id', $v->id)
+                    ->where('ubicacion_id', $o->id)->sum('cantidad');
+                if ((int) $saldo < $qty + 5) {
+                    InventarioMovimiento::create([
+                        'variante_id' => $v->id,
+                        'ubicacion_id' => $o->id,
+                        'tipo' => 'entrada_compra',
+                        'cantidad' => 50,
+                        'costo_unit' => rand(5000, 25000),
+                        'referencia_tipo' => 'demo_seed_traslado',
+                        'referencia_id' => $t->id,
+                        'user_id' => User::first()?->id ?? 1,
+                        'notas' => 'demo:reset · stock garantizado para traslado '.$t->numero,
+                        'created_at' => now()->subDays(rand(2, 20)),
+                    ]);
+                }
+                TrasladoItem::create(['traslado_id' => $t->id, 'variante_id' => $v->id, 'cantidad_solicitada' => $qty]);
             }
             $creados++;
         }
-        $this->line("  · {$creados} traslados demo creados (todos en Borrador para demo controlada)");
+        $this->line("  · {$creados} traslados demo creados con stock garantizado en origen");
     }
 
     protected function sembrarTomasFisicas(): void

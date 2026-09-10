@@ -74,8 +74,11 @@ const rangoPrecio = (p) => {
                 <Link v-for="p in productos" :key="p.id"
                     :href="`/portal/producto/${p.id}`"
                     class="card p-4 hover:shadow-lg hover:-translate-y-0.5 transition-all flex flex-col">
-                    <div class="aspect-square bg-surface-100 dark:bg-surface-800 rounded-lg mb-3 flex items-center justify-center">
-                        <ShoppingBag class="h-12 w-12 text-surface-400"/>
+                    <!-- Fix D2 · imagen del producto (backend provee data:image
+                         SVG estable por referencia si no hay foto real) -->
+                    <div class="aspect-square rounded-lg mb-3 overflow-hidden bg-surface-100 dark:bg-surface-800 flex items-center justify-center">
+                        <img v-if="p.imagen" :src="p.imagen" :alt="p.nombre" class="w-full h-full object-cover"/>
+                        <ShoppingBag v-else class="h-12 w-12 text-surface-400"/>
                     </div>
                     <div class="text-[10px] font-mono text-surface-500">{{ p.referencia }}</div>
                     <div class="font-semibold text-sm line-clamp-2 mt-0.5">{{ p.nombre }}</div>

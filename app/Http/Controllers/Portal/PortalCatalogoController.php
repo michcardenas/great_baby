@@ -54,10 +54,29 @@ class PortalCatalogoController extends Controller implements HasMiddleware
             $preciosVar = collect($p->variantes)
                 ->map(fn ($v) => (float) ($precios[$v->id] ?? 0))
                 ->filter(fn ($x) => $x > 0);
+            // Fix demo D2 · imagen del producto (media library o fallback
+            //   a placeholder ilustrado coloreado por referencia — evita el
+            //   catálogo con placeholders gris uniformes).
+            $imagen = null;
+            if (method_exists($p, 'getFirstMediaUrl')) {
+                $imagen = $p->getFirstMediaUrl('imagen') ?: null;
+            }
+            if (! $imagen) {
+                // Placeholder generado: color estable por hash de la referencia,
+                //   letra inicial visible. Se sirve inline como SVG data URI.
+                $ref = strtoupper($p->referencia ?: 'GB');
+                $letra = mb_substr($p->nombre ?? $ref, 0, 1);
+                $paleta = ['#FDA4AF', '#93C5FD', '#86EFAC', '#FDE68A', '#C4B5FD', '#F9A8D4', '#FCA5A5'];
+                $color = $paleta[crc32($ref) % count($paleta)];
+                $svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><rect width="200" height="200" fill="'.$color.'"/><text x="100" y="130" font-family="system-ui,sans-serif" font-size="90" text-anchor="middle" fill="rgba(255,255,255,.9)" font-weight="700">'.htmlspecialchars($letra).'</text></svg>';
+                $imagen = 'data:image/svg+xml;base64,'.base64_encode($svg);
+            }
+
             return [
                 'id' => $p->id,
                 'referencia' => $p->referencia,
                 'nombre' => $p->nombre,
+                'imagen' => $imagen,
                 'variantes_count' => $p->variantes->count(),
                 'precio_desde' => $preciosVar->min() ?: null,
                 'precio_hasta' => $preciosVar->max() ?: null,
