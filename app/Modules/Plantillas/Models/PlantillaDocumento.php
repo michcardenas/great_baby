@@ -28,7 +28,11 @@ class PlantillaDocumento extends Model implements AuditableContract
     public static function defaults(): array
     {
         return [
-            'colores' => ['primario' => '#b45309', 'secundario' => '#78350f', 'texto' => '#111', 'acento' => '#fef3c7'],
+            // Fix demo · `#111` (3 dígitos) no pasaba el validator regex de
+            //   PlantillasController que exige `^#[0-9a-fA-F]{6}$`. Al guardar
+            //   una plantilla nueva o defaults se disparaba "validation.regex"
+            //   raw. Colores siempre en formato hex de 6 dígitos.
+            'colores' => ['primario' => '#b45309', 'secundario' => '#78350f', 'texto' => '#111111', 'acento' => '#fef3c7'],
             'tipografia' => 'sans',
             'layout' => 'espacioso',
             'logo_url' => null,

@@ -93,6 +93,17 @@ class PlantillasController extends Controller implements HasMiddleware
             'config.terminos_condiciones' => ['nullable', 'string', 'max:2000'],
             'config.sello_texto' => ['nullable', 'string', 'max:50'],
             'config.watermark_activo' => ['boolean'],
+        ], [
+            // Fix demo · mensajes en español para evitar keys raw ("validation.regex")
+            //   filtrando al usuario. Laravel no las traduce por defecto para regex/in
+            //   con paths anidados (config.colores.primario).
+            'regex' => 'El campo :attribute tiene un formato inválido.',
+            'config.colores.*.regex' => 'El color debe estar en formato hexadecimal de 6 dígitos (ej: #b45309).',
+            'in' => 'El valor de :attribute no está permitido.',
+            'required' => 'El campo :attribute es obligatorio.',
+            'integer' => 'El campo :attribute debe ser un número entero.',
+            'min' => 'El campo :attribute debe ser al menos :min.',
+            'max' => 'El campo :attribute no puede exceder :max.',
         ]);
 
         // QA-final #4: whitelist scheme del logo — solo https:// o data:image/*
