@@ -135,6 +135,11 @@ class VistaAlistador extends Page
 
     /**
      * §6 — tomar un pedido para empacar. Adquiere el lock; si ya está tomado por otro, avisa.
+     *
+     * Re-audit DR-β/γ (SEG-M1) · usa `transicionar()` en vez de `->update(['estado'=>...])`.
+     *   El update directo era NO-OP porque `estado` no está en $fillable, pero
+     *   igual escribía la bitácora con la transición mentida → auditoría fantasma.
+     *   Ahora la bitácora la escribe el propio Action sólo si la transición pasó.
      */
     public function tomarPedido(int $pedidoId): void
     {
@@ -158,15 +163,12 @@ class VistaAlistador extends Page
 
         $pedido = DropiPedido::find($pedidoId);
         if ($pedido && $pedido->estado !== EstadoPedidoDropi::Alistando) {
-            $anterior = $pedido->estado->value;
-            $pedido->update(['estado' => EstadoPedidoDropi::Alistando]);
-            DropiEstadoBitacora::create([
-                'pedido_id' => $pedidoId,
-                'estado_desde' => $anterior,
-                'estado_hasta' => EstadoPedidoDropi::Alistando->value,
-                'fuente' => 'manual',
-                'user_id' => $userId,
-            ]);
+            try {
+                $pedido->transicionar(EstadoPedidoDropi::Alistando, 'manual', $userId);
+            } catch (\Throwable $e) {
+                Notification::make()->title('No se pudo tomar')->body($e->getMessage())->danger()->send();
+                return;
+            }
         }
 
         Notification::make()->title('Pedido tomado')->success()->send();
@@ -175,6 +177,8 @@ class VistaAlistador extends Page
     /**
      * §6 — marcar pedido como empacado y liberar el lock.
      * Solo el alistador dueño del lock puede empacar.
+     *
+     * Re-audit DR-β (SEG-M1) · vía transicionar().
      */
     public function empacarPedido(int $pedidoId): void
     {
@@ -198,45 +202,70 @@ class VistaAlistador extends Page
             return;
         }
 
-        $anterior = $pedido->estado->value;
-        $pedido->update(['estado' => EstadoPedidoDropi::Empacado]);
-
-        DropiEstadoBitacora::create([
-            'pedido_id' => $pedidoId,
-            'estado_desde' => $anterior,
-            'estado_hasta' => EstadoPedidoDropi::Empacado->value,
-            'fuente' => 'manual',
-            'user_id' => auth()->id(),
-        ]);
+        try {
+            $pedido->transicionar(EstadoPedidoDropi::Empacado, 'manual', $userId);
+        } catch (\Throwable $e) {
+            Notification::make()->title('No se pudo empacar')->body($e->getMessage())->danger()->send();
+            return;
+        }
 
         DropiAlistadorLock::where('pedido_id', $pedidoId)->delete();
 
         Notification::make()->title('Pedido empacado')->success()->send();
     }
 
+    /**
+     * Re-audit DR-γ (SEG-C1) · GRAVÍSIMO previo: cualquier Alistador podía
+     *   invocar `wire:call="despacharPedido(<id>)"` sobre CUALQUIER pedido,
+     *   escribir `despachado_at`, disparar evento y encolar WhatsApp masivo
+     *   al cliente final. Ahora:
+     *
+     *   - Requiere ser dueño del EmpaqueRegistro `en_curso` para ese pedido,
+     *     como hace `EscanerController::despachar` en la vía web.
+     *   - Transiciona vía `transicionar()` — respeta state-machine y corte
+     *     cerrado. Si la transición falla, NO se despacha ni notifica.
+     *   - Aracely/Gerencia pueden despachar sin registro (root).
+     */
     public function despacharPedido(int $pedidoId): void
     {
+        $userId = auth()->id();
+        $u = auth()->user();
+
         $pedido = DropiPedido::find($pedidoId);
         if (! $pedido) {
             return;
         }
 
-        $anterior = $pedido->estado->value;
-        $pedido->update([
-            'estado' => EstadoPedidoDropi::Despachado,
-            'despachado_at' => now(),
-        ]);
+        $esRoot = $u && $u->esAracely();
+        if (! $esRoot) {
+            // Alistador debe haber empacado él este pedido — verificar EmpaqueRegistro suyo.
+            $tieneRegistro = \App\Modules\Dropi\Models\EmpaqueRegistro::query()
+                ->where('pedido_id', $pedidoId)
+                ->where('operario_id', $userId)
+                ->exists();
+            if (! $tieneRegistro) {
+                Notification::make()
+                    ->title('No autorizado')
+                    ->body('Sólo puedes despachar pedidos que TÚ empacaste.')
+                    ->danger()->send();
+                return;
+            }
+        }
 
-        DropiEstadoBitacora::create([
-            'pedido_id' => $pedidoId,
-            'estado_desde' => $anterior,
-            'estado_hasta' => EstadoPedidoDropi::Despachado->value,
-            'fuente' => 'manual',
-            'user_id' => auth()->id(),
-        ]);
+        try {
+            $pedido->transicionar(
+                EstadoPedidoDropi::Despachado,
+                'manual',
+                $userId,
+                extraFields: ['despachado_at' => now()],
+            );
+        } catch (\Throwable $e) {
+            Notification::make()->title('No se pudo despachar')->body($e->getMessage())->danger()->send();
+            return;
+        }
 
-        // Broadcast tiempo real + Job WhatsApp asincrónico
-        event(new PedidoDespachado($pedido));
+        // Broadcast + WhatsApp SÓLO tras transición exitosa.
+        event(new PedidoDespachado($pedido->fresh()));
         NotificarClienteDespachoJob::dispatch($pedido->id);
 
         Notification::make()

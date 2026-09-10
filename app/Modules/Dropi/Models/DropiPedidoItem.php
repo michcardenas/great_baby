@@ -4,17 +4,26 @@ namespace App\Modules\Dropi\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\SoftDeletes;
+use OwenIt\Auditing\Auditable;
+use OwenIt\Auditing\Contracts\Auditable as AuditableContract;
 
-class DropiPedidoItem extends Model
+/**
+ * Re-audit DR-β + η + ο (DATOS-C1, C2, C3, SEG-M1) ·
+ *   - $guarded reemplaza $fillable: `cantidad` y `precio_proveedor_unit`
+ *     ya no pueden mass-asignarse desde payload de Filament/form.
+ *   - SoftDeletes por retención DIAN 5 años.
+ *   - Auditable: cambios a cantidad/precio DESPUÉS de cierre de corte
+ *     ya no quedan sin traza (el corte tiene manifiesto_hash pero antes
+ *     el line-item se editaba sin registro).
+ */
+class DropiPedidoItem extends Model implements AuditableContract
 {
+    use Auditable, SoftDeletes;
+
     protected $table = 'dropi_pedido_items';
 
-    protected $fillable = [
-        'pedido_id', 'variante_id', 'sku_dropi',
-        'cantidad', 'precio_proveedor_unit',
-        'ubicacion_asignada_id', 'despachado',
-        'pickeado_at', 'pickeado_por', 'cantidad_pickeada',
-    ];
+    protected $guarded = ['id', 'created_at', 'updated_at', 'deleted_at'];
 
     protected $casts = [
         'cantidad' => 'integer',

@@ -28,7 +28,9 @@ class ProcesarEscaneoEmpaque
      */
     public function handle(string $codigo, ?int $pedidoActivoId, int $operarioId): array
     {
-        $codigo = trim($codigo);
+        // Re-audit DR-ε (FUNC-M5) · normalizar (upper+trim) — sync guarda UPPER.
+        //   Pistolas mixed-case no matcheaban con `where('guia', ...)`.
+        $codigo = strtoupper(trim($codigo));
         if ($codigo === '') {
             return ['tipo' => 'error', 'mensaje' => 'Código vacío', 'sonido' => 'error'];
         }

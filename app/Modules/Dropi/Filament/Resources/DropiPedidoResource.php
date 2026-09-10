@@ -44,13 +44,21 @@ class DropiPedidoResource extends Resource
 
     protected static ?string $recordTitleAttribute = 'guia';
 
+    // Re-audit DR-γ (SEG-C2) · global-search sólo por guía + orden Dropi;
+    //   sacamos cliente_nombre/ciudad para que la búsqueda global no exponga
+    //   PII a roles no-Aracely (Alistador ve la vista dedicada).
     public static function getGloballySearchableAttributes(): array
     {
-        return ['guia', 'cliente_nombre', 'cliente_ciudad', 'dropi_orden_id', 'transportadora'];
+        return ['guia', 'dropi_orden_id'];
     }
 
     public static function getGlobalSearchResultDetails($record): array
     {
+        $u = auth()->user();
+        // Sólo Aracely/Gerencia ve monto + cliente en global-search.
+        if (! $u || ! $u->esAracely()) {
+            return ['Estado' => $record->estado?->label()];
+        }
         return [
             'Cliente' => $record->cliente_nombre . ' · ' . $record->cliente_ciudad,
             'Estado' => $record->estado?->label(),
@@ -58,10 +66,16 @@ class DropiPedidoResource extends Resource
         ];
     }
 
-    // §24 — todos los roles del panel pueden VER pedidos, pero solo Aracely edita campos financieros (protegido en form)
+    // Re-audit DR-γ (SEG-C2) · antes: `(bool) auth()->user()` → cualquier user
+    //   del panel /admin leía PII (cliente_doc, teléfono, dirección) y montos
+    //   financieros de TODOS los pedidos, además en global-search. Ahora
+    //   restringido a Aracely/Gerencia y Alistador (que necesita ver su cola).
+    //   SAC no debería mirar toda la cartera de pedidos: si necesita algo,
+    //   entra por Contactos.
     public static function canViewAny(): bool
     {
-        return (bool) auth()->user();
+        $u = auth()->user();
+        return $u && ($u->esAracely() || $u->esAlistador());
     }
 
     public static function canCreate(): bool

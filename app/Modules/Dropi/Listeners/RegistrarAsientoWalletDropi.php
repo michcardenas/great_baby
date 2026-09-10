@@ -29,11 +29,41 @@ class RegistrarAsientoWalletDropi
     public function handle(DropiWalletMovimiento $mov): void
     {
         DB::transaction(function () use ($mov) {
-            // Limpieza previa por idempotencia.
-            MovimientoContable::query()
+            // Re-audit DR-θ (FUNC-M2) · antes: HARD-DELETE de asientos previos
+            //   → si el mov cambió tras cerrar contabilidad del periodo, el
+            //   libro mayor se corrompía sin traza. Ahora: si ya existe
+            //   asiento previo para este movimiento, generamos AJUSTE INVERSO
+            //   (contra-partida) y luego el nuevo. Nunca borrar historial.
+            $previos = MovimientoContable::query()
                 ->where('origen_type', DropiWalletMovimiento::class)
                 ->where('origen_id', $mov->id)
-                ->delete();
+                ->orderBy('id')
+                ->get();
+
+            if ($previos->isNotEmpty()) {
+                foreach ($previos as $p) {
+                    // No re-invertir asientos que ya fueron reversados (marca en descripcion).
+                    if (str_starts_with((string) $p->descripcion, '[REVERSA]')) continue;
+                    // Chequeo idempotente: si ya existe la reversa de este id, saltar.
+                    $yaReversado = MovimientoContable::query()
+                        ->where('origen_type', DropiWalletMovimiento::class)
+                        ->where('origen_id', $mov->id)
+                        ->where('descripcion', 'LIKE', '[REVERSA #' . $p->id . ']%')
+                        ->exists();
+                    if ($yaReversado) continue;
+
+                    MovimientoContable::create([
+                        'fecha' => now(),
+                        'cuenta_puc' => $p->cuenta_puc,
+                        'debe' => (float) $p->haber,   // invertido
+                        'haber' => (float) $p->debe,   // invertido
+                        'origen_type' => DropiWalletMovimiento::class,
+                        'origen_id' => $mov->id,
+                        'descripcion' => '[REVERSA #' . $p->id . '] ' . ($p->descripcion ?? ''),
+                        'user_id' => auth()->id(),
+                    ]);
+                }
+            }
 
             $tipo = $mov->tipo instanceof TipoMovimientoWallet
                 ? $mov->tipo

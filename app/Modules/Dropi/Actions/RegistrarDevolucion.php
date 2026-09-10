@@ -33,6 +33,13 @@ class RegistrarDevolucion
         int $userId,
         ?string $notas = null,
     ): array {
+        // Re-audit DR-ε (FUNC-C5) · normalizar guía (upper+trim). Pistolas con
+        //   mayúsculas/espacios/lowercase fallaban el match. Sync guarda UPPER.
+        $guia = strtoupper(trim($guia));
+        if ($guia === '') {
+            throw new RuntimeException('Guía vacía.');
+        }
+
         return DB::transaction(function () use ($guia, $destino, $userId, $notas) {
             $pedido = DropiPedido::where('guia', $guia)->firstOrFail();
 
@@ -51,15 +58,13 @@ class RegistrarDevolucion
                 'notas' => $notas,
             ]);
 
-            // Reingresar inventario si aplica §12
-            $movimientos = 0;
-            if ($destino === DestinoDevolucion::Reingreso) {
-                $movimientos = $this->reingresarInventario($pedido, $destino, $userId);
-            } elseif ($destino !== DestinoDevolucion::BajaTotal) {
-                // Averías: entra a la zona correspondiente (no vendible pero rastreable)
-                $movimientos = $this->reingresarInventario($pedido, $destino, $userId);
-            }
-            // BajaTotal: no crea movimientos — se pierde
+            // Reingresar inventario si aplica §12.
+            // Re-audit DR-β UX (UX-C4) · NoLlegoFisicamente y BajaTotal NO
+            //   generan movimiento de kardex. `reingresaInventario()`
+            //   centraliza la decisión.
+            $movimientos = $destino->reingresaInventario()
+                ? $this->reingresarInventario($pedido, $destino, $userId)
+                : 0;
 
             // Cambio de estado del pedido a través de la state machine central.
             // Fuente 'sistema': esta Action ES la autoridad para pasar cualquier
@@ -94,17 +99,24 @@ class RegistrarDevolucion
                 continue;
             }
 
-            InventarioMovimiento::create([
-                'variante_id' => $item->variante_id,
-                'ubicacion_id' => $ubicacion->id,
-                'tipo' => 'ingreso',
-                'cantidad' => (int) $item->cantidad,
-                'referencia_tipo' => 'devolucion',
-                'referencia_id' => $pedido->id,
-                'user_id' => $userId,
-                'notas' => "Devolución guía {$pedido->guia} → {$destino->label()}",
-            ]);
-            $movimientos++;
+            // Re-audit DR-ε (FUNC-C5) · idempotencia por (variante, pedido) —
+            //   antes: retry job creaba duplicado del ingreso. Ahora firstOrCreate
+            //   con clave (referencia_tipo='devolucion', referencia_id, variante).
+            $creado = InventarioMovimiento::firstOrCreate(
+                [
+                    'referencia_tipo' => 'devolucion',
+                    'referencia_id' => $pedido->id,
+                    'variante_id' => $item->variante_id,
+                ],
+                [
+                    'ubicacion_id' => $ubicacion->id,
+                    'tipo' => 'ingreso',
+                    'cantidad' => (int) $item->cantidad,
+                    'user_id' => $userId,
+                    'notas' => "Devolución guía {$pedido->guia} → {$destino->label()}",
+                ]
+            );
+            if ($creado->wasRecentlyCreated) $movimientos++;
         }
 
         return $movimientos;

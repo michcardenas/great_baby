@@ -18,22 +18,17 @@ class DropiPedido extends Model implements AuditableContract
 
     protected $table = 'dropi_pedidos';
 
-    // A2 · sacamos de $fillable los vínculos escritos SOLO por integraciones.
-    // Re-audit H9 func · también quitamos `estado` — la única forma legítima
-    // de cambiarlo es `transicionar()`, que usa `->save()` directo. Cualquier
-    // controller que quiera bypasear la máquina de estados con `->update([...])`
-    // fallará silenciosamente en vez de romper la coherencia.
-    protected $fillable = [
-        'corte_id',
-        'guia', 'dropi_orden_id', 'transportadora', 'tienda', 'tienda_id',
-        'vendedor_nombre', 'vendedor_identificacion', 'requiere_factura_b2b',
-        'cliente_nombre', 'cliente_doc', 'cliente_telefono',
-        'cliente_direccion', 'cliente_ciudad', 'cliente_depto',
-        'despachado_at', 'entregado_at', 'devuelto_at', 'pagado_at',
-        'monto_esperado_proveedor', 'monto_cliente_final',
-        'ganancia_vendedor', 'flete_transportadora',
-        'notificado_despacho_at',
-    ];
+    // Re-audit DR-β (DATOS-C1, SEG-M1) · $guarded reemplaza $fillable.
+    //   Todo se asigna explícito por Actions/Sync/transicionar. Un
+    //   `->update(['estado'=>...])` ya era no-op por $fillable, pero seguía
+    //   dejando bitácora mentida en VistaAlistador (SEG-M1). Ahora también
+    //   protege `corte_id` (evita reasignar pedido a otro corte), `guia`
+    //   (identidad estable), `monto_esperado_proveedor` (financiero).
+    //
+    //   El sync (SincronizarPedidosDropi) usa asignación por propiedad
+    //   ($p->campo = ...) para bypasar $guarded correctamente; controllers
+    //   deben pasar por Actions.
+    protected $guarded = ['id', 'estado', 'created_at', 'updated_at', 'deleted_at'];
 
     protected $casts = [
         'estado' => EstadoPedidoDropi::class,

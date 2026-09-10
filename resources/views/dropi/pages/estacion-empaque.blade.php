@@ -19,7 +19,14 @@
                 <div style="font-size:.75rem;color:#f59e0b;text-transform:uppercase;letter-spacing:2px;font-weight:700;">🔫 Estación de Empaque</div>
                 <div style="display:flex;align-items:center;gap:.5rem;"
                      x-data="{ mute: (localStorage.getItem('gb.mute')==='1'), volumen: parseInt(localStorage.getItem('gb.vol')||'60')/100 }">
-                    <div style="font-size:.8rem;color:#9ca3af;" x-data="{h:''}" x-init="setInterval(()=>h=new Date().toLocaleTimeString('es-CO'),1000)" x-text="h"></div>
+                    {{-- Re-audit DR-α UX (UX-M9) · reloj arranca desde hora
+                         servidor Bogotá (evita tablet con hora errónea) y
+                         luego avanza local. `serverStart` es Date.now() del
+                         momento en que renderizó Blade con TZ Bogotá. --}}
+                    <div style="font-size:.8rem;color:#9ca3af;"
+                         x-data="{ h: '', delta: (Date.now() - {{ (int) (now()->timezone('America/Bogota')->timestamp * 1000) }}) }"
+                         x-init="setInterval(() => { const t = new Date(Date.now() - delta); h = t.toLocaleTimeString('es-CO'); }, 1000)"
+                         x-text="h" title="Hora servidor · Bogotá"></div>
                     <button type="button"
                             @click="mute = !mute; localStorage.setItem('gb.mute', mute?'1':'0'); window.gbEmpaqueMute = mute;"
                             :title="mute ? 'Sonidos silenciados — click para activar' : 'Sonidos activos — click para silenciar'"
@@ -316,10 +323,18 @@
             const s = e.detail.sonido || e.detail[0]?.sonido;
             const mensaje = e.detail.mensaje || e.detail[0]?.mensaje || '';
 
-            // 1. Beep (respeta el mute persistente)
+            // Re-audit DR-α UX (UX-C1) · SINGLETON AudioContext.
+            //   Antes: `new AudioContext()` en CADA scan. Chrome/Edge tapan
+            //   a los 6 contextos abiertos y el beep desaparece silenciosamente
+            //   sin error. Ahora reutilizamos un ctx global (`window.__gbAudioCtx`)
+            //   creado una sola vez y reactivado si está suspendido (autoplay policy).
             if (! window.gbEmpaqueMute) {
                 try {
-                    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                    if (! window.__gbAudioCtx) {
+                        window.__gbAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    }
+                    const ctx = window.__gbAudioCtx;
+                    if (ctx.state === 'suspended') ctx.resume();
                     const osc = ctx.createOscillator();
                     const gain = ctx.createGain();
                     osc.connect(gain); gain.connect(ctx.destination);

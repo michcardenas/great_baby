@@ -117,15 +117,23 @@ class ConciliarWalletDropi
                 ['pagado_at' => $mov->fecha],
             );
 
-            // §19 detectar sanción por diferencia de precio
+            // §19 detectar diferencia de precio (subpago O sobrepago).
+            //
+            // Re-audit DR-θ (FUNC-M1) · antes solo detectaba subpagos
+            //   (`$mov->monto + 0.01 < $esperado`). Sobrepagos de Dropi pasaban
+            //   silenciosos, distorsionando reportes. Ahora se registra ambos
+            //   como diferencia; el signo lo lleva `diferencia`:
+            //     + = subpago (esperado > recibido) — Dropi debe
+            //     - = sobrepago (recibido > esperado) — GB debe devolver
             $esperado = (float) $pedido->monto_esperado_proveedor;
-            if ($mov->monto + 0.01 < $esperado) {
+            $delta = $esperado - (float) $mov->monto; // + = subpago
+            if (abs($delta) > 0.01) {
                 DropiSancion::updateOrCreate(
-                    ['pedido_id' => $pedido->id, 'tipo' => 'diferencia_precio'],
+                    ['pedido_id' => $pedido->id, 'tipo' => $delta > 0 ? 'diferencia_precio' : 'sobrepago'],
                     [
                         'monto_esperado' => $esperado,
                         'monto_recibido' => $mov->monto,
-                        'diferencia' => $esperado - $mov->monto,
+                        'diferencia' => $delta, // firmado
                         'detectada_at' => now(),
                     ],
                 );

@@ -58,11 +58,16 @@ enum EstadoPedidoDropi: string
      * Cuando el pedido pertenece a un corte cerrado, sólo estas transiciones son
      * legales — y sólo desde fuente 'api' o 'sistema' (conciliación auto).
      * Un operador humano NUNCA muta pedidos de corte cerrado.
+     *
+     * Re-audit DR-δ (FUNC-C2) · agregado Despachado: es la transición operativa
+     *   natural post-cierre (pedido Empacado atrapado en corte cerrado necesita
+     *   pasar a Despachado cuando físicamente sale). Antes RuntimeException
+     *   bloqueaba incluso a la fuente `sistema`.
      */
     public function permitidoEnCorteCerrado(): bool
     {
         return in_array($this, [
-            self::Entregado, self::Pagado, self::DevolucionEnCamino,
+            self::Despachado, self::Entregado, self::Pagado, self::DevolucionEnCamino,
             self::Devuelto, self::CanceladoDropi,
         ], true);
     }

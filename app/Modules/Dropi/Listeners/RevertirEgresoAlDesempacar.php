@@ -38,11 +38,19 @@ class RevertirEgresoAlDesempacar
             $pedido = DropiPedido::with('items.variante')->find($e->pedido->id);
             if (! $pedido) return;
 
-            // Guard idempotencia.
-            $yaReversado = InventarioMovimiento::where('referencia_tipo', self::REFERENCIA_TIPO)
-                ->where('referencia_id', $pedido->id)
-                ->exists();
-            if ($yaReversado) return;
+            // Re-audit DR-ε (FUNC-C4) · antes: `exists()` bloqueaba el 2º
+            //   reverso en rework múltiple (Empacado→Alistando→Empacado→Alistando)
+            //   dejando kardex a -N. Ahora balanceamos por conteo, igual que
+            //   el listener de egreso: si ya hay tantos reversos como egresos,
+            //   no rehacer; si el rework generó otro egreso desbalanceado,
+            //   revertir de nuevo.
+            $egresos = InventarioMovimiento::where(
+                'referencia_tipo',
+                \App\Modules\Dropi\Listeners\DescontarInventarioAlEmpacar::REFERENCIA_TIPO
+            )->where('referencia_id', $pedido->id)->count();
+            $reversos = InventarioMovimiento::where('referencia_tipo', self::REFERENCIA_TIPO)
+                ->where('referencia_id', $pedido->id)->count();
+            if ($reversos >= $egresos) return;
 
             $ubicacion = InventarioUbicacion::where('categoria', CategoriaUbicacion::Venta->value)
                 ->where('activa', true)->orderBy('id')->first();

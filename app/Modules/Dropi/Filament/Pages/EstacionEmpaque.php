@@ -42,6 +42,29 @@ class EstacionEmpaque extends Page
         return $u->esAracely() || $u->hasAnyRole(['Alistador']);
     }
 
+    /**
+     * Re-audit DR-α UX (UX-C2) · recuperación de sesión al reload.
+     *
+     *   Antes: `pedidoActivoId` era estado Livewire volátil. Si la tablet
+     *   se refrescaba, perdía WebSocket o el operario cerraba el tab con
+     *   5 items pickeados, el pedido activo se perdía y su foto quedaba
+     *   huérfana.
+     *
+     *   Ahora: al montar buscamos el EmpaqueRegistro `en_curso` del
+     *   operario logueado y rehidratamos `pedidoActivoId`.
+     */
+    public function mount(): void
+    {
+        $registro = EmpaqueRegistro::query()
+            ->where('operario_id', auth()->id())
+            ->where('estado', 'en_curso')
+            ->orderByDesc('id')
+            ->first();
+        if ($registro) {
+            $this->pedidoActivoId = $registro->pedido_id;
+        }
+    }
+
     public function escanear(): void
     {
         if (trim($this->codigo) === '') {
@@ -184,15 +207,35 @@ class EstacionEmpaque extends Page
     public function cancelarPedido(): void
     {
         if ($this->pedidoActivoId) {
-            // Ownership: solo el operario que abrió el registro puede cancelarlo
-            EmpaqueRegistro::where('pedido_id', $this->pedidoActivoId)
+            // Re-audit DR-α UX (SEG-M2, UX-C3) · sólo cancela si el operario
+            //   ES DUEÑO del EmpaqueRegistro en_curso. Antes: cualquier
+            //   Alistador cancelaba el picking de OTRO borrando su trabajo
+            //   (el update de items no filtraba por `pickeado_por`).
+            $miRegistro = EmpaqueRegistro::where('pedido_id', $this->pedidoActivoId)
                 ->where('estado', 'en_curso')
                 ->where('operario_id', auth()->id())
-                ->update(['estado' => 'anulado', 'fin_at' => now()]);
+                ->first();
 
-            // Reset cantidad_pickeada para que el pedido pueda re-abrirse limpio
+            if (! $miRegistro) {
+                \Filament\Notifications\Notification::make()
+                    ->title('No puedes cancelar')
+                    ->body('Este empaque lo tomó otro operario.')
+                    ->danger()->send();
+                return;
+            }
+
+            $miRegistro->update(['estado' => 'anulado', 'fin_at' => now()]);
+
+            // Reset SOLO de items pickeados por ESTE operario (no destruir
+            //   trabajo ajeno si por alguna razón hubo picking mixto).
             \App\Modules\Dropi\Models\DropiPedidoItem::where('pedido_id', $this->pedidoActivoId)
+                ->where('pickeado_por', auth()->id())
                 ->update(['cantidad_pickeada' => 0, 'pickeado_at' => null, 'pickeado_por' => null]);
+
+            \Filament\Notifications\Notification::make()
+                ->title('Empaque cancelado')
+                ->body('Tu picking de este pedido fue liberado.')
+                ->success()->send();
         }
         $this->pedidoActivoId = null;
         $this->ultimoResultado = null;

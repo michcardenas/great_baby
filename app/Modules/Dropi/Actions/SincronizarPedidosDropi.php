@@ -5,6 +5,7 @@ namespace App\Modules\Dropi\Actions;
 use App\Modules\Dropi\Clients\DropiClientInterface;
 use App\Modules\Dropi\DTOs\PedidoDropiDTO;
 use App\Modules\Dropi\Enums\EstadoCorte;
+use App\Modules\Dropi\Enums\EstadoPedidoDropi;
 use App\Modules\Dropi\Models\DropiEstadoBitacora;
 use App\Modules\Dropi\Models\DropiPedido;
 use App\Modules\Dropi\Models\DropiPedidoItem;
@@ -47,38 +48,54 @@ class SincronizarPedidosDropi
 
         $ejecutadoEn = CarbonImmutable::now();
         $pedidos = $this->client->pedidosDesde($desde);
+        $totalProcesados = $pedidos->count();
 
         $nuevos = 0;
         $actualizados = 0;
         $pendientesInv = 0;
         $errores = 0;
 
-        foreach ($pedidos as $dto) {
-            // H7 func · try/catch por pedido — un DTO tóxico NO puede bloquear
-            // el sync completo. Log y sigue.
-            try {
-                $resultado = DB::transaction(fn () => $this->guardarPedido($dto));
-            } catch (\Throwable $e) {
-                $errores++;
-                \Illuminate\Support\Facades\Log::error('dropi.sync.pedido_error', [
-                    'guia' => $dto->guia ?? null, 'msg' => $e->getMessage(),
-                ]);
-                continue;
-            }
+        // Re-audit DR-α (FUNC-M4) · procesar por chunks de 200 y liberar
+        //   memoria entre lotes. Antes el foreach lineal sobre Collection
+        //   de 5000+ pedidos + cada iteración con transacción + Eloquent
+        //   hidratando pedido completo → memoria crecía hasta OOM.
+        //
+        //   Cambio raíz definitivo (pendiente): que `pedidosDesde()` retorne
+        //   `LazyCollection` con cursor de streaming HTTP. Esto requiere
+        //   modificar `DropiClientInterface` + Api + Mock. Por ahora chunks.
+        foreach ($pedidos->chunk(200) as $lote) {
+            foreach ($lote as $dto) {
+                // H7 func · try/catch por pedido — un DTO tóxico NO puede bloquear
+                // el sync completo. Log y sigue.
+                try {
+                    $resultado = DB::transaction(fn () => $this->guardarPedido($dto));
+                } catch (\Throwable $e) {
+                    $errores++;
+                    \Illuminate\Support\Facades\Log::error('dropi.sync.pedido_error', [
+                        'guia' => $dto->guia ?? null, 'msg' => $e->getMessage(),
+                    ]);
+                    continue;
+                }
 
-            match ($resultado) {
-                'nuevo' => $nuevos++,
-                'actualizado' => $actualizados++,
-                default => null,
-            };
+                match ($resultado) {
+                    'nuevo' => $nuevos++,
+                    'actualizado' => $actualizados++,
+                    default => null,
+                };
 
-            if ($resultado === 'nuevo' || $resultado === 'actualizado') {
-                $pedido = DropiPedido::where('guia', $dto->guia)->first();
-                if ($pedido && $pedido->estado->value === 'pendiente_inventario') {
-                    $pendientesInv++;
+                if ($resultado === 'nuevo' || $resultado === 'actualizado') {
+                    // Consulta liviana (sólo estado) para no re-hidratar el pedido.
+                    $estado = DropiPedido::where('guia', $dto->guia)->value('estado');
+                    if ($estado === 'pendiente_inventario') {
+                        $pendientesInv++;
+                    }
                 }
             }
+            // Liberar memoria entre chunks.
+            unset($lote);
+            gc_collect_cycles();
         }
+        unset($pedidos);
 
         // M4 · dejar high-water-mark.
         // Re-audit N7 seg · race-safe: usar INSERT/UPDATE con GREATEST() para que
@@ -93,7 +110,7 @@ class SincronizarPedidosDropi
         );
 
         return [
-            'procesados' => $pedidos->count(),
+            'procesados' => $totalProcesados,
             'nuevos' => $nuevos,
             'actualizados' => $actualizados,
             'pendientes_inv' => $pendientesInv,
@@ -128,11 +145,21 @@ class SincronizarPedidosDropi
         $corte = AsignarCorteACarga::run($dto->creadoAt);
         $existente = DropiPedido::where('guia', $guia)->first();
 
-        // Estado inicial según stock disponible (solo la primera vez).
+        // Re-audit DR-α (FUNC-C1) · antes: `$estadoInicial = $existente
+        //   ? $existente->estado : porSku(...)` — para existente = estado
+        //   actual → la comparación `$estadoInicial !== $existente->estado`
+        //   (línea ~177) SIEMPRE era falsa → el estado Dropi NUNCA se
+        //   sincronizaba. Si Dropi marcaba Entregado/Devuelto/Pagado, el
+        //   pedido quedaba pegado en Alistando/Despachado y Aracely facturaba mal.
+        //
+        //   Fix: mapear `$dto->estadoDropi` (raw string) a EstadoPedidoDropi
+        //   como fuente de verdad para existentes. Sólo cae a `porSku()` en
+        //   creación cuando el DTO no trae estado interpretable.
         $itemsPlano = array_map(fn ($it) => ['sku' => $it->skuDropi, 'cantidad' => $it->cantidad], $dto->items);
+        $estadoDesdeDropi = self::mapearEstadoDropi($dto->estadoDropi);
         $estadoInicial = $existente
-            ? $existente->estado
-            : $this->resolverEstado->porSku($itemsPlano);
+            ? ($estadoDesdeDropi ?? $existente->estado)
+            : ($estadoDesdeDropi ?? $this->resolverEstado->porSku($itemsPlano));
 
         $data = [
             'corte_id' => $corte->id,
@@ -200,7 +227,13 @@ class SincronizarPedidosDropi
             return 'actualizado';
         }
 
-        $pedido = DropiPedido::create(array_merge($data, ['guia' => $guia]));
+        // Re-audit DR-β · con $guarded, `estado` no pasa por fill. Se crea
+        //   sin estado y se asigna por propiedad.
+        $sinEstado = array_diff_key(array_merge($data, ['guia' => $guia]), ['estado' => true]);
+        $pedido = DropiPedido::create($sinEstado);
+        $pedido->estado = $estadoInicial;
+        $pedido->save();
+
         $this->sincronizarItems($pedido, $dto);
 
         DropiEstadoBitacora::create([
@@ -213,6 +246,33 @@ class SincronizarPedidosDropi
         ]);
 
         return 'nuevo';
+    }
+
+    /**
+     * Re-audit DR-α (FUNC-C1) · mapper string Dropi → EstadoPedidoDropi.
+     *
+     *   Los estados que devuelve la API de Dropi son strings arbitrarios que
+     *   dependen de la versión de su backend. Este mapper cubre los sinónimos
+     *   comunes; los que no matcheen retornan null y el llamador decide
+     *   (fallback a porSku o mantener actual).
+     */
+    public static function mapearEstadoDropi(?string $raw): ?EstadoPedidoDropi
+    {
+        if (! $raw) return null;
+        $norm = strtolower(trim($raw));
+        return match ($norm) {
+            'pending', 'nuevo', 'pendiente'                => EstadoPedidoDropi::Pending,
+            'preparando', 'alistando', 'in_preparation'    => EstadoPedidoDropi::Alistando,
+            'empacado', 'packed'                           => EstadoPedidoDropi::Empacado,
+            'despachado', 'shipped', 'in_transit', 'en_transito' => EstadoPedidoDropi::Despachado,
+            'entregado', 'delivered', 'completed'          => EstadoPedidoDropi::Entregado,
+            'devolucion', 'devolucion_en_camino', 'return_in_transit' => EstadoPedidoDropi::DevolucionEnCamino,
+            'devuelto', 'returned'                          => EstadoPedidoDropi::Devuelto,
+            'pagado', 'paid', 'settled'                     => EstadoPedidoDropi::Pagado,
+            'cancelado', 'canceled', 'cancelled', 'cancelado_dropi' => EstadoPedidoDropi::CanceladoDropi,
+            'cancelado_gb', 'canceled_by_seller'            => EstadoPedidoDropi::CanceladoGb,
+            default => null,
+        };
     }
 
     protected function sincronizarItems(DropiPedido $pedido, PedidoDropiDTO $dto): void

@@ -39,7 +39,25 @@ class CerrarCorte
                 throw new RuntimeException("El corte ya está cerrado (hash: {$corte->manifiesto_hash}).");
             }
 
-            $pedidos = $corte->pedidos()->with('items')->orderBy('guia')->get();
+            // Re-audit DR-δ (FUNC-M7) · lock los pedidos del corte para
+            //   snapshot consistente + validar terminales manuales.
+            $pedidos = $corte->pedidos()->with('items')->orderBy('guia')->lockForUpdate()->get();
+
+            // Guard: no cerrar con pedidos en Pending/PendienteInventario/Alistando
+            //   (fuente manual quedaría atrapada — corte cerrado sólo admite
+            //   transiciones a Despachado/Entregado/Pagado/Devuelto/etc por
+            //   fuente api|sistema; Alistando y Pending no están en la lista).
+            $atrapados = $pedidos->filter(fn ($p) => in_array($p->estado, [
+                EstadoPedidoDropi::Pending, EstadoPedidoDropi::PendienteInventario,
+                EstadoPedidoDropi::Alistando,
+            ], true));
+            if ($atrapados->isNotEmpty()) {
+                throw new RuntimeException(sprintf(
+                    'No se puede cerrar: %d pedidos aún en Pending/PendienteInv/Alistando quedarían atrapados. Empácalos, cancélalos o muévelos a otro corte antes de cerrar. Guías: %s',
+                    $atrapados->count(),
+                    $atrapados->pluck('guia')->take(5)->implode(', ')
+                ));
+            }
 
             $snapshot = [
                 'corte' => [
@@ -95,17 +113,18 @@ class CerrarCorte
                 ->setPaper('letter', 'portrait')
                 ->save($absPath);
 
-            $corte->update([
-                'estado' => EstadoCorte::Cerrado,
-                'cerrado_por' => $userId,
-                'cerrado_at' => now(),
-                'manifiesto_hash' => $hash,
-                'manifiesto_pdf_path' => $pdfPath,
-                'snapshot_json' => $snapshot,
-                'pedidos_totales' => $snapshot['totales']['pedidos_totales'],
-                'pedidos_despachados' => $snapshot['totales']['pedidos_despachados'],
-                'pedidos_pendientes_inv' => $snapshot['totales']['pedidos_pendientes_inv'],
-            ]);
+            // Re-audit DR-β · con $guarded, `estado/cerrado_por/cerrado_at/
+            //   manifiesto_hash` no pasan por fill. Se asignan por propiedad.
+            $corte->estado = EstadoCorte::Cerrado;
+            $corte->cerrado_por = $userId;
+            $corte->cerrado_at = now();
+            $corte->manifiesto_hash = $hash;
+            $corte->manifiesto_pdf_path = $pdfPath;
+            $corte->snapshot_json = $snapshot;
+            $corte->pedidos_totales = $snapshot['totales']['pedidos_totales'];
+            $corte->pedidos_despachados = $snapshot['totales']['pedidos_despachados'];
+            $corte->pedidos_pendientes_inv = $snapshot['totales']['pedidos_pendientes_inv'];
+            $corte->save();
 
             // Generar remisiones 1:1 y prepararlas para ARI (§21)
             $r = $this->generarRemisiones->handle($corteId);

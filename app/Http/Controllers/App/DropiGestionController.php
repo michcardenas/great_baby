@@ -198,7 +198,14 @@ class DropiGestionController extends Controller implements HasMiddleware
             'monto' => ['required', 'numeric'],
             'pedido_id' => ['nullable', 'integer', 'exists:dropi_pedidos,id'],
             'guia' => ['nullable', 'string', 'max:60'],
-            'categoria' => ['nullable', 'string', 'max:100'],
+            // Re-audit DR-ι (SEG-B4) · whitelist categoría — antes string libre
+            //   envenenaba reportes agrupados por categoría con typos/valores
+            //   arbitrarios. Estas son las categorías conocidas del negocio;
+            //   se pueden ampliar en `config/dropi.php`.
+            'categoria' => ['nullable', 'string', 'max:100', Rule::in([
+                'ajuste_manual', 'flete_devuelto', 'costo_bancario', 'reembolso',
+                'sanción_dropi', 'bono', 'comisión', 'otro',
+            ])],
         ]);
 
         // N6 seg · signo del monto coherente con el tipo — evita mostrar saldo

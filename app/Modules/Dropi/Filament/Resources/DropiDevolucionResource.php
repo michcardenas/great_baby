@@ -45,7 +45,26 @@ class DropiDevolucionResource extends Resource
         return $u ? ($u->esAracely() || $u->esAlistador() || $u->esSac()) : false;
     }
 
+    // Re-audit DR-γ (SEG-C3) · SAC/Alistador NO deben editar destino_inventario:
+    //   reingreso vs averia_baja mueve el kardex real. Sólo Aracely edita.
+    public static function canCreate(): bool
+    {
+        $u = auth()->user();
+        return $u && ($u->esAracely() || $u->esAlistador());
+    }
+
+    public static function canEdit($record): bool
+    {
+        return auth()->user()?->esAracely() ?? false;
+    }
+
     public static function canDelete($record): bool
+    {
+        return auth()->user()?->esAracely() ?? false;
+    }
+
+    // Cerrar bulk-delete accidental por HeredaAutorizacion en un futuro.
+    public static function canDeleteAny(): bool
     {
         return auth()->user()?->esAracely() ?? false;
     }

@@ -25,6 +25,12 @@ const buscar = () => {
 };
 const guardar = () => {
     if (!props.pedido) return;
+    // Re-audit DR-β UX (UX-C4) · "no llegó físicamente" requiere nota explícita
+    //   (fraude/faltante fantasma es material — no aceptamos click a ciegas).
+    if (form.destino_inventario === 'no_llego_fisicamente' && (form.notas ?? '').trim().length < 10) {
+        alert('Para "no llegó físicamente" es obligatoria una nota (≥10 caracteres) que explique cómo se detectó.');
+        return;
+    }
     procesando.value = true;
     router.post('/app/dropi/devolucion/registrar', {
         pedido_id: props.pedido.id,
@@ -32,6 +38,9 @@ const guardar = () => {
         notas: form.notas,
     }, { onFinish: () => { procesando.value = false; } });
 };
+
+// Re-audit DR-β UX · destacar visualmente el destino "fantasma".
+const esDestinoFantasma = (v) => v === 'no_llego_fisicamente';
 const { money } = useMoney();
 const { badge } = usePedidoBadge();
 </script>
@@ -106,12 +115,17 @@ const { badge } = usePedidoBadge();
                         <label class="block text-xs font-semibold text-surface-600 dark:text-surface-300 mb-1">Destino inventario</label>
                         <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
                             <label v-for="opt in destinos" :key="opt.value"
-                                :class="['cursor-pointer border rounded-lg p-3 text-center text-sm transition',
-                                    form.destino_inventario === opt.value ? 'border-brand-600 bg-brand-50 dark:bg-brand-950 text-brand-800 dark:text-brand-200' : 'border-surface-200 dark:border-surface-800']">
+                                :class="['cursor-pointer border-2 rounded-lg p-3 text-center text-sm transition min-h-[76px] flex items-center justify-center',
+                                    form.destino_inventario === opt.value
+                                        ? (esDestinoFantasma(opt.value) ? 'border-red-600 bg-red-50 dark:bg-red-950 text-red-800 dark:text-red-200' : 'border-brand-600 bg-brand-50 dark:bg-brand-950 text-brand-800 dark:text-brand-200')
+                                        : (esDestinoFantasma(opt.value) ? 'border-red-300 text-red-700' : 'border-surface-200 dark:border-surface-800')]">
                                 <input type="radio" v-model="form.destino_inventario" :value="opt.value" class="hidden"/>
                                 <div class="font-semibold">{{ opt.label }}</div>
                             </label>
                         </div>
+                        <p v-if="esDestinoFantasma(form.destino_inventario)" class="mt-2 text-xs text-red-700 bg-red-50 dark:bg-red-950 p-2 rounded border-l-4 border-red-500">
+                            <b>Mercancía fantasma:</b> Dropi la marcó como devuelta pero NUNCA llegó a bodega. No se genera movimiento de inventario y queda alerta en Discrepancias para investigación. Requiere nota explicando cómo se detectó.
+                        </p>
                     </div>
                     <div>
                         <label class="block text-xs font-semibold text-surface-600 mb-1">Notas (opcional)</label>

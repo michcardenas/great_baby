@@ -65,12 +65,28 @@ class GenerarRemisionesCorte
         });
     }
 
+    /**
+     * Re-audit DR-ζ (FUNC-M6) · consecutivo atómico basado en MAX(SUBSTRING)
+     *   bajo `lockForUpdate` sobre TODAS las filas que matcheen el prefijo.
+     *
+     *   Antes: `orderByDesc('id')->lockForUpdate()->first()` bloqueaba SOLO
+     *   la última fila; dos cierres simultáneos leían el mismo `first()` y
+     *   generaban REM-DP duplicado hasta que UNIQUE reventaba sin retry.
+     *
+     *   Ahora: agregación bajo lock del rango completo — el 2º cierre espera
+     *   al 1º porque MariaDB serializa el SELECT..FOR UPDATE sobre el índice.
+     */
     protected function siguienteConsecutivo(): string
     {
-        // Lock pesimista: dos cierres de corte simultáneos no generan el mismo consecutivo.
-        $ultimo = DropiRemision::query()->orderByDesc('id')->lockForUpdate()->first();
-        $nro = $ultimo ? ((int) preg_replace('/\D/', '', $ultimo->consecutivo)) + 1 : 1;
+        $prefijo = 'REM-DP-';
+        $len = strlen($prefijo);
+        $max = DropiRemision::query()
+            ->where('consecutivo', 'like', $prefijo . '%')
+            ->lockForUpdate()
+            ->selectRaw('COALESCE(MAX(CAST(SUBSTRING(consecutivo, ?) AS UNSIGNED)), 0) AS seq', [$len + 1])
+            ->value('seq');
+        $nro = ((int) $max) + 1;
 
-        return 'REM-DP-' . str_pad((string) $nro, 6, '0', STR_PAD_LEFT);
+        return $prefijo . str_pad((string) $nro, 6, '0', STR_PAD_LEFT);
     }
 }

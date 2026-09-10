@@ -4,6 +4,9 @@ import { Head, router } from '@inertiajs/vue3';
 import { Scissors, Plus, Lock, FileText, AlertTriangle } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import { useEscClose } from '@/composables/useEscClose';
+import { useMoney } from '@/composables/useMoney';
+
+const { money } = useMoney();
 
 const props = defineProps({
     cortes: { type: Object, required: true },
@@ -136,6 +139,15 @@ const badge = (e) => ({
                     <div>
                         <h3 class="text-lg font-bold">Cerrar corte {{ corteACerrar?.numero }}</h3>
                         <p class="text-sm text-surface-500 dark:text-surface-400 mt-1">Esta acción es irreversible.</p>
+                    </div>
+                </div>
+                <!-- Re-audit DR-γ UX (UX-M3) · contexto financiero antes de cerrar. -->
+                <div class="rounded-lg bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 p-3 mb-3 text-sm">
+                    <div class="grid grid-cols-2 gap-2">
+                        <div><span class="text-surface-500">Fecha:</span> <b>{{ corteACerrar?.fecha ?? '—' }}</b></div>
+                        <div><span class="text-surface-500">Turno:</span> <b>{{ (corteACerrar?.numero || '').includes('T') || Number(corteACerrar?.hora?.split(':')?.[0] ?? 0) >= 14 ? 'Tarde (14-24)' : 'Mañana (00-14)' }}</b></div>
+                        <div><span class="text-surface-500">Pedidos:</span> <b>{{ corteACerrar?.pedidos_totales ?? '—' }}</b></div>
+                        <div><span class="text-surface-500">Monto esperado:</span> <b>{{ money(corteACerrar?.monto_total ?? 0) }}</b></div>
                     </div>
                 </div>
                 <p class="text-sm mb-2">Al cerrar el corte:</p>

@@ -134,11 +134,13 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     Route::post('/dropi/alistador/heartbeat', [\App\Http\Controllers\App\DropiOperacionController::class, 'heartbeat'])
         ->middleware('throttle:120,1')  // Re-audit N8/H5 · 2 req/s por IP tope
         ->name('app.dropi.alistador.heartbeat');
-    Route::post('/dropi/alistador/pedido/{pedido}/tomar', [\App\Http\Controllers\App\DropiOperacionController::class, 'tomarPedido'])->name('app.dropi.alistador.tomar');
-    Route::post('/dropi/alistador/pedido/{pedido}/empacar', [\App\Http\Controllers\App\DropiOperacionController::class, 'empacarPedido'])->name('app.dropi.alistador.empacar');
-    Route::post('/dropi/alistador/pedido/{pedido}/despachar', [\App\Http\Controllers\App\DropiOperacionController::class, 'despacharPedido'])->name('app.dropi.alistador.despachar');
+    // Re-audit DR-ι (SEG-M4) · throttle en flujo alistador — antes sin límite:
+    //   spam de despachos + WhatsApp job por segundo. Ahora 30/min tope.
+    Route::post('/dropi/alistador/pedido/{pedido}/tomar', [\App\Http\Controllers\App\DropiOperacionController::class, 'tomarPedido'])->middleware('throttle:60,1')->name('app.dropi.alistador.tomar');
+    Route::post('/dropi/alistador/pedido/{pedido}/empacar', [\App\Http\Controllers\App\DropiOperacionController::class, 'empacarPedido'])->middleware('throttle:60,1')->name('app.dropi.alistador.empacar');
+    Route::post('/dropi/alistador/pedido/{pedido}/despachar', [\App\Http\Controllers\App\DropiOperacionController::class, 'despacharPedido'])->middleware('throttle:30,1')->name('app.dropi.alistador.despachar');
     Route::get('/dropi/devolucion/registrar', [\App\Http\Controllers\App\DropiOperacionController::class, 'devolucionForm'])->name('app.dropi.devolucion.registrar');
-    Route::post('/dropi/devolucion/registrar', [\App\Http\Controllers\App\DropiOperacionController::class, 'devolucionGuardar'])->name('app.dropi.devolucion.guardar');
+    Route::post('/dropi/devolucion/registrar', [\App\Http\Controllers\App\DropiOperacionController::class, 'devolucionGuardar'])->middleware('throttle:30,1')->name('app.dropi.devolucion.guardar');
     Route::get('/dropi/escaner-camara', [\App\Http\Controllers\App\DropiOperacionController::class, 'escanerCamara'])->name('app.dropi.escaner-camara');
     Route::post('/dropi/escaner/buscar', [\App\Http\Controllers\App\DropiOperacionController::class, 'escanerBuscar'])->middleware('throttle:60,1')->name('app.dropi.escaner.buscar');
     Route::get('/dropi/discrepancias', [\App\Http\Controllers\App\DropiOperacionController::class, 'discrepancias'])->name('app.dropi.discrepancias');

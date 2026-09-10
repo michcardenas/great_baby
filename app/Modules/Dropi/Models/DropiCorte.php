@@ -7,21 +7,21 @@ use App\Modules\Dropi\Enums\EstadoCorte;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
 use OwenIt\Auditing\Auditable;
 use OwenIt\Auditing\Contracts\Auditable as AuditableContract;
 
 class DropiCorte extends Model implements AuditableContract
 {
-    use Auditable;
+    // Re-audit DR-η (DATOS-C2) · SoftDeletes por retención DIAN 5 años.
+    use Auditable, SoftDeletes;
 
     protected $table = 'dropi_cortes';
 
-    protected $fillable = [
-        'fecha', 'numero', 'estado',
-        'pedidos_totales', 'pedidos_pendientes_inv', 'pedidos_despachados',
-        'cerrado_por', 'cerrado_at',
-        'manifiesto_hash', 'manifiesto_pdf_path', 'snapshot_json',
-    ];
+    // Re-audit DR-β (DATOS-C1) · $guarded. Antes: `$corte->update(['estado'=>'abierto'])`
+    //   REABRÍA un corte cerrado bypasseando el hash. Ahora estado/cerrado_*/
+    //   manifiesto_hash sólo se escriben por Action canónica (CerrarCorte).
+    protected $guarded = ['id', 'estado', 'cerrado_por', 'cerrado_at', 'manifiesto_hash', 'created_at', 'updated_at', 'deleted_at'];
 
     protected $casts = [
         'fecha' => 'date',
