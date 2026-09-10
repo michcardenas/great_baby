@@ -98,8 +98,10 @@ class ImportacionResource extends Resource
             Section::make('Órdenes vinculadas')->schema([
                 Select::make('ordenes')
                     ->label('OC importación asociadas')
-                    ->relationship('ordenes', 'numero', fn ($q) => $q->where('tipo', 'importacion'))
-                    ->multiple()->searchable()->preload(),
+                    ->options(fn () => \App\Modules\Compras\Models\OrdenCompra::query()
+                        ->where('tipo', 'importacion')
+                        ->orderBy('numero')->pluck('numero', 'id')->all())
+                    ->multiple()->searchable(),
             ]),
 
             Section::make('Gastos de importación')->schema([

@@ -18,7 +18,16 @@ class User extends Authenticatable implements FilamentUser
 
     public function canAccessPanel(Panel $panel): bool
     {
-        return $this->hasAnyRole(['Aracely', 'Alistador', 'ServicioCliente', 'Gerencia']);
+        // Fix demo A2 · delega en la matriz única de autorización.
+        return \App\Auth\Permisos::puedeAccederPanel($this);
+    }
+
+    /**
+     * Fix demo A2 · atajo cómodo: `$user->puede('facturas')`.
+     */
+    public function puede(string $seccion): bool
+    {
+        return \App\Auth\Permisos::puede($this, $seccion);
     }
 
     public function esAracely(): bool

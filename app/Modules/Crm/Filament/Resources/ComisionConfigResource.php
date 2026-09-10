@@ -50,8 +50,10 @@ class ComisionConfigResource extends Resource
             Section::make('Config del vendedor')->schema([
                 Select::make('vendedor_id')
                     ->label('Vendedor')
-                    ->relationship('vendedor', 'name', fn ($q) => $q->whereHas('roles', fn ($qq) => $qq->where('name', 'Vendedor')))
-                    ->searchable()->preload()->required()->unique(ignoreRecord: true),
+                    ->options(fn () => \App\Models\User::query()
+                        ->whereHas('roles', fn ($q) => $q->where('name', 'Vendedor'))
+                        ->orderBy('name')->pluck('name', 'id')->all())
+                    ->searchable()->required()->unique(ignoreRecord: true),
                 TextInput::make('porcentaje_base')->numeric()->suffix('%')->default(3)
                     ->required()->helperText('% sobre venta cobrada'),
                 Toggle::make('cobra_solo_cobrado')->default(true)

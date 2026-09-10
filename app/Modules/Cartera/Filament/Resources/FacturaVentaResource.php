@@ -68,8 +68,10 @@ class FacturaVentaResource extends Resource
                     ->dehydrated(fn (?FacturaVenta $record) => $record?->emitida_at === null),
                 Select::make('contacto_id')
                     ->label('Cliente')
-                    ->relationship('contacto', 'nombre_completo', fn ($query) => $query->where('es_cliente', true))
-                    ->searchable()->required()->preload()
+                    ->options(fn () => \App\Models\Contacto::query()
+                        ->where('es_cliente', true)
+                        ->orderBy('nombre_completo')->pluck('nombre_completo', 'id')->all())
+                    ->searchable()->required()
                     // Re-audit R3-02 · post-emisión el tercero DIAN es inmutable
                     // (el saving() del modelo también lo bloquea — defensa en profundidad).
                     ->disabled(fn (?FacturaVenta $record) => $record?->emitida_at !== null)

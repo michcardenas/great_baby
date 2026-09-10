@@ -84,8 +84,16 @@ class OrdenCompraResource extends Resource
                     ->placeholder('Se genera automático al guardar (OC-YYYY-000000)'),
                 Select::make('proveedor_id')
                     ->label('Proveedor')
-                    ->relationship('proveedor', 'nombre_completo', fn ($q) => $q->where('es_proveedor', true))
-                    ->searchable()->required()->preload(),
+                    // Fix A1 · options() estático, misma razón que el filtro
+                    //   de la tabla: `->relationship()` con closure rompía.
+                    ->options(
+                        fn () => \App\Models\Contacto::query()
+                            ->where('es_proveedor', true)
+                            ->orderBy('nombre_completo')
+                            ->pluck('nombre_completo', 'id')
+                            ->all()
+                    )
+                    ->searchable()->required(),
                 Select::make('bodega_id')->label('Bodega destino')
                     ->relationship('bodega', 'nombre')->searchable()->preload(),
                 Select::make('tipo')->options([
@@ -185,8 +193,21 @@ class OrdenCompraResource extends Resource
                 SelectFilter::make('estado')
                     ->options(collect(EstadoOrdenCompra::cases())->mapWithKeys(fn ($e) => [$e->value => $e->label()])),
                 SelectFilter::make('proveedor_id')
-                    ->relationship('proveedor', 'nombre_completo', fn ($q) => $q->where('es_proveedor', true))
-                    ->searchable()->preload()->label('Proveedor'),
+                    ->label('Proveedor')
+                    // Fix demo A1 · `->relationship(...)` con closure fallaba con
+                    //   "Call to a member function where() on null" en render de la
+                    //   tabla (Filament 3 llama getRelationship() en varios ciclos
+                    //   y el closure recibe null en el internal-query builder).
+                    //   Solución raíz: options() estático, más rápido y estable
+                    //   porque cachea la lista al montar la página.
+                    ->options(
+                        fn () => \App\Models\Contacto::query()
+                            ->where('es_proveedor', true)
+                            ->orderBy('nombre_completo')
+                            ->pluck('nombre_completo', 'id')
+                            ->all()
+                    )
+                    ->searchable(),
                 SelectFilter::make('tipo')->options([
                     'nacional' => 'Nacional',
                     'importacion' => 'Importación',

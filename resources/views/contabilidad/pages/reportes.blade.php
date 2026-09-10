@@ -1,6 +1,9 @@
 <x-filament-panels::page>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;">
-        @foreach($this->getReportes() as $slug => $r)
+        {{-- Fix C3 demo · sólo mostrar reportes listos. Antes se pintaba
+             card en gris con texto "Disponible cuando llegue M1/M9" que
+             filtraba lenguaje de desarrollo al usuario final. --}}
+        @foreach(collect($this->getReportes())->filter(fn($r) => $r['listo']) as $slug => $r)
             @if($r['listo'])
                 <a href="{{ url('/admin/contabilidad/reporte/' . $slug) }}" style="display:block;padding:1.25rem;border:1px solid rgba(156,163,175,.25);border-radius:.75rem;background:rgba(255,255,255,.02);text-decoration:none;color:inherit;transition:transform .1s ease, border-color .1s ease;" onmouseover="this.style.transform='translateY(-2px)';this.style.borderColor='#f59e0b';" onmouseout="this.style.transform='';this.style.borderColor='rgba(156,163,175,.25)';">
                     <div style="display:flex;align-items:flex-start;gap:.75rem;">

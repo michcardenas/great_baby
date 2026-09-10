@@ -49,8 +49,10 @@ class CondicionCreditoResource extends Resource
     {
         return $schema->components([
             Select::make('contacto_id')
-                ->relationship('contacto', 'nombre_completo', fn ($q) => $q->where('es_cliente_b2b', true))
-                ->searchable()->preload()->required()
+                ->options(fn () => \App\Models\Contacto::query()
+                    ->where('es_cliente_b2b', true)
+                    ->orderBy('nombre_completo')->pluck('nombre_completo', 'id')->all())
+                ->searchable()->required()
                 ->label('Cliente B2B'),
             TextInput::make('cupo')->numeric()->prefix('$')->required(),
             TextInput::make('plazo_dias')->numeric()->default(30)->suffix('días'),

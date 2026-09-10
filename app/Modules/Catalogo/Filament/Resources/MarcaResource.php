@@ -35,7 +35,9 @@ class MarcaResource extends Resource
             TextInput::make('codigo')->required()->unique(ignoreRecord: true)->maxLength(20),
             TextInput::make('nombre')->required()->maxLength(100),
             Select::make('proveedor_id')->label('Proveedor')
-                ->relationship('proveedor', 'nombre_completo', fn ($q) => $q->where('es_proveedor', true))
+                ->options(fn () => \App\Models\Contacto::query()
+                    ->where('es_proveedor', true)
+                    ->orderBy('nombre_completo')->pluck('nombre_completo', 'id')->all())
                 ->searchable(),
             Toggle::make('activa')->default(true),
         ]);

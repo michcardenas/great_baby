@@ -70,8 +70,10 @@ class RecepcionResource extends Resource
             Section::make('Datos')->schema([
                 TextInput::make('numero')->disabled()->dehydrated(false),
                 Select::make('orden_id')->label('OC origen')
-                    ->relationship('orden', 'numero', fn ($q) => $q->whereIn('estado', ['aprobada', 'parcial']))
-                    ->searchable()->preload()->required(),
+                    ->options(fn () => \App\Modules\Compras\Models\OrdenCompra::query()
+                        ->whereIn('estado', ['aprobada', 'parcial'])
+                        ->orderBy('numero')->pluck('numero', 'id')->all())
+                    ->searchable()->required(),
                 Select::make('bodega_id')->relationship('bodega', 'nombre')->required()->searchable(),
                 DatePicker::make('fecha_recepcion')->native(false)->default(now())->required(),
                 TextInput::make('remision_proveedor'),
