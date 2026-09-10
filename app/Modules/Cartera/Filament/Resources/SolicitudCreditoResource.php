@@ -35,7 +35,7 @@ class SolicitudCreditoResource extends Resource
 
     protected static ?string $slug = 'excepciones-credito';
 
-    public static function canViewAny(): bool { return auth()->user()?->esAracely() ?? false; }
+    public static function canViewAny(): bool { return \App\Auth\Permisos::puede(auth()->user(), 'excepciones_credito'); }
     public static function canCreate(): bool { return false; }
 
     public static function getNavigationBadge(): ?string

@@ -67,6 +67,22 @@ class EmpresaController extends Controller implements HasMiddleware
             'financiero_email' => ['nullable', 'email', 'max:150'],
             'financiero_telefono' => ['nullable', 'string', 'max:50'],
         ]);
+        // Fix demo · varias columnas de `empresa_config` están definidas como
+        //   NOT NULL con default ''. El validate `nullable` deja pasar null,
+        //   pero el ->update([col=>null]) revienta con "Column cannot be null".
+        //   Solución raíz: normalizar los nullable-string a '' antes del update.
+        foreach ([
+            'nombre_comercial', 'regimen', 'actividad_economica',
+            'direccion', 'ciudad', 'departamento', 'pais',
+            'telefono', 'email', 'web',
+            'resolucion_dian', 'prefijo_dian',
+            'banco_nombre', 'banco_swift', 'banco_cuenta', 'banco_iban', 'banco_moneda',
+            'financiero_nombre', 'financiero_email', 'financiero_telefono',
+        ] as $campo) {
+            if (array_key_exists($campo, $data) && $data[$campo] === null) {
+                $data[$campo] = '';
+            }
+        }
         EmpresaConfig::current()->update($data);
         return back()->with('success', '✅ Configuración guardada');
     }

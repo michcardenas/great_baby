@@ -35,7 +35,7 @@ class MovimientoContableResource extends Resource
 
     public static function canViewAny(): bool
     {
-        return auth()->user()?->esAracely() ?? false;
+        return \App\Auth\Permisos::puede(auth()->user(), 'libro_diario');
     }
 
     public static function canCreate(): bool { return false; }

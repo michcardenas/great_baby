@@ -49,7 +49,8 @@ class FacturaVentaResource extends Resource
 
     public static function canViewAny(): bool
     {
-        return auth()->user()?->esAracely() ?? false;
+        // Fix D1 · matriz Permisos (antes esAracely() bloqueaba Contador).
+        return \App\Auth\Permisos::puede(auth()->user(), 'facturas');
     }
 
     public static function getGloballySearchableAttributes(): array

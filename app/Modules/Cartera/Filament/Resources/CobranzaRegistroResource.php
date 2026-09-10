@@ -34,7 +34,7 @@ class CobranzaRegistroResource extends Resource
 
     public static function canViewAny(): bool
     {
-        return auth()->user()?->esAracely() ?? false;
+        return \App\Auth\Permisos::puede(auth()->user(), 'cobranzas');
     }
 
     public static function canCreate(): bool { return false; }

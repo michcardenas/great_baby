@@ -31,15 +31,15 @@ class DropiWalletMovimientoResource extends Resource
 
     protected static ?int $navigationSort = 5;
 
-    // §24 diseño Dropi — solo Aracely/Gerencia ven finanzas
+    // Fix D1 · matriz Permisos (Contador debe ver wallet para conciliación).
     public static function canViewAny(): bool
     {
-        return auth()->user()?->esAracely() ?? false;
+        return \App\Auth\Permisos::puede(auth()->user(), 'dropi_wallet');
     }
 
     public static function shouldRegisterNavigation(): bool
     {
-        return auth()->user()?->esAracely() ?? false;
+        return \App\Auth\Permisos::puede(auth()->user(), 'dropi_wallet');
     }
 
     public static function table(Table $table): Table

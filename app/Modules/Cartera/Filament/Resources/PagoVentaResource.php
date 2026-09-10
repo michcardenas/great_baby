@@ -36,7 +36,7 @@ class PagoVentaResource extends Resource
 
     public static function canViewAny(): bool
     {
-        return auth()->user()?->esAracely() ?? false;
+        return \App\Auth\Permisos::puede(auth()->user(), 'pagos');
     }
 
     public static function canCreate(): bool { return false; } // se crean desde Factura → Registrar pago

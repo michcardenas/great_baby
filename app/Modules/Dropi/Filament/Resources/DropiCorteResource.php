@@ -39,15 +39,15 @@ class DropiCorteResource extends Resource
 
     protected static ?int $navigationSort = 1;
 
-    // §24 — Aracely/Gerencia gestionan cortes; Alistador solo ve la Vista Alistador
+    // Fix D1 · matriz Permisos (Contador ve cortes para reportes contables).
     public static function canViewAny(): bool
     {
-        return auth()->user()?->esAracely() ?? false;
+        return \App\Auth\Permisos::puede(auth()->user(), 'dropi_cortes');
     }
 
     public static function shouldRegisterNavigation(): bool
     {
-        return auth()->user()?->esAracely() ?? false;
+        return \App\Auth\Permisos::puede(auth()->user(), 'dropi_cortes');
     }
 
     public static function form(Schema $schema): Schema
