@@ -6,6 +6,8 @@ use App\Modules\Compras\Actions\AprobarOrdenCompra;
 use App\Modules\Compras\Actions\PrepararRecepcionDesdeOC;
 use App\Modules\Compras\Actions\RecalcularTotalesOC;
 use App\Modules\Compras\Enums\EstadoOrdenCompra;
+use App\Modules\Siigo\Enums\TipoExportacionSiigo;
+use App\Modules\Siigo\Services\SiigoExportService;
 use App\Modules\Compras\Filament\Resources\OrdenCompraResource\Pages;
 use App\Modules\Compras\Models\OrdenCompra;
 use BackedEnum;
@@ -266,6 +268,24 @@ class OrdenCompraResource extends Resource
                     ->color('gray')
                     ->url(fn (OrdenCompra $r) => route('compras.orden.pdf', $r))
                     ->openUrlInNewTab(),
+                Action::make('enviar_siigo')
+                    ->label('Enviar a SIIGO')
+                    ->icon('heroicon-o-paper-airplane')
+                    ->color('info')
+                    ->requiresConfirmation()
+                    ->modalDescription('Se envía la compra a SIIGO como comprobante de compra (ítem por ítem), moviendo inventario. Migración directa (no borrador).')
+                    ->visible(fn (OrdenCompra $r) => in_array($r->estado, [EstadoOrdenCompra::Recibida, EstadoOrdenCompra::Cerrada], true))
+                    ->action(function (OrdenCompra $record) {
+                        try {
+                            $res = app(SiigoExportService::class)->exportar(TipoExportacionSiigo::CompraNacional, $record);
+                            Notification::make()->title('Compra enviada a SIIGO')
+                                ->body('Nº SIIGO: ' . ($res['siigo_numero'] ?? $res['siigo_id'] ?? '—'))
+                                ->success()->send();
+                        } catch (\Throwable $e) {
+                            Notification::make()->title('No se pudo enviar a SIIGO')
+                                ->body($e->getMessage())->danger()->send();
+                        }
+                    }),
                 ViewAction::make(),
                 // Re-audit M2 PATRÓN E (SEG-C1 / FUNC-A1) · Edit/Delete solo si
                 // estado = Borrador. `visible()` esconde botón pero la ruta Livewire

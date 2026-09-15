@@ -40,6 +40,7 @@ class AdminPanelProvider extends PanelProvider
             ->discoverResources(in: app_path('Modules/Compras/Filament/Resources'), for: 'App\Modules\Compras\Filament\Resources')
             ->discoverResources(in: app_path('Modules/Inventario/Filament/Resources'), for: 'App\Modules\Inventario\Filament\Resources')
             ->discoverResources(in: app_path('Modules/Crm/Filament/Resources'), for: 'App\Modules\Crm\Filament\Resources')
+            ->discoverResources(in: app_path('Modules/Contabilidad/Filament/Resources'), for: 'App\Modules\Contabilidad\Filament\Resources')
             ->discoverPages(in: app_path('Filament/Admin/Pages'), for: 'App\Filament\Admin\Pages')
             ->discoverPages(in: app_path('Modules/Dropi/Filament/Pages'), for: 'App\Modules\Dropi\Filament\Pages')
             ->discoverPages(in: app_path('Modules/Cartera/Filament/Pages'), for: 'App\Modules\Cartera\Filament\Pages')
