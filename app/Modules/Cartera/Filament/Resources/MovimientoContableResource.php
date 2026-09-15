@@ -91,6 +91,9 @@ class MovimientoContableResource extends Resource
                         ->distinct()->pluck('origen_type')
                         ->mapWithKeys(fn ($t) => [$t => class_basename($t)])->toArray()),
             ])
+            // Filtros visibles siempre, arriba de la tabla (no escondidos en el icono).
+            ->filtersLayout(\Filament\Tables\Enums\FiltersLayout::AboveContent)
+            ->filtersFormColumns(4)
             ->toolbarActions([
                 \Filament\Actions\BulkActionGroup::make([
                     \pxlrbt\FilamentExcel\Actions\Tables\ExportBulkAction::make()

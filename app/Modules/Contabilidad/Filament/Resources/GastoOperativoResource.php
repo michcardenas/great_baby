@@ -196,6 +196,8 @@ class GastoOperativoResource extends Resource
                     'pagado' => 'Pagado',
                 ]),
             ])
+            ->filtersLayout(\Filament\Tables\Enums\FiltersLayout::AboveContent)
+            ->filtersFormColumns(4)
             ->recordActions([
                 Action::make('enviar_siigo')
                     ->label('Enviar a SIIGO')

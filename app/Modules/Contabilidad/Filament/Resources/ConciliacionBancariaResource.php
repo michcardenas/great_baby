@@ -166,6 +166,8 @@ class ConciliacionBancariaResource extends Resource
                     'exportada' => 'Exportada',
                 ]),
             ])
+            ->filtersLayout(\Filament\Tables\Enums\FiltersLayout::AboveContent)
+            ->filtersFormColumns(4)
             ->recordActions([
                 Action::make('enviar_siigo')
                     ->label('Enviar a SIIGO')
