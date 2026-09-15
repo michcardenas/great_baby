@@ -41,6 +41,20 @@ class AdminPanelProvider extends PanelProvider
             ->discoverResources(in: app_path('Modules/Inventario/Filament/Resources'), for: 'App\Modules\Inventario\Filament\Resources')
             ->discoverResources(in: app_path('Modules/Crm/Filament/Resources'), for: 'App\Modules\Crm\Filament\Resources')
             ->discoverResources(in: app_path('Modules/Contabilidad/Filament/Resources'), for: 'App\Modules\Contabilidad\Filament\Resources')
+            ->navigationGroups([
+                'Operación',
+                'Dropi',
+                'Cartera y CRM',
+                // Contabilidad y Compras e Importaciones van juntas (área contable de Silvia).
+                'Contabilidad',
+                'Compras e Importaciones',
+                'Inventario y Logística',
+                'Catálogo',
+                'Catálogo · Maestras',
+                'Integraciones',
+                'Herramientas',
+                'Configuración',
+            ])
             ->discoverPages(in: app_path('Filament/Admin/Pages'), for: 'App\Filament\Admin\Pages')
             ->discoverPages(in: app_path('Modules/Dropi/Filament/Pages'), for: 'App\Modules\Dropi\Filament\Pages')
             ->discoverPages(in: app_path('Modules/Cartera/Filament/Pages'), for: 'App\Modules\Cartera\Filament\Pages')
