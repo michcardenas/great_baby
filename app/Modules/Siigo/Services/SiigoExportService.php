@@ -225,11 +225,17 @@ class SiigoExportService
         if ($movs->isNotEmpty()) {
             return $movs->map(function (MovimientoContable $m) {
                 $esDebito = (float) $m->debe > 0;
-                return [
+                $item = [
                     'account' => ['code' => (string) $m->cuenta_puc, 'movement' => $esDebito ? 'Debit' : 'Credit'],
                     'description' => (string) ($m->descripcion ?? ''),
                     'value' => (float) ($esDebito ? $m->debe : $m->haber),
                 ];
+                // SIIGO exige el tercero (NIT) en las cuentas que lo requieren (CxC/CxP).
+                if ($ident = $this->identificacionTercero($m)) {
+                    $item['customer'] = ['identification' => $ident];
+                }
+
+                return $item;
             })->all();
         }
 
@@ -266,6 +272,34 @@ class SiigoExportService
     }
 
     // ---------------------------------------------------------------- helpers
+
+    /**
+     * Identificación (NIT/CC) del tercero de un movimiento contable, si existe.
+     * tercero es un morph que puede apuntar a Contacto/User o a tipos no-clase
+     * ('dropi', 'anonimo'); solo resolvemos cuando es una clase válida.
+     */
+    private function identificacionTercero(MovimientoContable $m): ?string
+    {
+        $type = $m->tercero_type;
+        if (empty($type) || ! class_exists($type)) {
+            return null;
+        }
+
+        try {
+            $tercero = $m->tercero;
+        } catch (\Throwable) {
+            return null;
+        }
+
+        $ident = $tercero?->numero_documento
+            ?? $tercero?->identificacion
+            ?? $tercero?->nit
+            ?? null;
+
+        $ident = is_string($ident) ? trim($ident) : (string) ($ident ?? '');
+
+        return $ident !== '' ? $ident : null;
+    }
 
     private function tipoDocumentoId(TipoExportacionSiigo $tipo): int
     {
