@@ -11,6 +11,8 @@ use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\DatePicker;
+use Filament\Forms\Components\FileUpload;
+use Filament\Forms\Components\Hidden;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
@@ -70,23 +72,50 @@ class ConciliacionBancariaResource extends Resource
     public static function form(Schema $schema): Schema
     {
         return $schema->components([
-            Section::make('Conciliación del día')->schema([
-                DatePicker::make('fecha')->default(now())->required(),
-                TextInput::make('banco')->required()->maxLength(120)
-                    ->helperText('Ej: Bancolombia cta ahorros 123'),
-                TextInput::make('cuenta_puc')->label('Cuenta PUC')->default('1110')->maxLength(20),
-                TextInput::make('saldo_extracto')->numeric()->prefix('$')->required()
-                    ->helperText('Saldo según el extracto del banco'),
-                TextInput::make('saldo_sistema')->numeric()->prefix('$')->required()
-                    ->helperText('Saldo según el sistema'),
-                Select::make('estado')->options([
-                    'pendiente' => 'Pendiente',
-                    'conciliada' => 'Conciliada',
-                    'exportada' => 'Exportada',
-                ])->default('pendiente'),
-                Textarea::make('notas')->columnSpanFull()
-                    ->helperText('La diferencia (extracto − sistema) se calcula automáticamente al guardar.'),
-            ])->columns(3),
+            Section::make('Conciliación del día')
+                ->description('Cuenta bancaria, fecha y saldos a comparar')
+                ->icon('heroicon-o-scale')
+                ->columns(2)
+                ->schema([
+                    DatePicker::make('fecha')->label('Fecha')->default(now())->required()
+                        ->native(false)->displayFormat('d/m/Y'),
+                    TextInput::make('banco')->label('Banco / cuenta')->required()->maxLength(120)
+                        ->placeholder('Ej: Bancolombia — Ahorros 1234'),
+                    TextInput::make('cuenta_puc')->label('Cuenta PUC')->default('1110')->maxLength(20)
+                        ->placeholder('1110'),
+                    Select::make('estado')->label('Estado')->native(false)->required()->default('pendiente')
+                        ->options([
+                            'pendiente' => 'Pendiente',
+                            'conciliada' => 'Conciliada',
+                            'exportada' => 'Exportada',
+                        ]),
+                    TextInput::make('saldo_extracto')->label('Saldo extracto (banco)')->numeric()->prefix('$')
+                        ->required()->placeholder('0'),
+                    TextInput::make('saldo_sistema')->label('Saldo sistema')->numeric()->prefix('$')
+                        ->required()->placeholder('0'),
+                    Textarea::make('notas')->label('Notas')->rows(2)->columnSpanFull()
+                        ->helperText('La diferencia (extracto − sistema) se calcula automáticamente al guardar.'),
+                ]),
+
+            Section::make('Soporte')
+                ->description('Adjunta el extracto o cualquier archivo de respaldo (PDF, Excel, imagen…)')
+                ->icon('heroicon-o-paper-clip')
+                ->schema([
+                    FileUpload::make('adjuntos')
+                        ->label('Archivos de soporte')
+                        ->multiple()
+                        ->disk('public')
+                        ->directory('conciliaciones')
+                        ->downloadable()
+                        ->openable()
+                        ->reorderable()
+                        ->maxSize(10240)
+                        ->helperText('Cualquier tipo de archivo, hasta 10 MB cada uno.')
+                        ->columnSpanFull(),
+                ]),
+
+            // Quién registra la conciliación — usuario en sesión.
+            Hidden::make('user_id')->default(fn () => auth()->id()),
         ]);
     }
 
@@ -163,10 +192,9 @@ class ConciliacionBancariaResource extends Resource
 
     public static function getPages(): array
     {
+        // Solo index: crear y editar en MODAL.
         return [
             'index' => Pages\ListConciliaciones::route('/'),
-            'create' => Pages\CreateConciliacion::route('/create'),
-            'edit' => Pages\EditConciliacion::route('/{record}/edit'),
         ];
     }
 }

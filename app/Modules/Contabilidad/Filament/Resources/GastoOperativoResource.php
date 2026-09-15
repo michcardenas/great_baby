@@ -11,6 +11,8 @@ use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\DatePicker;
+use Filament\Forms\Components\FileUpload;
+use Filament\Forms\Components\Hidden;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
@@ -71,29 +73,77 @@ class GastoOperativoResource extends Resource
     public static function form(Schema $schema): Schema
     {
         return $schema->components([
-            Section::make('Datos del gasto')->schema([
-                TextInput::make('numero')->label('N°')->maxLength(50),
-                DatePicker::make('fecha')->default(now())->required(),
-                TextInput::make('categoria')->maxLength(100)
-                    ->helperText('Ej: Arriendo, Servicios, Papelería…'),
-                TextInput::make('descripcion')->required()->maxLength(255)->columnSpanFull(),
-                TextInput::make('monto')->numeric()->prefix('$')->required(),
-                TextInput::make('proveedor')->maxLength(150),
-                TextInput::make('factura_ref')->label('Factura / soporte')->maxLength(100),
-                Select::make('metodo_pago')->label('Método de pago')->options([
-                    'transferencia' => 'Transferencia',
-                    'efectivo' => 'Efectivo',
-                    'tarjeta' => 'Tarjeta',
-                    'nequi' => 'Nequi',
-                    'daviplata' => 'Daviplata',
+            Section::make('Información del gasto')
+                ->description('Qué se gastó, cuándo y por cuánto')
+                ->icon('heroicon-o-receipt-percent')
+                ->columns(2)
+                ->schema([
+                    DatePicker::make('fecha')->label('Fecha del gasto')->default(now())
+                        ->required()->native(false)->displayFormat('d/m/Y'),
+                    TextInput::make('numero')->label('N° interno')->maxLength(50)
+                        ->placeholder('Ej: GO-0001')->helperText('Opcional — consecutivo interno'),
+                    Select::make('categoria')->label('Categoría')->required()->native(false)->searchable()
+                        ->options([
+                            'Arriendo' => 'Arriendo',
+                            'Servicios públicos' => 'Servicios públicos',
+                            'Nómina' => 'Nómina',
+                            'Papelería' => 'Papelería',
+                            'Transporte' => 'Transporte',
+                            'Mantenimiento' => 'Mantenimiento',
+                            'Publicidad' => 'Publicidad',
+                            'Impuestos' => 'Impuestos',
+                            'Otros' => 'Otros',
+                        ]),
+                    TextInput::make('monto')->label('Monto')->numeric()->prefix('$')
+                        ->required()->minValue(0)->placeholder('0'),
+                    TextInput::make('descripcion')->label('Descripción')->required()->maxLength(255)
+                        ->columnSpanFull()->placeholder('¿En qué se gastó exactamente?'),
                 ]),
-                Select::make('estado')->options([
-                    'pendiente' => 'Pendiente',
-                    'aprobado' => 'Aprobado',
-                    'pagado' => 'Pagado',
-                ])->default('pendiente'),
-                Textarea::make('notas')->columnSpanFull(),
-            ])->columns(3),
+
+            Section::make('Proveedor, pago y estado')
+                ->description('Soporte del gasto y su seguimiento')
+                ->icon('heroicon-o-banknotes')
+                ->columns(2)
+                ->schema([
+                    TextInput::make('proveedor')->maxLength(150)->placeholder('A quién se le pagó'),
+                    TextInput::make('factura_ref')->label('Factura / soporte')->maxLength(100)
+                        ->placeholder('N° de factura o comprobante'),
+                    Select::make('metodo_pago')->label('Método de pago')->native(false)->options([
+                        'transferencia' => 'Transferencia',
+                        'efectivo' => 'Efectivo',
+                        'tarjeta' => 'Tarjeta',
+                        'nequi' => 'Nequi',
+                        'daviplata' => 'Daviplata',
+                    ]),
+                    Select::make('estado')->label('Estado')->native(false)->required()->default('pendiente')
+                        ->options([
+                            'pendiente' => 'Pendiente',
+                            'aprobado' => 'Aprobado',
+                            'pagado' => 'Pagado',
+                        ]),
+                    Textarea::make('notas')->label('Notas')->rows(2)->columnSpanFull()
+                        ->placeholder('Observaciones (opcional)'),
+                ]),
+
+            Section::make('Soporte')
+                ->description('Adjunta la factura o cualquier archivo de respaldo (PDF, Excel, imagen…)')
+                ->icon('heroicon-o-paper-clip')
+                ->schema([
+                    FileUpload::make('adjuntos')
+                        ->label('Archivos de soporte')
+                        ->multiple()
+                        ->disk('public')
+                        ->directory('gastos')
+                        ->downloadable()
+                        ->openable()
+                        ->reorderable()
+                        ->maxSize(10240)
+                        ->helperText('Cualquier tipo de archivo, hasta 10 MB cada uno.')
+                        ->columnSpanFull(),
+                ]),
+
+            // Quién registra el gasto (obligatorio en BD) — se toma del usuario en sesión.
+            Hidden::make('solicita_id')->default(fn () => auth()->id()),
         ]);
     }
 
@@ -171,10 +221,10 @@ class GastoOperativoResource extends Resource
 
     public static function getPages(): array
     {
+        // Solo index: crear y editar se hacen en MODAL (Filament abre el form en modal
+        // cuando no existe página dedicada de create/edit).
         return [
             'index' => Pages\ListGastos::route('/'),
-            'create' => Pages\CreateGasto::route('/create'),
-            'edit' => Pages\EditGasto::route('/{record}/edit'),
         ];
     }
 }

@@ -16,7 +16,7 @@ class ConciliacionBancaria extends Model
     protected $fillable = [
         'fecha', 'banco', 'cuenta_puc',
         'saldo_extracto', 'saldo_sistema', 'diferencia',
-        'estado', 'notas',
+        'estado', 'notas', 'adjuntos',
         'siigo_id', 'siigo_borrador', 'siigo_exportado_at',
         'user_id',
     ];
@@ -26,6 +26,7 @@ class ConciliacionBancaria extends Model
         'saldo_extracto' => 'decimal:2',
         'saldo_sistema' => 'decimal:2',
         'diferencia' => 'decimal:2',
+        'adjuntos' => 'array',
         'siigo_borrador' => 'bool',
         'siigo_exportado_at' => 'datetime',
     ];
