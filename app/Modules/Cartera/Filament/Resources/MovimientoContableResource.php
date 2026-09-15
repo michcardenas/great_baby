@@ -47,8 +47,8 @@ class MovimientoContableResource extends Resource
         return $table
             ->columns([
                 TextColumn::make('fecha')->date('Y-m-d')->sortable(),
-                TextColumn::make('cuenta_puc')->label('Cuenta')->badge()->color('gray'),
-                TextColumn::make('descripcion')->limit(45)->tooltip(fn ($record) => $record->descripcion),
+                TextColumn::make('cuenta_puc')->label('Cuenta')->badge()->color('gray')->searchable(),
+                TextColumn::make('descripcion')->limit(45)->tooltip(fn ($record) => $record->descripcion)->searchable(),
                 TextColumn::make('debe')->money('COP')->alignEnd()->color('success')
                     ->formatStateUsing(fn ($state) => $state > 0 ? '$' . number_format((float) $state, 0, ',', '.') : ''),
                 TextColumn::make('haber')->money('COP')->alignEnd()->color('danger')
@@ -60,16 +60,36 @@ class MovimientoContableResource extends Resource
             ])
             ->defaultSort('fecha', 'desc')
             ->filters([
-                SelectFilter::make('cuenta_puc')
-                    ->options(fn () => MovimientoContable::query()->distinct()->pluck('cuenta_puc', 'cuenta_puc')->toArray()),
                 Filter::make('rango')
                     ->schema([
-                        \Filament\Forms\Components\DatePicker::make('desde')->native(false),
-                        \Filament\Forms\Components\DatePicker::make('hasta')->native(false),
+                        \Filament\Forms\Components\DatePicker::make('desde')->label('Fecha desde')->native(false)->displayFormat('d/m/Y'),
+                        \Filament\Forms\Components\DatePicker::make('hasta')->label('Fecha hasta')->native(false)->displayFormat('d/m/Y'),
                     ])
                     ->query(fn (Builder $query, array $data) => $query
                         ->when($data['desde'] ?? null, fn ($q, $v) => $q->whereDate('fecha', '>=', $v))
-                        ->when($data['hasta'] ?? null, fn ($q, $v) => $q->whereDate('fecha', '<=', $v))),
+                        ->when($data['hasta'] ?? null, fn ($q, $v) => $q->whereDate('fecha', '<=', $v)))
+                    ->indicateUsing(function (array $data): array {
+                        $i = [];
+                        if ($data['desde'] ?? null) { $i[] = 'Desde '.$data['desde']; }
+                        if ($data['hasta'] ?? null) { $i[] = 'Hasta '.$data['hasta']; }
+                        return $i;
+                    }),
+                SelectFilter::make('cuenta_puc')
+                    ->label('Cuenta PUC')
+                    ->searchable()
+                    ->options(fn () => MovimientoContable::query()->whereNotNull('cuenta_puc')
+                        ->distinct()->orderBy('cuenta_puc')->pluck('cuenta_puc', 'cuenta_puc')->toArray()),
+                SelectFilter::make('tipo')
+                    ->label('Tipo de movimiento')
+                    ->options(['debe' => 'Débitos (Debe)', 'haber' => 'Créditos (Haber)'])
+                    ->query(fn (Builder $query, array $data) => $query
+                        ->when(($data['value'] ?? null) === 'debe', fn ($q) => $q->where('debe', '>', 0))
+                        ->when(($data['value'] ?? null) === 'haber', fn ($q) => $q->where('haber', '>', 0))),
+                SelectFilter::make('origen_type')
+                    ->label('Origen')
+                    ->options(fn () => MovimientoContable::query()->whereNotNull('origen_type')
+                        ->distinct()->pluck('origen_type')
+                        ->mapWithKeys(fn ($t) => [$t => class_basename($t)])->toArray()),
             ])
             ->toolbarActions([
                 \Filament\Actions\BulkActionGroup::make([
