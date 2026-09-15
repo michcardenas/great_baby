@@ -3,6 +3,8 @@
 namespace App\Modules\Compras\Filament\Resources;
 
 use App\Modules\Compras\Actions\LiquidarImportacion;
+use App\Modules\Siigo\Enums\TipoExportacionSiigo;
+use App\Modules\Siigo\Services\SiigoExportService;
 use App\Modules\Compras\Enums\ConceptoGastoImportacion;
 use App\Modules\Compras\Enums\EstadoImportacion;
 use App\Modules\Compras\Filament\Resources\ImportacionResource\Pages;
@@ -190,6 +192,25 @@ class ImportacionResource extends Resource
                     ->url(fn (Importacion $r) => route('compras.importacion.pdf', $r))
                     ->openUrlInNewTab()
                     ->visible(fn (Importacion $r) => $r->estado === EstadoImportacion::Liquidada),
+                Action::make('enviar_siigo')
+                    ->label('Enviar a SIIGO')
+                    ->icon('heroicon-o-paper-airplane')
+                    ->color('info')
+                    ->requiresConfirmation()
+                    ->modalDescription('Se envía la importación a SIIGO como BORRADOR (comprobante de compra ítem por ítem), para que contabilidad ajuste allá los valores fiscales antes de la DIAN.')
+                    ->visible(fn (Importacion $r) => $r->estado === EstadoImportacion::Liquidada)
+                    ->action(function (Importacion $record) {
+                        try {
+                            $res = app(SiigoExportService::class)->exportar(TipoExportacionSiigo::Importacion, $record);
+                            Notification::make()->title('Importación enviada a SIIGO')
+                                ->body(($res['borrador'] ? 'Quedó como BORRADOR para editar en SIIGO. ' : 'Enviada. ')
+                                    . 'Nº SIIGO: ' . ($res['siigo_numero'] ?? $res['siigo_id'] ?? '—'))
+                                ->success()->send();
+                        } catch (\Throwable $e) {
+                            Notification::make()->title('No se pudo enviar a SIIGO')
+                                ->body($e->getMessage())->danger()->send();
+                        }
+                    }),
                 EditAction::make(),
                 DeleteAction::make()->visible(fn (Importacion $r) => $r->estado === EstadoImportacion::EnTransito),
             ]);
