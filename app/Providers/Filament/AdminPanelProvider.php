@@ -101,6 +101,34 @@ class AdminPanelProvider extends PanelProvider
             ->renderHook(
                 PanelsRenderHook::GLOBAL_SEARCH_BEFORE,
                 fn (): string => '<button type="button" onclick="window.dispatchEvent(new KeyboardEvent(\'keydown\',{key:\'k\',ctrlKey:true,metaKey:true}))" style="padding:.4rem .7rem;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:.4rem;color:#f59e0b;cursor:pointer;font-size:.8rem;display:inline-flex;align-items:center;gap:.4rem;">🔍 <kbd style="padding:.05rem .3rem;background:rgba(0,0,0,.35);border-radius:.2rem;font-family:ui-monospace,monospace;font-size:.7rem;">⌘K</kbd></button>',
+            )
+            // Interruptor de canal Empresa <-> Dropi en la barra superior.
+            ->renderHook(
+                PanelsRenderHook::TOPBAR_START,
+                function (): string {
+                    $esDropi = session('gb_canal') === 'dropi';
+                    $color = $esDropi ? '#0f8fa6' : '#6b7280';
+                    $bg = $esDropi ? 'rgba(15,143,166,.15)' : 'rgba(107,114,128,.12)';
+                    $label = $esDropi ? 'DROPI' : 'Empresa';
+                    $url = url('/set-canal/'.($esDropi ? 'empresa' : 'dropi'));
+
+                    return '<a href="'.$url.'" title="Cambiar entre operación Empresa y Dropi" '
+                        .'style="display:inline-flex;align-items:center;gap:.4rem;padding:.35rem .75rem;border-radius:.5rem;'
+                        .'background:'.$bg.';border:1px solid '.$color.';color:'.$color.';font-size:.8rem;font-weight:700;text-decoration:none;white-space:nowrap;">'
+                        .'<span style="font-size:.6rem;">●</span> Modo: '.$label.'</a>';
+                },
+            )
+            // Distintivo visual global cuando se está en modo Dropi.
+            ->renderHook(
+                PanelsRenderHook::BODY_START,
+                function (): string {
+                    if (session('gb_canal') !== 'dropi') {
+                        return '';
+                    }
+
+                    return '<div style="position:fixed;top:0;left:0;right:0;height:4px;background:linear-gradient(90deg,#0f8fa6,#22d3ee);z-index:99999;"></div>'
+                        .'<div style="position:fixed;bottom:16px;right:16px;z-index:99999;background:#0f8fa6;color:#fff;padding:.45rem .9rem;border-radius:999px;font-size:.75rem;font-weight:800;letter-spacing:.03em;box-shadow:0 6px 18px rgba(0,0,0,.35);display:flex;align-items:center;gap:.4rem;">📦 MODO DROPI</div>';
+                },
             );
     }
 }

@@ -17,6 +17,12 @@ use Illuminate\Support\Facades\Route;
 
 Route::get('/', fn () => redirect('/app'));
 
+// Interruptor de canal Empresa <-> Dropi (modo global del panel admin).
+Route::middleware(['web', 'auth'])->get('/set-canal/{canal}', function (string $canal) {
+    session(['gb_canal' => in_array($canal, ['dropi', 'empresa'], true) ? $canal : 'empresa']);
+    return back();
+})->name('set.canal');
+
 // ============================================================
 // NUEVO STACK · Laravel + Inertia + Vue 3 (bajo /app)
 // El panel Filament sigue en /admin durante la migración gradual.

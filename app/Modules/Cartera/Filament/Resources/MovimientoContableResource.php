@@ -90,6 +90,14 @@ class MovimientoContableResource extends Resource
                     ->options(fn () => MovimientoContable::query()->whereNotNull('origen_type')
                         ->distinct()->pluck('origen_type')
                         ->mapWithKeys(fn ($t) => [$t => class_basename($t)])->toArray()),
+                SelectFilter::make('canal')
+                    ->label('Canal')
+                    ->options(['empresa' => 'Empresa', 'dropi' => 'Dropi'])
+                    ->query(fn (Builder $query, array $data) => $query
+                        ->when(($data['value'] ?? null) === 'dropi', fn ($q) => $q->where('origen_type', 'like', '%Dropi%'))
+                        ->when(($data['value'] ?? null) === 'empresa', fn ($q) => $q->where(
+                            fn ($w) => $w->whereNull('origen_type')->orWhere('origen_type', 'not like', '%Dropi%')
+                        ))),
             ])
             // Filtros visibles siempre, arriba de la tabla (no escondidos en el icono).
             ->filtersLayout(\Filament\Tables\Enums\FiltersLayout::AboveContent)
