@@ -54,6 +54,16 @@ class Reglas
         'crm.dormido_dias' => ['grupo' => 'crm', 'tipo' => 'int', 'valor' => 90, 'etiqueta' => 'Días sin compra para marcar Dormido', 'descripcion' => ''],
         'crm.riesgo_min_moras' => ['grupo' => 'crm', 'tipo' => 'int', 'valor' => 2, 'etiqueta' => 'Moras mínimas para marcar Riesgo', 'descripcion' => ''],
         'crm.comision_porcentaje' => ['grupo' => 'crm', 'tipo' => 'float', 'valor' => '3', 'etiqueta' => 'Comisión vendedor por defecto (%)', 'descripcion' => 'Se puede sobrescribir por vendedor'],
+
+        // --- Exportación fiscal a SIIGO (IDs de tipo de documento + cuentas por defecto) ---
+        'siigo.doc_type_compra' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 0, 'etiqueta' => 'SIIGO · Tipo de documento Compra', 'descripcion' => 'ID del comprobante de compra en SIIGO'],
+        'siigo.doc_type_gasto' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 0, 'etiqueta' => 'SIIGO · Tipo de documento Gasto (asiento)', 'descripcion' => 'ID del comprobante contable para gastos'],
+        'siigo.doc_type_importacion' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 0, 'etiqueta' => 'SIIGO · Tipo de documento Importación', 'descripcion' => 'ID del comprobante de compra para importaciones'],
+        'siigo.doc_type_conciliacion' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 0, 'etiqueta' => 'SIIGO · Tipo de documento Conciliación (asiento)', 'descripcion' => 'ID del comprobante contable para conciliaciones'],
+        'siigo.cta_gasto_default' => ['grupo' => 'siigo', 'tipo' => 'string', 'valor' => '5195', 'etiqueta' => 'SIIGO · Cuenta de gasto por defecto', 'descripcion' => 'PUC débito para gastos sin asiento previo'],
+        'siigo.cta_banco_default' => ['grupo' => 'siigo', 'tipo' => 'string', 'valor' => '1110', 'etiqueta' => 'SIIGO · Cuenta de banco por defecto', 'descripcion' => 'PUC de bancos'],
+        'siigo.cta_conciliacion_default' => ['grupo' => 'siigo', 'tipo' => 'string', 'valor' => '139535', 'etiqueta' => 'SIIGO · Partida conciliatoria por defecto', 'descripcion' => 'PUC para la diferencia de conciliación'],
+        'siigo.proveedor_importacion_doc' => ['grupo' => 'siigo', 'tipo' => 'string', 'valor' => '', 'etiqueta' => 'SIIGO · NIT proveedor de importaciones', 'descripcion' => 'Identificación por defecto para comprobantes de importación'],
     ];
 
     /** Memoization por-request para evitar N lecturas de cache en un mismo handler. */
