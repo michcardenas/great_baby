@@ -4,6 +4,7 @@ namespace App\Modules\Siigo\Services;
 
 use App\Modules\Cartera\Models\MovimientoContable;
 use App\Modules\Compras\Models\Importacion;
+use App\Modules\Contabilidad\Models\ConciliacionBancaria;
 use App\Modules\Compras\Models\OrdenCompra;
 use App\Modules\Gerencia\Models\GastoOperativo;
 use App\Modules\Siigo\Clients\SiigoClient;
@@ -240,6 +241,24 @@ class SiigoExportService
             return [
                 ['account' => ['code' => $ctaGasto, 'movement' => 'Debit'], 'description' => (string) $documento->descripcion, 'value' => $monto],
                 ['account' => ['code' => $ctaBanco, 'movement' => 'Credit'], 'description' => (string) $documento->descripcion, 'value' => $monto],
+            ];
+        }
+
+        // Fallback: conciliación bancaria → ajusta la diferencia contra una partida conciliatoria.
+        if ($documento instanceof ConciliacionBancaria) {
+            $dif = round((float) $documento->diferencia, 2);
+            if (abs($dif) < 0.01) {
+                return [];
+            }
+            $ctaBanco = (string) ($documento->cuenta_puc ?: setting('siigo.cta_banco_default', '1110'));
+            $ctaClearing = (string) setting('siigo.cta_conciliacion_default', '139535');
+            // dif>0: el extracto tiene más que el sistema → falta registrar ingreso al banco.
+            $bancoDebita = $dif > 0;
+            $valor = abs($dif);
+            $desc = 'Ajuste conciliación '.$documento->banco.' '.$this->fechaDocumento($documento);
+            return [
+                ['account' => ['code' => $ctaBanco, 'movement' => $bancoDebita ? 'Debit' : 'Credit'], 'description' => $desc, 'value' => $valor],
+                ['account' => ['code' => $ctaClearing, 'movement' => $bancoDebita ? 'Credit' : 'Debit'], 'description' => 'Partida conciliatoria por aclarar', 'value' => $valor],
             ];
         }
 
