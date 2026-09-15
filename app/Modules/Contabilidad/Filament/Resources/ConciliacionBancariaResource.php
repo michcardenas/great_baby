@@ -19,8 +19,10 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Filters\Filter;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 
 /**
@@ -111,6 +113,24 @@ class ConciliacionBancariaResource extends Resource
             ])
             ->defaultSort('fecha', 'desc')
             ->filters([
+                Filter::make('fecha')
+                    ->schema([
+                        DatePicker::make('desde')->label('Fecha desde'),
+                        DatePicker::make('hasta')->label('Fecha hasta'),
+                    ])
+                    ->query(fn (Builder $q, array $data): Builder => $q
+                        ->when($data['desde'] ?? null, fn (Builder $q, $d) => $q->whereDate('fecha', '>=', $d))
+                        ->when($data['hasta'] ?? null, fn (Builder $q, $d) => $q->whereDate('fecha', '<=', $d)))
+                    ->indicateUsing(function (array $data): array {
+                        $i = [];
+                        if ($data['desde'] ?? null) { $i[] = 'Desde '.$data['desde']; }
+                        if ($data['hasta'] ?? null) { $i[] = 'Hasta '.$data['hasta']; }
+                        return $i;
+                    }),
+                SelectFilter::make('banco')
+                    ->label('Banco')
+                    ->options(fn () => ConciliacionBancaria::query()->whereNotNull('banco')
+                        ->distinct()->orderBy('banco')->pluck('banco', 'banco')->all()),
                 SelectFilter::make('estado')->options([
                     'pendiente' => 'Pendiente',
                     'conciliada' => 'Conciliada',
