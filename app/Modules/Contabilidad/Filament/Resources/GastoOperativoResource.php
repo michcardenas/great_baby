@@ -170,9 +170,9 @@ class GastoOperativoResource extends Resource
                         DatePicker::make('desde')->label('Fecha desde'),
                         DatePicker::make('hasta')->label('Fecha hasta'),
                     ])
-                    ->query(fn (Builder $q, array $data): Builder => $q
-                        ->when($data['desde'] ?? null, fn (Builder $q, $d) => $q->whereDate('fecha', '>=', $d))
-                        ->when($data['hasta'] ?? null, fn (Builder $q, $d) => $q->whereDate('fecha', '<=', $d)))
+                    ->query(fn (Builder $query, array $data): Builder => $query
+                        ->when($data['desde'] ?? null, fn ($q, $v) => $q->whereDate('fecha', '>=', $v))
+                        ->when($data['hasta'] ?? null, fn ($q, $v) => $q->whereDate('fecha', '<=', $v)))
                     ->indicateUsing(function (array $data): array {
                         $i = [];
                         if ($data['desde'] ?? null) { $i[] = 'Desde '.$data['desde']; }

@@ -27,9 +27,11 @@ class MovimientoContableResource extends Resource
 
     protected static ?string $pluralModelLabel = 'Libro diario';
 
-    protected static string|\UnitEnum|null $navigationGroup = 'Cartera y CRM';
+    // Libro diario / movimientos contables — pertenece a Contabilidad (dominio de Silvia),
+    // no a Cartera. Se reubica en el grupo Contabilidad.
+    protected static string|\UnitEnum|null $navigationGroup = 'Contabilidad';
 
-    protected static ?int $navigationSort = 8;
+    protected static ?int $navigationSort = 2;
 
     protected static ?string $slug = 'libro-diario';
 
@@ -46,7 +48,7 @@ class MovimientoContableResource extends Resource
             ->columns([
                 TextColumn::make('fecha')->date('Y-m-d')->sortable(),
                 TextColumn::make('cuenta_puc')->label('Cuenta')->badge()->color('gray'),
-                TextColumn::make('descripcion')->limit(45)->tooltip(fn ($r) => $r->descripcion),
+                TextColumn::make('descripcion')->limit(45)->tooltip(fn ($record) => $record->descripcion),
                 TextColumn::make('debe')->money('COP')->alignEnd()->color('success')
                     ->formatStateUsing(fn ($state) => $state > 0 ? '$' . number_format((float) $state, 0, ',', '.') : ''),
                 TextColumn::make('haber')->money('COP')->alignEnd()->color('danger')
@@ -65,9 +67,9 @@ class MovimientoContableResource extends Resource
                         \Filament\Forms\Components\DatePicker::make('desde')->native(false),
                         \Filament\Forms\Components\DatePicker::make('hasta')->native(false),
                     ])
-                    ->query(fn (Builder $q, array $d) => $q
-                        ->when($d['desde'] ?? null, fn ($q, $v) => $q->whereDate('fecha', '>=', $v))
-                        ->when($d['hasta'] ?? null, fn ($q, $v) => $q->whereDate('fecha', '<=', $v))),
+                    ->query(fn (Builder $query, array $data) => $query
+                        ->when($data['desde'] ?? null, fn ($q, $v) => $q->whereDate('fecha', '>=', $v))
+                        ->when($data['hasta'] ?? null, fn ($q, $v) => $q->whereDate('fecha', '<=', $v))),
             ])
             ->toolbarActions([
                 \Filament\Actions\BulkActionGroup::make([
