@@ -4,12 +4,14 @@ namespace App\Modules\Cartera\Filament\Resources;
 
 use App\Modules\Cartera\Enums\ClasificacionDiferencia;
 use App\Modules\Cartera\Filament\Resources\PagoVentaResource\Pages;
+use App\Modules\Cartera\Models\MetodoPago;
 use App\Modules\Cartera\Models\PagoVenta;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Resources\Resource;
 use App\Support\FilamentPolicy\HeredaAutorizacion;
 use Filament\Tables\Columns\BadgeColumn;
+use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
@@ -48,7 +50,14 @@ class PagoVentaResource extends Resource
                 TextColumn::make('fecha')->date('Y-m-d')->sortable(),
                 TextColumn::make('factura.numero')->label('Factura')->searchable()->weight('bold'),
                 TextColumn::make('contacto.nombre_completo')->label('Cliente')->limit(28)->searchable(),
-                TextColumn::make('medio_pago')->badge()->color('gray'),
+                TextColumn::make('medio_pago')->label('Método')->badge()->color('gray')
+                    ->formatStateUsing(fn ($state) => MetodoPago::opciones()[$state] ?? ucfirst((string) $state)),
+                IconColumn::make('adjuntos')->label('Comprob.')
+                    ->boolean()
+                    ->getStateUsing(fn (PagoVenta $r) => ! empty($r->adjuntos))
+                    ->trueIcon('heroicon-o-paper-clip')
+                    ->falseIcon('heroicon-o-minus')
+                    ->trueColor('success')->falseColor('gray'),
                 TextColumn::make('monto_recibido')->money('COP')->alignEnd()->sortable(),
                 TextColumn::make('monto_aplicado')->money('COP')->alignEnd(),
                 TextColumn::make('diferencia')->money('COP')->alignEnd()
@@ -64,10 +73,8 @@ class PagoVentaResource extends Resource
             ->filters([
                 SelectFilter::make('clasificacion_diferencia')
                     ->options(collect(ClasificacionDiferencia::cases())->mapWithKeys(fn ($c) => [$c->value => $c->label()])),
-                SelectFilter::make('medio_pago')->options([
-                    'transferencia' => 'Transferencia', 'efectivo' => 'Efectivo',
-                    'tarjeta' => 'Tarjeta', 'nequi' => 'Nequi', 'daviplata' => 'Daviplata', 'otro' => 'Otro',
-                ]),
+                SelectFilter::make('medio_pago')->label('Método de pago')
+                    ->options(fn () => MetodoPago::opciones()),
             ])
             ->headerActions([
                 Action::make('importar_extracto')

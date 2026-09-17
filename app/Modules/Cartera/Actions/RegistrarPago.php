@@ -33,8 +33,9 @@ class RegistrarPago
         ?int $userId = null,
         ?ClasificacionDiferencia $override = null,
         ?string $notas = null,
+        ?array $adjuntos = null,
     ): PagoVenta {
-        return DB::transaction(function () use ($facturaId, $montoRecibido, $fecha, $medioPago, $referencia, $banco, $userId, $override, $notas) {
+        return DB::transaction(function () use ($facturaId, $montoRecibido, $fecha, $medioPago, $referencia, $banco, $userId, $override, $notas, $adjuntos) {
             $factura = FacturaVenta::with('contacto.condicionVigente')->lockForUpdate()->findOrFail($facturaId);
 
             // Re-audit RAÍZ A/C (FUNC N1 / DATOS #1) · guard duro. Sin este
@@ -78,6 +79,7 @@ class RegistrarPago
                 'medio_pago' => $medioPago,
                 'referencia' => $referencia,
                 'banco' => $banco,
+                'adjuntos' => $adjuntos,
                 'registrado_por' => $userId,
                 'notas' => $notas,
             ]);

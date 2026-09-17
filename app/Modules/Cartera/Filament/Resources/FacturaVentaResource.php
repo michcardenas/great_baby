@@ -6,6 +6,7 @@ use App\Modules\Cartera\Actions\RegistrarPago;
 use App\Modules\Cartera\Enums\EstadoFactura;
 use App\Modules\Cartera\Filament\Resources\FacturaVentaResource\Pages;
 use App\Modules\Cartera\Models\FacturaVenta;
+use App\Modules\Cartera\Models\MetodoPago;
 use App\Modules\Siigo\Services\SiigoEmisionService;
 use BackedEnum;
 use Filament\Actions\Action;
@@ -13,10 +14,12 @@ use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Actions\ViewAction;
 use Filament\Forms\Components\DatePicker;
+use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Repeater;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
+use Filament\Schemas\Components\Utilities\Get;
 use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use App\Support\FilamentPolicy\HeredaAutorizacion;
@@ -238,17 +241,30 @@ class FacturaVentaResource extends Resource
                             ->helperText('Si es menor al saldo se clasifica automáticamente (pronto pago / flete / etc.)'),
                         DatePicker::make('fecha')->default(now())->native(false)->required(),
                         Select::make('medio_pago')
-                            ->options([
-                                'transferencia' => 'Transferencia',
-                                'efectivo' => 'Efectivo',
-                                'tarjeta' => 'Tarjeta',
-                                'nequi' => 'Nequi',
-                                'daviplata' => 'Daviplata',
-                                'otro' => 'Otro',
-                            ])->default('transferencia')->required(),
-                        TextInput::make('referencia')->label('Referencia / número de transacción'),
-                        TextInput::make('banco'),
-                        Textarea::make('notas'),
+                            ->label('Método de pago')
+                            ->options(fn () => MetodoPago::opciones())
+                            ->default(fn () => array_key_first(MetodoPago::opciones()) ?? 'efectivo')
+                            ->searchable()
+                            ->native(false)
+                            ->required()
+                            ->live(),
+                        TextInput::make('referencia')
+                            ->label('Referencia / número de transacción')
+                            ->required(fn (Get $get) => (bool) optional(MetodoPago::porCodigo($get('medio_pago')))->requiere_referencia),
+                        TextInput::make('banco')
+                            ->required(fn (Get $get) => (bool) optional(MetodoPago::porCodigo($get('medio_pago')))->requiere_banco),
+                        Textarea::make('notas')->columnSpanFull(),
+                        FileUpload::make('adjuntos')
+                            ->label('Comprobante de pago')
+                            ->multiple()
+                            ->disk('public')
+                            ->directory('pagos')
+                            ->downloadable()
+                            ->openable()
+                            ->maxSize(10240)
+                            ->columnSpanFull()
+                            ->helperText('Adjunta el soporte (transferencia, consignación, etc.). Hasta 10 MB por archivo.')
+                            ->required(fn (Get $get) => (bool) optional(MetodoPago::porCodigo($get('medio_pago')))->requiere_comprobante),
                     ])
                     ->action(function (FacturaVenta $record, array $data) {
                         // Idempotency: bloquea doble-click por 15s con hash del payload
@@ -269,6 +285,7 @@ class FacturaVentaResource extends Resource
                                 banco: $data['banco'] ?? null,
                                 userId: auth()->id(),
                                 notas: $data['notas'] ?? null,
+                                adjuntos: $data['adjuntos'] ?? null,
                             );
                             Notification::make()
                                 ->title('Pago registrado')

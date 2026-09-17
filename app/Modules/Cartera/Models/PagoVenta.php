@@ -45,6 +45,7 @@ class PagoVenta extends Model implements AuditableContract
         'monto_aplicado' => 'decimal:2',
         'diferencia' => 'decimal:2',
         'clasificacion_diferencia' => ClasificacionDiferencia::class,
+        'adjuntos' => 'array',
     ];
 
     public function factura(): BelongsTo
