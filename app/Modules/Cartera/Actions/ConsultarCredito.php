@@ -24,6 +24,8 @@ class ConsultarCredito
      *   disponible:float,
      *   tiene_mora_critica:bool,
      *   dias_mora_max:int,
+     *   facturas_vencidas:int,
+     *   tiene_factura_vencida:bool,
      *   condicion_vigente:bool,
      * }
      */
@@ -40,11 +42,13 @@ class ConsultarCredito
         $saldo = (float) $facturas->sum('saldo');
         $moraMax = 0;
         $tieneMoraCritica = false;
+        $facturasVencidas = 0;
 
         foreach ($facturas as $f) {
             $mora = $f->diasMora();
             if ($mora > $moraMax) $moraMax = $mora;
             if ($mora > 90) $tieneMoraCritica = true;
+            if ($mora > 0 && (float) $f->saldo > 0) $facturasVencidas++;
         }
 
         return [
@@ -54,6 +58,8 @@ class ConsultarCredito
             'disponible' => max(0, $cupo - $saldo),
             'tiene_mora_critica' => $tieneMoraCritica,
             'dias_mora_max' => $moraMax,
+            'facturas_vencidas' => $facturasVencidas,
+            'tiene_factura_vencida' => $facturasVencidas > 0,
             'condicion_vigente' => (bool) $contacto->condicionVigente,
         ];
     }

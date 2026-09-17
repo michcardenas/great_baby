@@ -124,7 +124,48 @@ class PedidosB2BController extends Controller implements HasMiddleware
 
     public function facturar(int $pedido): RedirectResponse
     {
-        $factura = DB::transaction(function () use ($pedido) {
+        // ── GATE DE CRÉDITO (flujo bodega F2) ────────────────────────────────
+        // Corre ANTES de la tx de facturación: si el pedido es a crédito, valida
+        // cupo / mora / factura vencida. Si retiene, crea la excepción (que se
+        // aprueba en "Excepciones de crédito") y NO factura. Una vez aprobada por
+        // Cartera/Gerencia, este mismo botón libera y factura.
+        $p0 = PedidoCliente::findOrFail($pedido);
+        abort_unless($p0->estado === 'aprobado', 422, 'Sólo se factura un pedido aprobado.');
+        abort_if($p0->factura_id, 422, 'Pedido ya facturado.');
+
+        $esCredito = \App\Modules\Cartera\Models\CondicionCredito::query()
+            ->where('contacto_id', $p0->contacto_id)->where('activa', true)->exists();
+
+        if ($esCredito) {
+            $yaAprobado = \App\Modules\Cartera\Models\SolicitudCredito::query()
+                ->where('pedido_id', $p0->id)
+                ->whereIn('estado', ['aprobada_cartera', 'aprobada_gerencia'])
+                ->exists();
+
+            if (! $yaAprobado) {
+                $hayPendiente = \App\Modules\Cartera\Models\SolicitudCredito::query()
+                    ->where('pedido_id', $p0->id)->where('estado', 'pendiente')->exists();
+
+                $res = \App\Modules\Cartera\Actions\LiberarPedidoAutomatico::run(
+                    $p0->contacto_id,
+                    (float) $p0->total,
+                    crearSolicitud: ! $hayPendiente, // no duplicar si ya hay una pendiente
+                    pedidoId: $p0->id,
+                );
+
+                if ($res['estado'] === 'retenido') {
+                    $nivel = ucfirst($res['nivel'] ?? 'cartera');
+                    return back()->with('warning',
+                        "Pedido RETENIDO: {$res['motivo']}. Requiere aprobación de {$nivel}. "
+                        . "Gestiónalo en 'Excepciones de crédito'."
+                    );
+                }
+            }
+        }
+
+        $tipoFactura = $esCredito ? 'credito' : 'contado';
+
+        $factura = DB::transaction(function () use ($pedido, $tipoFactura) {
             // C-QA-D-3: lock + revalidar dentro de tx.
             $p = PedidoCliente::with('items')->whereKey($pedido)->lockForUpdate()->firstOrFail();
             abort_unless($p->estado === 'aprobado', 422, 'Sólo se factura un pedido aprobado.');
@@ -145,6 +186,7 @@ class PedidosB2BController extends Controller implements HasMiddleware
                 'fecha_emision' => now()->toDateString(),
                 'fecha_vencimiento' => now()->addDays($plazo)->toDateString(),
                 'estado' => 'pendiente',
+                'tipo' => $tipoFactura,
                 'subtotal' => $p->subtotal,
                 'descuento' => 0,
                 'impuestos' => $p->iva,

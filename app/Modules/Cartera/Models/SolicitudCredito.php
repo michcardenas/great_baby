@@ -16,7 +16,7 @@ class SolicitudCredito extends Model implements AuditableContract
     protected $table = 'solicitudes_credito';
 
     protected $fillable = [
-        'contacto_id', 'monto_pedido', 'motivo_retencion', 'snapshot_credito',
+        'contacto_id', 'pedido_id', 'monto_pedido', 'motivo_retencion', 'snapshot_credito',
         'estado', 'nivel_actual',
         'solicitada_por', 'resuelta_por', 'resolucion_notas', 'resuelta_at',
     ];

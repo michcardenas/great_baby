@@ -151,6 +151,10 @@ class FacturaVentaResource extends Resource
                 BadgeColumn::make('estado')
                     ->formatStateUsing(fn ($state) => $state instanceof EstadoFactura ? $state->label() : $state)
                     ->color(fn ($state) => $state instanceof EstadoFactura ? $state->color() : 'gray'),
+                TextColumn::make('tipo')->label('Tipo')->badge()
+                    ->formatStateUsing(fn ($state) => ucfirst((string) ($state ?: 'contado')))
+                    ->color(fn ($state) => $state === 'credito' ? 'warning' : 'success')
+                    ->toggleable(),
                 TextColumn::make('total')->money('COP')->alignEnd()->sortable(),
                 TextColumn::make('saldo')->money('COP')->alignEnd()->weight('bold')
                     ->color(fn ($state) => $state > 0 ? 'danger' : 'success'),
