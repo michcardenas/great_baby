@@ -120,6 +120,41 @@ class SincronizarPedidosDropi
         ];
     }
 
+    /**
+     * Importa una colección de DTOs (p. ej. desde un Excel de Dropi) reutilizando
+     * toda la lógica de guardarPedido (upsert por guía, máquina de estados,
+     * bitácora, corte, items). NO mueve el high-water-mark del sync incremental
+     * de la API (dropi_sync_estado): es una carga puntual, no un delta.
+     *
+     * @param  iterable<PedidoDropiDTO>  $dtos
+     * @return array{total:int, nuevos:int, actualizados:int, rechazados:int, errores:int}
+     */
+    public function importarPedidos(iterable $dtos): array
+    {
+        $total = 0; $nuevos = 0; $actualizados = 0; $rechazados = 0; $errores = 0;
+
+        foreach ($dtos as $dto) {
+            $total++;
+            try {
+                $r = DB::transaction(fn () => $this->guardarPedido($dto));
+            } catch (\Throwable $e) {
+                $errores++;
+                \Illuminate\Support\Facades\Log::error('dropi.import.pedido_error', [
+                    'guia' => $dto->guia ?? null, 'orden' => $dto->dropiOrdenId ?? null, 'msg' => $e->getMessage(),
+                ]);
+                continue;
+            }
+            match ($r) {
+                'nuevo' => $nuevos++,
+                'actualizado' => $actualizados++,
+                'rechazado' => $rechazados++,
+                default => null,
+            };
+        }
+
+        return compact('total', 'nuevos', 'actualizados', 'rechazados', 'errores');
+    }
+
     protected function guardarPedido(PedidoDropiDTO $dto): string
     {
         // P7 · Normalizar guía (trim + upper) para blindar dedup.
