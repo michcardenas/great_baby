@@ -241,11 +241,14 @@ class SincronizarPedidosDropi
             $cambioHeader = $existente->isDirty();
             $existente->save();
 
-            $cambioEstado = ($estadoInicial !== $existente->estado);
-
             // C6 · si el estado del payload cambia, transicionar vía state-machine
             // (fuente=api). Escribe bitácora automática y dispara side-effects.
-            if ($cambioEstado) {
+            // El cambio de estado sólo cuenta si transicionar tuvo ÉXITO real: si la
+            // máquina lo bloquea (transición inválida hacia atrás, o corte cerrado)
+            // NO cambia nada en BD → NO es "con cambios" (idempotencia: re-subir el
+            // mismo archivo no debe volver a marcar los bloqueados como actualizados).
+            $cambioEstado = false;
+            if ($estadoInicial !== $existente->estado) {
                 try {
                     $existente->transicionar(
                         $estadoInicial,
@@ -253,9 +256,9 @@ class SincronizarPedidosDropi
                         null,
                         ['origen' => 'sync', 'raw_estado_dropi' => $dto->estadoDropi ?? null],
                     );
+                    $cambioEstado = true;
                 } catch (\Throwable $e) {
-                    // H5 datos · si la máquina rechaza (corte cerrado + estado no permitido),
-                    // logueamos para trazabilidad — antes se tragaba silencio.
+                    // H5 datos · si la máquina rechaza, logueamos para trazabilidad.
                     \Illuminate\Support\Facades\Log::warning('dropi.sync.transicion_bloqueada', [
                         'guia' => $existente->guia,
                         'de' => $existente->estado instanceof \App\Modules\Dropi\Enums\EstadoPedidoDropi
