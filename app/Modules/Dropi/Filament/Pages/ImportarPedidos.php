@@ -58,7 +58,7 @@ class ImportarPedidos extends Page implements HasForms
                 ])
                 ->disk('local')->directory('imports')
                 ->required()
-                ->helperText('Descárgalo en Dropi → Mis Pedidos → Acciones → "Órdenes (una orden por fila)".'),
+                ->helperText('Dropi → Mis Pedidos → Acciones → "Órdenes (una orden por fila)" o "Órdenes con Productos". Se detecta solo; el de Productos trae el detalle de ítems.'),
         ])->statePath('data');
     }
 
