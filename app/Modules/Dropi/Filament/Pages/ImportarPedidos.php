@@ -92,8 +92,8 @@ class ImportarPedidos extends Page implements HasForms
 
         $r = $this->resultado;
         Notification::make()
-            ->title('✅ Pedidos importados')
-            ->body("Nuevos: {$r['nuevos']} · Actualizados: {$r['actualizados']} · Omitidos sin guía: {$r['rechazados']}"
+            ->title('✅ Importación terminada')
+            ->body("Nuevos: {$r['nuevos']} · Con cambios: {$r['actualizados']} · Sin cambios: {$r['sin_cambios']} · Pendientes sin guía: {$r['rechazados']}"
                 . ($r['errores'] ? " · Errores: {$r['errores']}" : ''))
             ->color($r['errores'] ? 'warning' : 'success')
             ->persistent()

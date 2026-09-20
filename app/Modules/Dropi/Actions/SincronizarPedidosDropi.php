@@ -52,6 +52,7 @@ class SincronizarPedidosDropi
 
         $nuevos = 0;
         $actualizados = 0;
+        $sinCambios = 0;
         $pendientesInv = 0;
         $errores = 0;
 
@@ -80,6 +81,7 @@ class SincronizarPedidosDropi
                 match ($resultado) {
                     'nuevo' => $nuevos++,
                     'actualizado' => $actualizados++,
+                    'sin_cambios' => $sinCambios++,
                     default => null,
                 };
 
@@ -113,6 +115,7 @@ class SincronizarPedidosDropi
             'procesados' => $totalProcesados,
             'nuevos' => $nuevos,
             'actualizados' => $actualizados,
+            'sin_cambios' => $sinCambios,
             'pendientes_inv' => $pendientesInv,
             'errores' => $errores,
             'driver' => $this->client->driver(),
@@ -131,7 +134,7 @@ class SincronizarPedidosDropi
      */
     public function importarPedidos(iterable $dtos): array
     {
-        $total = 0; $nuevos = 0; $actualizados = 0; $rechazados = 0; $errores = 0;
+        $total = 0; $nuevos = 0; $actualizados = 0; $sin_cambios = 0; $rechazados = 0; $errores = 0;
 
         foreach ($dtos as $dto) {
             $total++;
@@ -147,12 +150,13 @@ class SincronizarPedidosDropi
             match ($r) {
                 'nuevo' => $nuevos++,
                 'actualizado' => $actualizados++,
+                'sin_cambios' => $sin_cambios++,
                 'rechazado' => $rechazados++,
                 default => null,
             };
         }
 
-        return compact('total', 'nuevos', 'actualizados', 'rechazados', 'errores');
+        return compact('total', 'nuevos', 'actualizados', 'sin_cambios', 'rechazados', 'errores');
     }
 
     protected function guardarPedido(PedidoDropiDTO $dto): string
@@ -232,11 +236,16 @@ class SincronizarPedidosDropi
                 }
             }
 
-            $existente->fill($sinEstado)->save();
+            // Detección de cambios: header (isDirty tras fill), estado e items.
+            $existente->fill($sinEstado);
+            $cambioHeader = $existente->isDirty();
+            $existente->save();
+
+            $cambioEstado = ($estadoInicial !== $existente->estado);
 
             // C6 · si el estado del payload cambia, transicionar vía state-machine
             // (fuente=api). Escribe bitácora automática y dispara side-effects.
-            if ($estadoInicial !== $existente->estado) {
+            if ($cambioEstado) {
                 try {
                     $existente->transicionar(
                         $estadoInicial,
@@ -257,9 +266,9 @@ class SincronizarPedidosDropi
                 }
             }
 
-            $this->sincronizarItems($existente, $dto);
+            $cambioItems = $this->sincronizarItems($existente, $dto);
 
-            return 'actualizado';
+            return ($cambioHeader || $cambioEstado || $cambioItems) ? 'actualizado' : 'sin_cambios';
         }
 
         // Re-audit DR-β · con $guarded, `estado` no pasa por fill. Se crea
@@ -310,12 +319,14 @@ class SincronizarPedidosDropi
         };
     }
 
-    protected function sincronizarItems(DropiPedido $pedido, PedidoDropiDTO $dto): void
+    protected function sincronizarItems(DropiPedido $pedido, PedidoDropiDTO $dto): bool
     {
+        $cambio = false;
+
         foreach ($dto->items as $item) {
             $variante = ProductoVariante::where('codigo_barras', $item->skuDropi)->first();
 
-            DropiPedidoItem::updateOrCreate(
+            $registro = DropiPedidoItem::updateOrCreate(
                 ['pedido_id' => $pedido->id, 'sku_dropi' => $item->skuDropi],
                 [
                     'variante_id' => $variante?->id,
@@ -323,7 +334,13 @@ class SincronizarPedidosDropi
                     'precio_proveedor_unit' => $item->precioProveedorUnit,
                 ],
             );
+
+            if ($registro->wasRecentlyCreated || $registro->wasChanged()) {
+                $cambio = true;
+            }
         }
+
+        return $cambio;
 
         // Raíz A (H1 datos) · los contadores del corte son responsabilidad EXCLUSIVA
         // del listener RecalcularContadoresCorte (evento PedidoDropiTransicionado).
