@@ -115,18 +115,32 @@ class ProcesarEscaneoEmpaque
 
             // 2. ¿Es un código de variante? (necesita pedido activo)
             $variante = ProductoVariante::where('codigo_barras', $codigo)->first();
+
+            // C-F2 R2 · Si no coincide con variante, intentar como REFERENCIA de
+            //   producto agregado. Los productos agregados no tienen barcode
+            //   propio en producto_variantes; el operador escanea/tipea la ref.
+            $productoAgregado = null;
             if (! $variante) {
+                $productoAgregado = \App\Modules\Dropi\Models\Producto::query()
+                    ->where('desglose_stock', false)
+                    ->where('activo', true)
+                    ->where('referencia', $codigo)
+                    ->first();
+            }
+
+            if (! $variante && ! $productoAgregado) {
                 return [
                     'tipo' => 'error',
-                    'mensaje' => "Código {$codigo} no reconocido. ¿Está bien impresa la etiqueta?",
+                    'mensaje' => "Código {$codigo} no reconocido (ni variante ni producto agregado). ¿Está bien impresa la etiqueta?",
                     'sonido' => 'error',
                 ];
             }
 
             if (! $pedidoActivoId) {
+                $tipoSujeto = $variante ? 'variante' : 'producto agregado';
                 return [
                     'tipo' => 'variante_sin_pedido',
-                    'mensaje' => 'Escaneaste una variante pero no hay pedido activo. Escanea primero la guía.',
+                    'mensaje' => "Escaneaste un {$tipoSujeto} pero no hay pedido activo. Escanea primero la guía.",
                     'sonido' => 'warn',
                 ];
             }
@@ -145,12 +159,19 @@ class ProcesarEscaneoEmpaque
                 ];
             }
 
-            $item = $pedido?->items->firstWhere('variante_id', $variante->id);
+            // C-F2 R2 · Match polimórfico: buscar item por variante_id O producto_id.
+            if ($variante) {
+                $item = $pedido?->items->firstWhere('variante_id', $variante->id);
+                $etiquetaSujeto = "variante {$codigo}";
+            } else {
+                $item = $pedido?->items->first(fn ($i) => $i->variante_id === null && $i->producto_id === $productoAgregado->id);
+                $etiquetaSujeto = "producto agregado {$productoAgregado->referencia}";
+            }
 
             if (! $item) {
                 return [
                     'tipo' => 'error',
-                    'mensaje' => "La variante {$codigo} no está en el pedido actual.",
+                    'mensaje' => "La {$etiquetaSujeto} no está en el pedido actual.",
                     'sonido' => 'error',
                 ];
             }
@@ -161,11 +182,17 @@ class ProcesarEscaneoEmpaque
             $cantidadRequerida = (int) ($itemLocked->cantidad ?? 1);
             $cantidadYa = (int) ($itemLocked->cantidad_pickeada ?? 0);
 
+            // C-F2 R2 · Etiqueta polimórfica según el sujeto detectado.
+            $nombreItem = $variante
+                ? ($variante->producto?->nombre ?? 'producto')
+                : ($productoAgregado?->nombre ?? 'producto agregado');
+
             if ($cantidadYa >= $cantidadRequerida) {
                 return [
                     'tipo' => 'variante_ya_marcada',
-                    'mensaje' => "{$variante->producto?->nombre} ya está completo ({$cantidadYa}/{$cantidadRequerida}).",
-                    'variante_id' => $variante->id,
+                    'mensaje' => "{$nombreItem} ya está completo ({$cantidadYa}/{$cantidadRequerida}).",
+                    'variante_id' => $variante?->id,
+                    'producto_id' => $productoAgregado?->id,
                     'sonido' => 'warn',
                 ];
             }
@@ -186,10 +213,16 @@ class ProcesarEscaneoEmpaque
             $restanteItem = $cantidadRequerida - $item->cantidad_pickeada;
             $sufijo = $restanteItem > 0 ? " (faltan {$restanteItem})" : '';
 
+            // C-F2 R2 · Mensaje polimórfico para el operario en pantalla + audio.
+            $descColor = $variante
+                ? " — {$variante->color_nombre}"
+                : ' — AGREGADO (colores surtidos)';
             return [
                 'tipo' => 'variante_marcada',
-                'mensaje' => "✓ {$variante->producto?->nombre} — {$variante->color_nombre}{$sufijo}",
-                'variante_id' => $variante->id,
+                'mensaje' => "✓ {$nombreItem}{$descColor}{$sufijo}",
+                'variante_id' => $variante?->id,
+                'producto_id' => $productoAgregado?->id,
+                'es_agregado' => (bool) $productoAgregado,
                 'sonido' => 'ok',
             ];
         });

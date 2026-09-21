@@ -43,6 +43,17 @@ class DropiPedidoItem extends Model implements AuditableContract
         return $this->belongsTo(ProductoVariante::class, 'variante_id');
     }
 
+    // C-F-QA1 · Item polimórfico: variante granular O producto agregado.
+    public function producto(): BelongsTo
+    {
+        return $this->belongsTo(\App\Modules\Dropi\Models\Producto::class, 'producto_id');
+    }
+
+    public function esAgregado(): bool
+    {
+        return $this->variante_id === null && $this->producto_id !== null;
+    }
+
     public function ubicacionAsignada(): BelongsTo
     {
         return $this->belongsTo(InventarioUbicacion::class, 'ubicacion_asignada_id');
@@ -51,5 +62,21 @@ class DropiPedidoItem extends Model implements AuditableContract
     public function subtotal(): float
     {
         return (float) $this->precio_proveedor_unit * $this->cantidad;
+    }
+
+    /**
+     * Fix QA E2E re-audit · auto-poblar producto_id desde variante_id.
+     *   SincronizarPedidosDropi hace updateOrCreate seteando sólo variante_id;
+     *   sin este hook cada nuevo item importado desde Dropi entraba con
+     *   producto_id NULL → ProcesarEscaneoEmpaque no matcheaba por producto,
+     *   y los reportes de ventas por producto perdían filas.
+     */
+    protected static function booted(): void
+    {
+        static::creating(function (self $item) {
+            if ($item->producto_id === null && $item->variante_id !== null) {
+                $item->producto_id = ProductoVariante::whereKey($item->variante_id)->value('producto_id');
+            }
+        });
     }
 }

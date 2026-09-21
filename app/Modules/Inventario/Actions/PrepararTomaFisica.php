@@ -43,51 +43,22 @@ class PrepararTomaFisica
                 );
             }
 
-            $variantesQ = ProductoVariante::query()->with('producto:id,precio_proveedor,marca_id');
+            // C-F2 R2 · Toma física ahora cubre AMBOS modos.
+            //   Bloque 1: iteración sobre variantes de productos granulares
+            //   Bloque 2: iteración sobre productos agregados (variante_id NULL en item)
+            //   El PMP se calcula con la API adecuada (por variante O por producto).
 
-            if ($toma->alcance && preg_match('/^(marca|categoria):(\d+)$/', $toma->alcance, $m)) {
-                $columna = $m[1] === 'marca' ? 'marca_id' : 'categoria_id';
-                $variantesQ = $variantesQ->whereHas('producto', fn ($q) => $q->where($columna, (int) $m[2]));
-            } elseif ($toma->alcance) {
-                throw new \InvalidArgumentException(
-                    "Alcance no válido: '{$toma->alcance}'. Usa 'marca:N' o 'categoria:N' con N como ID numérico."
-                );
-            }
-
-            $variantes = $variantesQ->get(['id', 'producto_id']);
-            if ($variantes->isEmpty()) {
-                throw new \InvalidArgumentException('No hay variantes que coincidan con el alcance definido.');
-            }
-
-            $saldos = $this->stock->saldosMasivos($variantes->pluck('id')->all());
-
-            // PATRÓN ε · costo promedio ponderado desde el kardex, por ubicación.
-            //   PMP = Σ(cantidad_positiva × costo_asociado) / Σ(cantidad_positiva)
-            //   Aproximación: si `movimientos_inventario` no guarda `costo_unit`,
-            //   caemos al `precio_proveedor` del maestro (mejor que 0).
             $itemsCreados = 0;
-            foreach ($variantes as $v) {
-                $saldo = (int) ($saldos["{$v->id}-{$toma->ubicacion_id}"]->saldo ?? 0);
-                if ($saldo <= 0 && $toma->tipo === 'ciclico') continue;
 
-                $costo = $this->calcularCostoPromedio($v->id, $toma->ubicacion_id)
-                    ?? (float) ($v->producto?->precio_proveedor ?? 0);
+            // ─── Bloque 1: variantes de productos granulares ─────────
+            $itemsCreados += $this->prepararGranulares($toma);
 
-                // Re-audit M3 α · asignación por propiedades (no fill()) para
-                //   respetar $guarded en TomaFisicaItem sin volver a exponer
-                //   saldo_sistema/costo_unit a mass-assign en Filament.
-                $item = TomaFisicaItem::firstOrNew([
-                    'toma_id' => $toma->id, 'variante_id' => $v->id,
-                ]);
-                $item->saldo_sistema = $saldo;
-                $item->costo_unit = $costo;
-                $item->save();
-                $itemsCreados++;
-            }
+            // ─── Bloque 2: productos agregados ───────────────────────
+            $itemsCreados += $this->prepararAgregados($toma);
 
             if ($itemsCreados === 0) {
                 throw new \InvalidArgumentException(
-                    'No se crearon items (alcance ciclico sin saldos > 0). Cambia tipo o alcance.'
+                    'No se crearon items (alcance sin saldos > 0). Cambia tipo o alcance.'
                 );
             }
 
@@ -98,6 +69,90 @@ class PrepararTomaFisica
 
             return $toma->fresh(['items']);
         });
+    }
+
+    /**
+     * C-F2 R2 · Siembra items de variantes granulares (comportamiento clásico).
+     */
+    protected function prepararGranulares(TomaFisica $toma): int
+    {
+        $variantesQ = ProductoVariante::query()
+            ->with('producto:id,precio_proveedor,marca_id,desglose_stock')
+            ->whereHas('producto', fn ($p) => $p->where('desglose_stock', true));
+
+        if ($toma->alcance && preg_match('/^(marca|categoria):(\d+)$/', $toma->alcance, $m)) {
+            $columna = $m[1] === 'marca' ? 'marca_id' : 'categoria_id';
+            $variantesQ = $variantesQ->whereHas('producto', fn ($q) => $q->where($columna, (int) $m[2]));
+        } elseif ($toma->alcance) {
+            throw new \InvalidArgumentException(
+                "Alcance no válido: '{$toma->alcance}'. Usa 'marca:N' o 'categoria:N' con N como ID numérico."
+            );
+        }
+
+        $variantes = $variantesQ->get(['id', 'producto_id']);
+        if ($variantes->isEmpty()) return 0;
+
+        $saldos = $this->stock->saldosMasivos($variantes->pluck('id')->all());
+        $n = 0;
+        foreach ($variantes as $v) {
+            $saldo = (int) ($saldos["{$v->id}-{$toma->ubicacion_id}"]->saldo ?? 0);
+            if ($saldo <= 0 && $toma->tipo === 'ciclico') continue;
+
+            $costo = $this->calcularCostoPromedio($v->id, $toma->ubicacion_id)
+                ?? (float) ($v->producto?->precio_proveedor ?? 0);
+
+            // Re-audit M3 α · asignación por propiedades (no fill()) para
+            //   respetar $guarded en TomaFisicaItem sin volver a exponer
+            //   saldo_sistema/costo_unit a mass-assign en Filament.
+            $item = TomaFisicaItem::firstOrNew([
+                'toma_id' => $toma->id, 'variante_id' => $v->id,
+            ]);
+            $item->saldo_sistema = $saldo;
+            $item->costo_unit = $costo;
+            $item->producto_id = $v->producto_id; // C-F2 R2 · popula por consistencia
+            $item->save();
+            $n++;
+        }
+        return $n;
+    }
+
+    /**
+     * C-F2 R2 · Siembra items de productos agregados (variante_id NULL, producto_id set).
+     */
+    protected function prepararAgregados(TomaFisica $toma): int
+    {
+        $productosQ = Producto::query()
+            ->where('activo', true)
+            ->where('desglose_stock', false);
+
+        if ($toma->alcance && preg_match('/^(marca|categoria):(\d+)$/', $toma->alcance, $m)) {
+            $columna = $m[1] === 'marca' ? 'marca_id' : 'categoria_id';
+            $productosQ = $productosQ->where($columna, (int) $m[2]);
+        }
+
+        $productos = $productosQ->get(['id', 'precio_proveedor']);
+        if ($productos->isEmpty()) return 0;
+
+        $saldos = $this->stock->saldosMasivosProducto($productos->pluck('id')->all());
+        $n = 0;
+        foreach ($productos as $p) {
+            $saldo = (int) ($saldos["{$p->id}-{$toma->ubicacion_id}"]->saldo ?? 0);
+            if ($saldo <= 0 && $toma->tipo === 'ciclico') continue;
+
+            $costo = $this->calcularCostoPromedioProducto($p->id, $toma->ubicacion_id)
+                ?? (float) ($p->precio_proveedor ?? 0);
+
+            $item = TomaFisicaItem::firstOrNew([
+                'toma_id' => $toma->id,
+                'producto_id' => $p->id,
+                'variante_id' => null,
+            ]);
+            $item->saldo_sistema = $saldo;
+            $item->costo_unit = $costo;
+            $item->save();
+            $n++;
+        }
+        return $n;
     }
 
     /**
@@ -118,6 +173,26 @@ class PrepararTomaFisica
     {
         $agg = InventarioMovimiento::query()
             ->where('variante_id', $varianteId)
+            ->where('ubicacion_id', $ubicacionId)
+            ->where('cantidad', '>', 0)
+            ->whereNotNull('costo_unit')
+            ->selectRaw('SUM(cantidad * costo_unit) as valor, SUM(cantidad) as qty')
+            ->first();
+
+        $qty = (float) ($agg->qty ?? 0);
+        if ($qty <= 0) return null;
+
+        return round(((float) $agg->valor) / $qty, 4);
+    }
+
+    /**
+     * C-F2 R2 · PMP para productos agregados (variante_id IS NULL en movs).
+     */
+    protected function calcularCostoPromedioProducto(int $productoId, int $ubicacionId): ?float
+    {
+        $agg = InventarioMovimiento::query()
+            ->where('producto_id', $productoId)
+            ->whereNull('variante_id')
             ->where('ubicacion_id', $ubicacionId)
             ->where('cantidad', '>', 0)
             ->whereNotNull('costo_unit')

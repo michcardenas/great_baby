@@ -48,7 +48,7 @@ class TrasladoResource extends Resource
 
     public static function canViewAny(): bool
     {
-        return auth()->user()?->esAracely() ?? false;
+        return \App\Auth\Permisos::puede(auth()->user(), 'traslados');
     }
 
     public static function form(Schema $schema): Schema
@@ -73,16 +73,57 @@ class TrasladoResource extends Resource
                 Textarea::make('observaciones')->columnSpanFull(),
             ])->columns(2),
 
-            Section::make('Ítems a trasladar')->schema([
+            Section::make('Ítems a trasladar')
+                ->description('Cada ítem apunta a una variante (producto granular) O a un producto agregado. Elige uno de los dos, no ambos.')
+                ->schema([
                 Repeater::make('items')
                     ->relationship('items')
                     ->schema([
+                        // C-F-QA3 · form dual variante O producto agregado (mutuamente excluyente).
                         Select::make('variante_id')
-                            ->label('Variante')
+                            ->label('Variante (producto granular)')
                             ->relationship('variante', 'codigo_barras')
-                            ->searchable()->required()->preload(),
+                            ->searchable()->preload()
+                            ->live()
+                            ->disabled(fn ($get) => filled($get('producto_id')))
+                            // Fix REGRESIÓN QA E2E · limpiar el otro campo al elegir uno,
+                            //   para hacer mutua exclusividad real. Antes bastaba con
+                            //   disabled(fn) → si el usuario tenía ambos setted por otra
+                            //   ruta (bulk edit, import), el Repeater persistía ambos y
+                            //   `esAgregado()` sólo miraba variante_id === null: el ítem
+                            //   contradictorio se trataba como granular ignorando el
+                            //   producto agregado.
+                            ->afterStateUpdated(function ($state, $set) {
+                                if (filled($state)) $set('producto_id', null);
+                            })
+                            ->helperText('Escoge si es producto por variantes.'),
+                        Select::make('producto_id')
+                            ->label('Producto agregado (sin desglose)')
+                            ->options(fn () => \App\Modules\Dropi\Models\Producto::query()
+                                ->where('desglose_stock', false)
+                                ->orderBy('referencia')
+                                ->pluck('nombre', 'id')->all())
+                            ->searchable()->preload()
+                            ->live()
+                            ->disabled(fn ($get) => filled($get('variante_id')))
+                            ->afterStateUpdated(function ($state, $set) {
+                                if (filled($state)) $set('variante_id', null);
+                            })
+                            ->helperText(fn ($get) => filled($get('variante_id'))
+                                ? 'Limpia la variante primero para elegir un producto agregado.'
+                                : 'Escoge si es producto agregado (colores surtidos).')
+                            ->rules([
+                                fn ($get) => function ($attribute, $value, $fail) use ($get) {
+                                    if (blank($value) && blank($get('variante_id'))) {
+                                        $fail('Debes elegir una variante O un producto agregado.');
+                                    }
+                                    if (filled($value) && filled($get('variante_id'))) {
+                                        $fail('No puedes escoger variante Y producto agregado al mismo tiempo.');
+                                    }
+                                },
+                            ]),
                         TextInput::make('cantidad_solicitada')->numeric()->required()->minValue(1),
-                        TextInput::make('notas'),
+                        TextInput::make('notas')->columnSpanFull(),
                     ])
                     ->columns(3)
                     ->collapsible()

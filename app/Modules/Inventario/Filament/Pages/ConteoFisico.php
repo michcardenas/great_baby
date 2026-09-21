@@ -81,8 +81,13 @@ class ConteoFisico extends Page
         $q = $this->tomaModel->items;
         if ($this->buscar) {
             $t = strtolower($this->buscar);
-            $q = $q->filter(fn ($i) => str_contains(strtolower($i->variante?->codigo_barras ?? ''), $t)
-                || str_contains(strtolower($i->variante?->producto?->nombre ?? ''), $t));
+            // C-F-QA2 · buscar en variante Y en producto agregado
+            $q = $q->filter(fn ($i) =>
+                str_contains(strtolower($i->variante?->codigo_barras ?? ''), $t)
+                || str_contains(strtolower($i->variante?->producto?->nombre ?? ''), $t)
+                || str_contains(strtolower($i->producto?->referencia ?? ''), $t)
+                || str_contains(strtolower($i->producto?->nombre ?? ''), $t)
+            );
         }
 
         return $q->take(50);

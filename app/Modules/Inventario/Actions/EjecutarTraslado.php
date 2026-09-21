@@ -58,6 +58,7 @@ class EjecutarTraslado
      */
     public function enviar(Traslado $traslado): Traslado
     {
+        // C-F2 R2 · Guard temporal REMOVIDO — ahora se soportan items agregados.
         // PATRÓN λ (FUNC-C8, SEG-C2) · guard de autorización en el Action.
         //   Antes: la única autorización estaba en el controller/Filament, así
         //   que cualquier job/artisan/listener podía disparar movimientos de
@@ -82,12 +83,24 @@ class EjecutarTraslado
                 throw new InvalidArgumentException('El traslado no tiene ítems.');
             }
 
-            // Lock kardex del origen (variantes involucradas) — evita race con ventas/otros traslados.
-            $varianteIds = $items->pluck('variante_id')->all();
-            InventarioMovimiento::query()
-                ->whereIn('variante_id', $varianteIds)
-                ->where('ubicacion_id', $traslado->origen_id)
-                ->lockForUpdate()->get();
+            // C-F2 R2 · Lock kardex del origen — polimórfico:
+            //   granular → whereIn variante_id
+            //   agregado → whereIn producto_id AND variante_id NULL
+            $varIds = $items->whereNotNull('variante_id')->pluck('variante_id')->all();
+            $prodIds = $items->whereNull('variante_id')->pluck('producto_id')->all();
+            if ($varIds) {
+                InventarioMovimiento::query()
+                    ->whereIn('variante_id', $varIds)
+                    ->where('ubicacion_id', $traslado->origen_id)
+                    ->lockForUpdate()->get();
+            }
+            if ($prodIds) {
+                InventarioMovimiento::query()
+                    ->whereIn('producto_id', $prodIds)
+                    ->whereNull('variante_id')
+                    ->where('ubicacion_id', $traslado->origen_id)
+                    ->lockForUpdate()->get();
+            }
 
             // Guard idempotente: si ya hay salidas del traslado, no re-crear.
             $yaEnviado = InventarioMovimiento::query()
@@ -98,13 +111,19 @@ class EjecutarTraslado
                 throw new InvalidArgumentException('El traslado ya tiene movimientos de salida registrados.');
             }
 
+            // C-F2 R2 · Validar stock disponible por sujeto (polimórfico).
             foreach ($items as $it) {
                 $req = (int) $it->cantidad_solicitada;
-                $this->guardEnteroPositivo($req, $it->variante_id);
-                $disp = $this->stock->saldoDisponible($it->variante_id, $traslado->origen_id);
+                $etiqueta = $it->esAgregado() ? "producto {$it->producto_id}" : "variante {$it->variante_id}";
+                $this->guardEnteroPositivoEtiqueta($req, $etiqueta);
+
+                $disp = $it->esAgregado()
+                    ? $this->stock->saldoDisponibleProducto($it->producto_id, $traslado->origen_id)
+                    : $this->stock->saldoDisponible($it->variante_id, $traslado->origen_id);
+
                 if ($disp < $req) {
                     throw new InvalidArgumentException(
-                        "Stock insuficiente en origen · variante {$it->variante_id}: disponible {$disp}, requerido {$req}."
+                        "Stock insuficiente en origen · {$etiqueta}: disponible {$disp}, requerido {$req}."
                     );
                 }
             }
@@ -112,15 +131,19 @@ class EjecutarTraslado
             $ts = now();
             foreach ($items as $it) {
                 $cant = (int) $it->cantidad_solicitada;
+                // C-F2 R2 · Mov polimórfico:
+                //   variante_id NULL para agregados, producto_id auto por hook.
                 InventarioMovimiento::create([
                     'variante_id' => $it->variante_id,
+                    'producto_id' => $it->producto_id, // consistencia
                     'ubicacion_id' => $traslado->origen_id,
                     'tipo' => 'traslado_salida',
                     'cantidad' => -$cant,
                     'referencia_tipo' => Traslado::class,
                     'referencia_id' => $traslado->id,
                     'user_id' => auth()->id(),
-                    'notas' => "Traslado {$traslado->numero} → {$traslado->destino?->nombre}",
+                    'notas' => "Traslado {$traslado->numero} → {$traslado->destino?->nombre}"
+                        .($it->esAgregado() ? ' · AGREGADO' : ''),
                     'created_at' => $ts,
                 ]);
             }
@@ -139,6 +162,7 @@ class EjecutarTraslado
      */
     public function recibir(Traslado $traslado): Traslado
     {
+        // C-F2 R2 · Guard temporal REMOVIDO — se soportan items agregados.
         $this->autorizarSobreBodegas($traslado->origen_id, $traslado->destino_id);
 
         return DB::transaction(function () use ($traslado) {
@@ -172,15 +196,18 @@ class EjecutarTraslado
             $ts = now();
             foreach ($items as $it) {
                 $cant = (int) $it->cantidad_solicitada;
+                // C-F2 R2 · Mov polimórfico (variante_id NULL para agregados).
                 InventarioMovimiento::create([
                     'variante_id' => $it->variante_id,
+                    'producto_id' => $it->producto_id,
                     'ubicacion_id' => $traslado->destino_id,
                     'tipo' => 'traslado_entrada',
                     'cantidad' => $cant,
                     'referencia_tipo' => Traslado::class,
                     'referencia_id' => $traslado->id,
                     'user_id' => auth()->id(),
-                    'notas' => "Traslado {$traslado->numero} ← {$traslado->origen?->nombre}",
+                    'notas' => "Traslado {$traslado->numero} ← {$traslado->origen?->nombre}"
+                        .($it->esAgregado() ? ' · AGREGADO' : ''),
                     'created_at' => $ts,
                 ]);
 
@@ -205,6 +232,7 @@ class EjecutarTraslado
      */
     public function anular(Traslado $traslado, string $motivo): Traslado
     {
+        // C-F2 R2 · Guard temporal REMOVIDO — anular ya soporta agregados.
         $this->autorizarSobreBodegas($traslado->origen_id, $traslado->destino_id);
 
         return DB::transaction(function () use ($traslado, $motivo) {
@@ -243,11 +271,12 @@ class EjecutarTraslado
             }
 
             if (in_array($estadoPrev, [EstadoTraslado::EnTransito, EstadoTraslado::Recibido], true)) {
-                // Reversa salida (devuelve stock a ORIGEN).
+                // C-F2 R2 · Reversa salida polimórfica (devuelve stock a ORIGEN).
                 foreach ($items as $it) {
                     $cant = (int) $it->cantidad_solicitada;
                     InventarioMovimiento::create([
                         'variante_id' => $it->variante_id,
+                        'producto_id' => $it->producto_id,
                         'ubicacion_id' => $traslado->origen_id,
                         'tipo' => 'traslado_reversa_salida',
                         'cantidad' => $cant, // positivo: devuelve stock a origen
@@ -260,11 +289,12 @@ class EjecutarTraslado
                 }
             }
             if ($estadoPrev === EstadoTraslado::Recibido) {
-                // Reversa entrada (retira stock del DESTINO).
+                // C-F2 R2 · Reversa entrada polimórfica (retira stock del DESTINO).
                 foreach ($items as $it) {
                     $cant = (int) $it->cantidad_solicitada;
                     InventarioMovimiento::create([
                         'variante_id' => $it->variante_id,
+                        'producto_id' => $it->producto_id,
                         'ubicacion_id' => $traslado->destino_id,
                         'tipo' => 'traslado_reversa_entrada',
                         'cantidad' => -$cant,
@@ -297,14 +327,23 @@ class EjecutarTraslado
 
     protected function guardEnteroPositivo(int|float $cant, int $varianteId): void
     {
+        $this->guardEnteroPositivoEtiqueta($cant, "variante {$varianteId}");
+    }
+
+    /**
+     * C-F2 R2 · versión polimórfica del guard: etiqueta puede describir variante
+     * o producto agregado según el contexto del caller.
+     */
+    protected function guardEnteroPositivoEtiqueta(int|float $cant, string $etiqueta): void
+    {
         // Re-audit M3 ξ · kardex ya soporta decimal(14,4). Sólo validamos
         //   positividad y cota máxima razonable.
         if ($cant <= 0) {
-            throw new InvalidArgumentException("Cantidad inválida para variante {$varianteId}: debe ser > 0.");
+            throw new InvalidArgumentException("Cantidad inválida para {$etiqueta}: debe ser > 0.");
         }
         if ($cant > 999999) {
             throw new InvalidArgumentException(
-                "Cantidad fuera de rango razonable · variante {$varianteId} cantidad {$cant}."
+                "Cantidad fuera de rango razonable · {$etiqueta} cantidad {$cant}."
             );
         }
     }
@@ -325,8 +364,18 @@ class EjecutarTraslado
         $u = auth()->user();
         abort_unless($u, 403, 'No autenticado.');
 
-        $esRoot = ($u->hasRole('Aracely') ?? false) || ($u->hasRole('Gerencia') ?? false) || $u->esAracely();
-        if ($esRoot) return;
+        // Fix R2 re-audit · alinear con matriz Permisos. Antes el hardcode
+        //   {Aracely, Gerencia, Alistador} dejaba fuera al Gerente aunque
+        //   'traslados' => ['Gerente','Alistador'] en Permisos. Consecuencia:
+        //   sidebar/Resource abren, Ejecutar → 403 sorpresa.
+        //   Root (Aracely/Gerencia) pasa siempre.
+        //   Cualquier rol autorizado por matriz pasa; los roles scoped por
+        //   bodega (Alistador) mantienen el guard territorial.
+        if (\App\Auth\Permisos::esRoot($u)) return;
+
+        if (! \App\Auth\Permisos::puede($u, 'traslados')) {
+            abort(403, 'No autorizado para operar traslados de inventario.');
+        }
 
         // Alistador scoped por bodega. Si el helper no existe, no pasa.
         if (method_exists($u, 'esAlistador') && $u->esAlistador()) {
@@ -339,6 +388,10 @@ class EjecutarTraslado
             abort(403, 'Alistador sólo puede mover stock entre bodegas asignadas a su perfil.');
         }
 
-        abort(403, 'No autorizado para operar traslados de inventario.');
+        // Gerente y demás roles no scoped por bodega ya pasaron el filtro Permisos::puede.
     }
+
+    // C-F2 R2 · guardTemporalContraAgregados() REMOVIDO — Actions ahora soportan
+    // items agregados de forma nativa vía bifurcación por it->esAgregado().
+
 }

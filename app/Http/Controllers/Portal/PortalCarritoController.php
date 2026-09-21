@@ -30,14 +30,19 @@ class PortalCarritoController extends Controller implements HasMiddleware
 
     /**
      * POST /portal/carrito/confirmar
-     * Payload: { items: [{variante_id, cantidad}], notas: '...' }
-     * Congela precios desde la lista del cliente en el momento de la confirmación.
+     * Payload: { items: [{variante_id?, producto_id?, cantidad}], notas: '...' }
+     *
+     * C-F6 · Cada item lleva variante_id (producto granular) O producto_id (producto
+     *   agregado), mutuamente excluyente. Precio del granular sale de PrecioVariante,
+     *   del agregado sale de precio_proveedor del producto (hasta que M8 tenga
+     *   PrecioProducto por lista_id).
      */
     public function confirmar(Request $request): RedirectResponse
     {
         $data = $request->validate([
             'items' => ['required', 'array', 'min:1', 'max:200'],
-            'items.*.variante_id' => ['required', 'integer', 'exists:producto_variantes,id'],
+            'items.*.variante_id' => ['nullable', 'integer', 'exists:producto_variantes,id', 'required_without:items.*.producto_id'],
+            'items.*.producto_id' => ['nullable', 'integer', 'exists:productos,id', 'required_without:items.*.variante_id'],
             'items.*.cantidad' => ['required', 'integer', 'min:1', 'max:9999'],
             'notas' => ['nullable', 'string', 'max:1000'],
         ]);
@@ -46,26 +51,43 @@ class PortalCarritoController extends Controller implements HasMiddleware
         $listaId = (int) ($cliente->lista_precios_id ?? 0);
         abort_if(! $listaId, 422, 'Cliente sin lista de precios asignada.');
 
-        $varianteIds = collect($data['items'])->pluck('variante_id')->unique()->all();
-        $precios = PrecioVariante::whereIn('variante_id', $varianteIds)
-            ->where('lista_id', $listaId)
-            ->where(function ($w) {
-                $w->whereNull('vigente_hasta')->orWhere('vigente_hasta', '>=', now()->toDateString());
-            })
-            ->pluck('precio', 'variante_id')
-            ->all();
+        // Split de items granulares vs agregados.
+        $itemsGran = collect($data['items'])->filter(fn ($i) => ! empty($i['variante_id']))->values();
+        $itemsAgg  = collect($data['items'])->filter(fn ($i) => empty($i['variante_id']) && ! empty($i['producto_id']))->values();
 
-        // C-QA-D-4: cargar impuesto del producto para calcular IVA real (antes era 0 fijo).
-        // También filtrar solo variantes de productos activos (evasión de reglas comerciales).
-        $variantes = ProductoVariante::with(['producto' => fn ($q) => $q->select('id', 'referencia', 'nombre', 'impuesto_id')
-                ->with('impuesto:id,porcentaje')])
-            ->whereIn('id', $varianteIds)
-            ->whereHas('producto', fn ($q) => $q->where('activo', true))
-            ->get()
-            ->keyBy('id');
+        // Precios granulares (por variante desde PrecioVariante).
+        $varianteIds = $itemsGran->pluck('variante_id')->unique()->all();
+        $precios = $varianteIds
+            ? PrecioVariante::whereIn('variante_id', $varianteIds)
+                ->where('lista_id', $listaId)
+                ->where(function ($w) {
+                    $w->whereNull('vigente_hasta')->orWhere('vigente_hasta', '>=', now()->toDateString());
+                })
+                ->pluck('precio', 'variante_id')
+                ->all()
+            : [];
 
-        $pedido = DB::transaction(function () use ($data, $cliente, $listaId, $precios, $variantes) {
-            // C-QA-D-2: consecutivo diario con lock para evitar colisiones random_int.
+        $variantes = $varianteIds
+            ? ProductoVariante::with(['producto' => fn ($q) => $q->select('id', 'referencia', 'nombre', 'impuesto_id', 'desglose_stock')
+                    ->with('impuesto:id,porcentaje')])
+                ->whereIn('id', $varianteIds)
+                ->whereHas('producto', fn ($q) => $q->where('activo', true)->where('desglose_stock', true))
+                ->get()
+                ->keyBy('id')
+            : collect();
+
+        // Productos agregados (validar que son realmente agregados y activos).
+        $productoIds = $itemsAgg->pluck('producto_id')->unique()->all();
+        $productosAgg = $productoIds
+            ? \App\Modules\Dropi\Models\Producto::with('impuesto:id,porcentaje')
+                ->whereIn('id', $productoIds)
+                ->where('activo', true)
+                ->where('desglose_stock', false)
+                ->get()
+                ->keyBy('id')
+            : collect();
+
+        $pedido = DB::transaction(function () use ($data, $cliente, $listaId, $precios, $variantes, $productosAgg) {
             $numero = $this->siguienteNumero();
 
             $ped = PedidoCliente::create([
@@ -80,25 +102,68 @@ class PortalCarritoController extends Controller implements HasMiddleware
 
             $subtotal = 0; $iva = 0; $lineasValidas = 0;
             foreach ($data['items'] as $it) {
-                $var = $variantes[$it['variante_id']] ?? null;
-                $precio = (float) ($precios[$it['variante_id']] ?? 0);
-                if (! $var || $precio <= 0) continue;
-
                 $cantidad = (int) $it['cantidad'];
-                $lineaSub = round($precio * $cantidad, 2);
-                // C-QA-D-4: IVA real del producto (antes hardcoded a 0).
-                $ivaPct = (float) ($var->producto?->impuesto?->porcentaje ?? 0);
-                $lineaIva = round($lineaSub * ($ivaPct / 100), 2);
+                $ivaItem = null;
+
+                if (! empty($it['variante_id'])) {
+                    // Línea granular.
+                    $var = $variantes[$it['variante_id']] ?? null;
+                    $precio = (float) ($precios[$it['variante_id']] ?? 0);
+                    if (! $var || $precio <= 0) continue;
+                    $ivaPct = (float) ($var->producto?->impuesto?->porcentaje ?? 0);
+                    $ivaItem = [
+                        'variante_id' => $var->id,
+                        'producto_id' => $var->producto_id,
+                        'sku' => $var->codigo_barras ?: ($var->producto?->referencia . '-' . $var->id),
+                        'desc' => trim(($var->producto?->nombre ?? '') . ' · ' . ($var->color_nombre ?? '') . ' ' . ($var->talla ?? '')),
+                        'precio' => $precio, 'ivaPct' => $ivaPct,
+                    ];
+                } elseif (! empty($it['producto_id'])) {
+                    // Línea agregada (colores surtidos).
+                    $p = $productosAgg[$it['producto_id']] ?? null;
+                    if (! $p) continue;
+
+                    // Fix R5 CRÍTICO re-audit · precio_proveedor es COSTO, NO precio de venta.
+                    //   Antes: caíamos al costo y el cliente B2B veía/pagaba a costo →
+                    //   revenue leak inmediato. Ahora: precio real desde PrecioProducto por
+                    //   lista_id (cuando exista M8); sin precio real → línea descartada
+                    //   (el front bloquea agregar al carrito, esto es defensa en profundidad).
+                    $precio = 0.0;
+                    $modeloPrecioProducto = '\\App\\Modules\\Catalogo\\Models\\PrecioProducto';
+                    if ($listaId && class_exists($modeloPrecioProducto)) {
+                        $precio = (float) ($modeloPrecioProducto::query()
+                            ->where('producto_id', $p->id)
+                            ->where('lista_id', $listaId)
+                            ->where(function ($w) {
+                                $w->whereNull('vigente_hasta')->orWhere('vigente_hasta', '>=', now()->toDateString());
+                            })
+                            ->value('precio') ?? 0);
+                    }
+                    if ($precio <= 0) continue;
+                    $ivaPct = (float) ($p->impuesto?->porcentaje ?? 0);
+                    $ivaItem = [
+                        'variante_id' => null,
+                        'producto_id' => $p->id,
+                        'sku' => $p->referencia,
+                        'desc' => $p->nombre . ' · colores surtidos',
+                        'precio' => $precio, 'ivaPct' => $ivaPct,
+                    ];
+                }
+                if (! $ivaItem) continue;
+
+                $lineaSub = round($ivaItem['precio'] * $cantidad, 2);
+                $lineaIva = round($lineaSub * ($ivaItem['ivaPct'] / 100), 2);
                 $lineasValidas++;
 
                 PedidoClienteItem::create([
                     'pedido_id' => $ped->id,
-                    'variante_id' => $var->id,
-                    'sku_snapshot' => $var->codigo_barras ?: ($var->producto?->referencia . '-' . $var->id),
-                    'descripcion_snapshot' => trim(($var->producto?->nombre ?? '') . ' · ' . ($var->color_nombre ?? '') . ' ' . ($var->talla ?? '')),
+                    'variante_id' => $ivaItem['variante_id'],
+                    'producto_id' => $ivaItem['producto_id'],
+                    'sku_snapshot' => $ivaItem['sku'],
+                    'descripcion_snapshot' => $ivaItem['desc'],
                     'cantidad' => $cantidad,
-                    'precio_unitario' => $precio,
-                    'iva_porcentaje' => $ivaPct,
+                    'precio_unitario' => $ivaItem['precio'],
+                    'iva_porcentaje' => $ivaItem['ivaPct'],
                     'subtotal' => $lineaSub,
                     'iva_valor' => $lineaIva,
                     'total' => round($lineaSub + $lineaIva, 2),
@@ -108,10 +173,9 @@ class PortalCarritoController extends Controller implements HasMiddleware
                 $iva += $lineaIva;
             }
 
-            // C-QA-D: rechazar pedido si TODAS las líneas fueron descartadas (sin precio / inactivas).
             if ($lineasValidas === 0) {
                 throw \Illuminate\Validation\ValidationException::withMessages([
-                    'items' => 'Ninguna de las variantes tiene precio disponible en tu lista. Contacta al comercial.',
+                    'items' => 'Ninguno de los productos tiene precio disponible en tu lista. Contacta al comercial.',
                 ]);
             }
 

@@ -88,6 +88,9 @@ class PedidosB2BController extends Controller implements HasMiddleware
                 'sku' => $i->sku_snapshot,
                 'desc' => $i->descripcion_snapshot,
                 'variante_id' => $i->variante_id,
+                // C-F-QA3 · propagar producto_id + flag agregado a la vista admin.
+                'producto_id' => $i->producto_id,
+                'es_agregado' => $i->variante_id === null && $i->producto_id !== null,
                 'cantidad' => (int) $i->cantidad,
                 'precio' => (float) $i->precio_unitario,
                 'total' => (float) $i->total,
@@ -202,6 +205,9 @@ class PedidosB2BController extends Controller implements HasMiddleware
                 FacturaVentaItem::create([
                     'factura_id' => $f->id,
                     'variante_id' => $it->variante_id,
+                    // C-F-QA3 · propagar producto_id para trazabilidad de facturación agregada
+                    // (SIIGO, reportes por producto, notas crédito).
+                    'producto_id' => $it->producto_id,
                     'descripcion' => $it->descripcion_snapshot,
                     'cantidad' => $it->cantidad,
                     'precio_unit' => $it->precio_unitario,

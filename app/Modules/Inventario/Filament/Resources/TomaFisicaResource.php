@@ -48,7 +48,7 @@ class TomaFisicaResource extends Resource
 
     public static function canViewAny(): bool
     {
-        return auth()->user()?->esAracely() ?? false;
+        return \App\Auth\Permisos::puede(auth()->user(), 'tomas_fisicas');
     }
 
     public static function form(Schema $schema): Schema

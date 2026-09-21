@@ -21,13 +21,25 @@ class StockBajoWidget extends BaseWidget
         return $table
             ->query(
                 AlertaStockDisparada::query()
-                    ->with(['variante.producto', 'ubicacion'])
+                    // C-F-QA3 · eager-load también producto agregado para no N+1 ni celdas vacías.
+                    ->with(['variante.producto', 'producto', 'ubicacion'])
                     ->where('resuelta', false)
                     ->latest()
             )
             ->columns([
-                TextColumn::make('variante.codigo_barras')->label('Variante')->copyable(),
-                TextColumn::make('variante.producto.nombre')->label('Producto')->limit(35),
+                // C-F-QA3 · columnas polimórficas: variante para granular O referencia+nombre para agregado.
+                TextColumn::make('codigo')
+                    ->label('Código')
+                    ->copyable()
+                    ->getStateUsing(fn ($record) => $record->esAgregada()
+                        ? ($record->producto?->referencia ?? '—')
+                        : ($record->variante?->codigo_barras ?? '—')),
+                TextColumn::make('producto_nombre')
+                    ->label('Producto')
+                    ->limit(35)
+                    ->getStateUsing(fn ($record) => $record->esAgregada()
+                        ? (($record->producto?->nombre ?? '—').' · AGREGADO')
+                        : ($record->variante?->producto?->nombre ?? '—')),
                 TextColumn::make('ubicacion.nombre')->badge()->color('info'),
                 BadgeColumn::make('tipo')->colors([
                     'danger' => 'minimo',

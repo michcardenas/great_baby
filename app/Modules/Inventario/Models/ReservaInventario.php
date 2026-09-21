@@ -4,6 +4,7 @@ namespace App\Modules\Inventario\Models;
 
 use App\Models\User;
 use App\Modules\Dropi\Models\InventarioUbicacion;
+use App\Modules\Dropi\Models\Producto;
 use App\Modules\Dropi\Models\ProductoVariante;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -27,14 +28,26 @@ class ReservaInventario extends Model implements AuditableContract
         'activa' => 'boolean',
     ];
 
+    // C-F1 · Una reserva apunta a variante (granular) O a producto (agregado).
     public function variante(): BelongsTo
     {
         return $this->belongsTo(ProductoVariante::class);
     }
 
+    public function producto(): BelongsTo
+    {
+        return $this->belongsTo(Producto::class);
+    }
+
     public function ubicacion(): BelongsTo
     {
         return $this->belongsTo(InventarioUbicacion::class);
+    }
+
+    /** ¿Reserva sobre producto agregado (sin desglose por variante)? */
+    public function esAgregada(): bool
+    {
+        return $this->variante_id === null && $this->producto_id !== null;
     }
 
     public function origen(): MorphTo

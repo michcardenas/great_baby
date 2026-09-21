@@ -37,13 +37,20 @@ class VerificarAlertasStock
         $resueltas = 0;
         $procesadas = 0;
 
-        AlertaStockConfig::with('variante')
+        // C-F2 · eager-load variante Y producto para configs agregadas.
+        AlertaStockConfig::with(['variante', 'producto'])
             ->where('activa', true)
             ->chunkById(100, function ($configs) use (&$disparadas, &$resueltas, &$procesadas) {
                 foreach ($configs as $config) {
                     $procesadas++;
                     $ubicacionId = $config->ubicacion_id;
-                    $saldo = $this->stock->saldoDisponible($config->variante_id, $ubicacionId);
+
+                    // C-F2 · saldo polimórfico según sujeto de la config.
+                    //   Granular (variante_id) → saldoDisponible(varianteId, ubi).
+                    //   Agregada (producto_id) → saldoDisponibleProducto(prodId, ubi).
+                    $saldo = $config->esAgregada()
+                        ? $this->stock->saldoDisponibleProducto($config->producto_id, $ubicacionId)
+                        : $this->stock->saldoDisponible($config->variante_id, $ubicacionId);
 
                     // Evaluar cada tipo: si la condición se cumple → tratar de disparar.
                     //                    si NO se cumple → resolver alertas abiertas.
@@ -80,10 +87,13 @@ class VerificarAlertasStock
 
         try {
             DB::transaction(function () use ($config, $tipo, $saldo) {
+                // C-F2 · propagar el sujeto (variante O producto) al disparo.
+                //   Alertas agregadas insertan producto_id + variante_id=NULL.
                 AlertaStockDisparada::create([
                     'config_id' => $config->id,
                     'variante_id' => $config->variante_id,
-                    // Ahora null si la config es global — antes se forzaba 0
+                    'producto_id' => $config->producto_id,
+                    // null si la config es global — antes se forzaba 0
                     // rompiendo FK potencial.
                     'ubicacion_id' => $config->ubicacion_id,
                     'tipo' => $tipo,

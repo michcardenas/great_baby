@@ -36,7 +36,12 @@ const confirmar = () => {
     enviando.value = true;
     errorMsg.value = '';
     router.post('/portal/carrito/confirmar', {
-        items: items.value.map(i => ({ variante_id: i.variante_id, cantidad: i.cantidad })),
+        // C-F-QA4 · propagar producto_id para items agregados.
+        items: items.value.map(i => ({
+            variante_id: i.variante_id || null,
+            producto_id: i.producto_id || null,
+            cantidad: i.cantidad,
+        })),
         notas: notas.value,
     }, {
         preserveState: false,
@@ -76,7 +81,13 @@ const confirmar = () => {
                         <div v-for="(i, idx) in items" :key="idx" class="py-3 flex items-center gap-3">
                             <div class="flex-1 min-w-0">
                                 <div class="text-xs font-mono text-surface-500">{{ i.referencia }}</div>
-                                <div class="font-semibold truncate">{{ i.producto }}</div>
+                                <div class="font-semibold truncate flex items-center gap-2">
+                                    {{ i.producto }}
+                                    <!-- C-F-QA4 · badge visible para items agregados -->
+                                    <span v-if="i.es_agregado" class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+                                        Colores surtidos
+                                    </span>
+                                </div>
                                 <div class="text-xs text-surface-500">{{ i.detalle }}</div>
                             </div>
                             <div class="text-right">

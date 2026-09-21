@@ -2,6 +2,7 @@
 
 namespace App\Modules\Inventario\Models;
 
+use App\Modules\Dropi\Models\Producto;
 use App\Modules\Dropi\Models\ProductoVariante;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -57,8 +58,20 @@ class TomaFisicaItem extends Model implements AuditableContract
         return $this->belongsTo(TomaFisica::class, 'toma_id');
     }
 
+    // C-F1 · Item apunta a variante (granular) O a producto (agregado).
     public function variante(): BelongsTo
     {
         return $this->belongsTo(ProductoVariante::class, 'variante_id');
+    }
+
+    public function producto(): BelongsTo
+    {
+        return $this->belongsTo(Producto::class, 'producto_id');
+    }
+
+    /** ¿Item de toma de producto agregado (sin variante)? */
+    public function esAgregado(): bool
+    {
+        return $this->variante_id === null && $this->producto_id !== null;
     }
 }

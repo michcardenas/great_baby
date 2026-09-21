@@ -300,11 +300,22 @@ const fmtTime = (s) => {
                 <!-- Ítems -->
                 <div class="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                     <div v-for="it in pedidoActivo.items" :key="it.id"
-                         :class="['p-3 rounded-lg border-l-4', it.completo ? 'border-l-emerald-500 bg-emerald-500/10' : 'border-l-surface-500 bg-surface-100 dark:bg-surface-900']">
+                         :class="['p-3 rounded-lg border-l-4',
+                             it.completo ? 'border-l-emerald-500 bg-emerald-500/10'
+                             : it.es_agregado ? 'border-l-amber-500 bg-amber-500/10'
+                             : 'border-l-surface-500 bg-surface-100 dark:bg-surface-900']">
                         <div class="flex items-start justify-between gap-2">
                             <div class="min-w-0 flex-1">
-                                <div class="font-semibold text-surface-800 dark:text-surface-100 truncate">{{ it.producto }}</div>
-                                <div class="text-xs text-surface-500">{{ it.color }}<span v-if="it.talla"> · T{{ it.talla }}</span></div>
+                                <div class="flex items-center gap-2">
+                                    <div class="font-semibold text-surface-800 dark:text-surface-100 truncate">{{ it.producto }}</div>
+                                    <!-- Fix ALTO UX/UI re-audit · badge amber para item agregado (colores surtidos).
+                                         Antes el alistador no lo distinguía y buscaba color específico. -->
+                                    <span v-if="it.es_agregado" class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500 text-white uppercase tracking-wide">Surtido</span>
+                                </div>
+                                <div class="text-xs" :class="it.es_agregado ? 'text-amber-700 dark:text-amber-300 font-medium' : 'text-surface-500'">
+                                    <span v-if="it.es_agregado">Colores surtidos según disponibilidad</span>
+                                    <template v-else>{{ it.color }}<span v-if="it.talla"> · T{{ it.talla }}</span></template>
+                                </div>
                                 <div class="font-mono text-xs text-surface-400 mt-1 truncate">{{ it.codigo }}</div>
                             </div>
                             <div class="text-right flex-shrink-0">

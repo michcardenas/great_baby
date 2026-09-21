@@ -27,7 +27,9 @@ class GarantiasController extends Controller implements HasMiddleware
     {
         return [new Middleware(function (Request $r, \Closure $next) {
             $u = $r->user();
-            abort_unless($u && ($u->esAracely() || $u->hasAnyRole(['SAC', 'Gerente'])), 403);
+            // C-F-QA5 · Fix CRÍTICO auditor roles: el rol se llama 'ServicioCliente' (no 'SAC').
+            // Antes: hasAnyRole(['SAC','Gerente']) → ServicioCliente NUNCA pasaba.
+            abort_unless($u && ($u->esAracely() || $u->hasAnyRole(['ServicioCliente', 'Gerente'])), 403);
             return $next($r);
         })];
     }

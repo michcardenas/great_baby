@@ -68,19 +68,27 @@ class DescontarInventarioAlEmpacar
             }
 
             foreach ($pedido->items as $item) {
-                if (! $item->variante_id) continue;
+                // C-F2 R2 · Item polimórfico: descuenta por variante O por producto agregado.
+                //   Item sin ninguno de los dos → skip (item libre / sin catálogo linked).
+                if (! $item->variante_id && ! $item->producto_id) continue;
                 $cantidad = (int) ($item->cantidad ?? 0);
                 if ($cantidad <= 0) continue;
 
-                // PATRÓN ι · lockForUpdate sobre kardex (variante,ubicación) para
-                //   serializar contra conteo/traslado concurrente.
-                InventarioMovimiento::query()
-                    ->where('variante_id', $item->variante_id)
-                    ->where('ubicacion_id', $ubicacion->id)
-                    ->lockForUpdate()->get();
+                $esAgregado = $item->variante_id === null && $item->producto_id !== null;
+
+                // PATRÓN ι · lockForUpdate polimórfico sobre kardex del sujeto+ubicación
+                //   para serializar contra conteo/traslado concurrente.
+                $lockQ = InventarioMovimiento::query()->where('ubicacion_id', $ubicacion->id);
+                if ($esAgregado) {
+                    $lockQ->where('producto_id', $item->producto_id)->whereNull('variante_id');
+                } else {
+                    $lockQ->where('variante_id', $item->variante_id);
+                }
+                $lockQ->lockForUpdate()->get();
 
                 InventarioMovimiento::create([
-                    'variante_id' => $item->variante_id,
+                    'variante_id' => $item->variante_id,     // NULL si item agregado
+                    'producto_id' => $item->producto_id,     // creating hook lo llena para granular
                     'ubicacion_id' => $ubicacion->id,
                     'tipo' => 'egreso',
                     // PATRÓN ι · SIGNO NEGATIVO. Antes: cantidad positiva con
@@ -89,7 +97,7 @@ class DescontarInventarioAlEmpacar
                     'referencia_tipo' => self::REFERENCIA_TIPO,
                     'referencia_id' => $pedido->id,
                     'user_id' => $e->userId,
-                    'notas' => "Empaque guía {$pedido->guia}",
+                    'notas' => "Empaque guía {$pedido->guia}".($esAgregado ? ' · AGREGADO' : ''),
                 ]);
             }
         });
