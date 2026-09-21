@@ -13,7 +13,10 @@ use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Filament\Schemas\Schema;
 use Illuminate\Support\Facades\DB;
-use OpenSpout\Reader\Common\Creator\ReaderEntityFactory;
+use OpenSpout\Reader\CSV\Options as CsvOptions;
+use OpenSpout\Reader\CSV\Reader as CsvReader;
+use OpenSpout\Reader\ReaderInterface;
+use OpenSpout\Reader\XLSX\Reader as XlsxReader;
 
 class ImportarProductos extends Page implements HasForms
 {
@@ -82,7 +85,37 @@ class ImportarProductos extends Page implements HasForms
         if (! $path) {
             throw new \RuntimeException('No se encontró el archivo cargado.');
         }
-        return [ReaderEntityFactory::createReaderFromFile($path), $path];
+        return [$this->crearLector($path), $path];
+    }
+
+    /**
+     * Elige el lector según extensión (openspout v4, sin ReaderEntityFactory).
+     * Para CSV auto-detecta el separador (Excel en es-CO suele exportar con `;`).
+     */
+    protected function crearLector(string $ruta): ReaderInterface
+    {
+        $ext = strtolower(pathinfo($ruta, PATHINFO_EXTENSION));
+
+        if ($ext === 'csv' || $ext === 'txt') {
+            $options = new CsvOptions();
+            $options->FIELD_DELIMITER = $this->detectarDelimitador($ruta);
+            return new CsvReader($options);
+        }
+
+        return new XlsxReader();
+    }
+
+    protected function detectarDelimitador(string $ruta): string
+    {
+        $primera = '';
+        if ($h = @fopen($ruta, 'r')) {
+            $primera = (string) fgets($h);
+            fclose($h);
+        }
+        // BOM fuera.
+        $primera = preg_replace('/^\xEF\xBB\xBF/', '', $primera);
+
+        return substr_count($primera, ';') > substr_count($primera, ',') ? ';' : ',';
     }
 
     public function previsualizar(): void
