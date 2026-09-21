@@ -156,7 +156,35 @@ class SincronizarPedidosDropi
             };
         }
 
+        // Los contadores del corte se actualizan normalmente vía listener al
+        // transicionar; en la carga masiva muchos pedidos se crean sin transición,
+        // así que recalculamos en bloque al final (una sola query).
+        $this->recalcularContadoresCortes();
+
         return compact('total', 'nuevos', 'actualizados', 'sin_cambios', 'rechazados', 'errores');
+    }
+
+    /** Recalcula pedidos_totales/despachados/pagados/pendientes_inv de los cortes abiertos. */
+    protected function recalcularContadoresCortes(): void
+    {
+        DB::statement("
+            UPDATE dropi_cortes c
+            LEFT JOIN (
+                SELECT corte_id,
+                    COUNT(*) AS totales,
+                    SUM(estado IN ('despachado','entregado','pagado')) AS despachados,
+                    SUM(estado = 'pagado') AS pagados,
+                    SUM(estado = 'pendiente_inventario') AS pendientes
+                FROM dropi_pedidos
+                WHERE deleted_at IS NULL
+                GROUP BY corte_id
+            ) x ON x.corte_id = c.id
+            SET c.pedidos_totales = COALESCE(x.totales, 0),
+                c.pedidos_despachados = COALESCE(x.despachados, 0),
+                c.pedidos_pagados = COALESCE(x.pagados, 0),
+                c.pedidos_pendientes_inv = COALESCE(x.pendientes, 0)
+            WHERE c.estado <> 'cerrado'
+        ");
     }
 
     protected function guardarPedido(PedidoDropiDTO $dto): string
