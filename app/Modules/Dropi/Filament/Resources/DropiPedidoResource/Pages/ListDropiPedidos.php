@@ -21,7 +21,12 @@ class ListDropiPedidos extends ListRecords
             Action::make('sincronizar')
                 ->label('Sincronizar con Dropi')
                 ->icon('heroicon-o-arrow-path')
-                ->color('info')
+                ->color('gray')
+                // Deshabilitado por ahora: la conexión directa (API/MCP) con Dropi
+                // aún no está habilitada. Los pedidos entran por "Importar pedidos
+                // (Excel)". Se re-activa quitando ->disabled() cuando llegue el token.
+                ->disabled()
+                ->tooltip('Disponible cuando se active la conexión directa con Dropi (API/MCP). Por ahora usa "Importar pedidos (Excel)".')
                 ->requiresConfirmation()
                 ->modalHeading('Sincronizar pedidos Dropi')
                 ->modalDescription('Trae pedidos nuevos o actualizados desde Dropi. Idempotente: no duplica guías.')
@@ -44,7 +49,7 @@ class ListDropiPedidos extends ListRecords
                         ->success()
                         ->send();
                 }),
-            CreateAction::make(),
+            // "Crear Pedido" removido: los pedidos entran solo por Excel (ver canCreate()).
         ];
     }
 }

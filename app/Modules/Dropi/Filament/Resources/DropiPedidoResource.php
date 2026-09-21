@@ -80,7 +80,10 @@ class DropiPedidoResource extends Resource
 
     public static function canCreate(): bool
     {
-        return auth()->user()?->esAracely() ?? false;
+        // Deshabilitado a propósito: los pedidos entran SOLO por "Importar
+        // pedidos (Excel)" (y por la sincronización con Dropi cuando se habilite
+        // el API/MCP). Crearlos a mano duplicaría lo que ya se hace en Dropi.
+        return false;
     }
 
     public static function canEdit($record): bool
