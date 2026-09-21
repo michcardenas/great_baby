@@ -359,11 +359,13 @@ class SincronizarPedidosDropi
 
             $registro = DropiPedidoItem::updateOrCreate(
                 ['pedido_id' => $pedido->id, 'sku_dropi' => $item->skuDropi],
-                [
+                array_filter([
                     'variante_id' => $variante?->id,
                     'cantidad' => $item->cantidad,
                     'precio_proveedor_unit' => $item->precioProveedorUnit,
-                ],
+                    'producto_nombre' => $item->productoNombre,
+                    'variacion' => $item->variacion,
+                ], fn ($v) => $v !== null),
             );
 
             if ($registro->wasRecentlyCreated || $registro->wasChanged()) {

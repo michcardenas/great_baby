@@ -86,6 +86,8 @@ class MapearProductosDropiExcel
                             skuDropi: $sku,
                             cantidad: $cant,
                             precioProveedorUnit: self::num($get('PRECIO PROVEEDOR')),
+                            productoNombre: self::txt($get('PRODUCTO')),
+                            variacion: self::txt($get('VARIACION')),
                         );
                         $linea = self::num($get('PRECIO PROVEEDOR X CANTIDAD'));
                         $grupos[$orderId]['monto'] += $linea > 0 ? $linea : self::num($get('PRECIO PROVEEDOR')) * $cant;

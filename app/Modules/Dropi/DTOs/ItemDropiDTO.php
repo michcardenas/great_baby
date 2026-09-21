@@ -8,5 +8,7 @@ final class ItemDropiDTO
         public string $skuDropi,
         public int $cantidad,
         public float $precioProveedorUnit,
+        public ?string $productoNombre = null,
+        public ?string $variacion = null,
     ) {}
 }
