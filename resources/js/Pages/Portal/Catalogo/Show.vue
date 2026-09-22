@@ -1,7 +1,7 @@
 <script setup>
-import { reactive, computed } from 'vue';
+import { reactive, computed, ref } from 'vue';
 import { Head, Link } from '@inertiajs/vue3';
-import { ArrowLeft, Plus, Minus, ShoppingCart } from 'lucide-vue-next';
+import { ArrowLeft, Plus, Minus, ShoppingCart, AlertTriangle } from 'lucide-vue-next';
 import PortalLayout from '@/Layouts/PortalLayout.vue';
 
 const props = defineProps({
@@ -12,17 +12,59 @@ const props = defineProps({
 const cantidades = reactive({});
 props.variantes.forEach(v => { cantidades[v.id] = 0; });
 
+// C-F-QA4 · cantidad separada para producto agregado (colores surtidos).
+const cantidadAgregada = ref(0);
+
+// Fix COD4 BAJA re-audit · v-model.number sobre input vacío/texto pega NaN.
+//   Sin este guard, NaN propaga por totalItems y rompe el checkout con
+//   `cantidad: null` en sessionStorage. Cuadramos siempre a entero >=0.
+const setCantidadAgregada = (val) => {
+    const n = Number.parseInt(val, 10);
+    cantidadAgregada.value = Number.isFinite(n) && n > 0 ? Math.min(n, 9999) : 0;
+};
+
+// Fix R4 CRÍTICO re-audit · sólo permite comprar agregado si hay precio real.
+const puedeComprarAgregado = computed(() =>
+    !props.producto.es_agregado || (props.producto.precio_agregado != null && props.producto.precio_agregado > 0)
+);
+
 const money = (n) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(n || 0);
 
 const inc = (v) => { if (v.precio > 0) cantidades[v.id] = (cantidades[v.id] || 0) + 1; };
 const dec = (v) => { cantidades[v.id] = Math.max(0, (cantidades[v.id] || 0) - 1); };
 
-const totalItems = computed(() => Object.values(cantidades).reduce((s, c) => s + (c || 0), 0));
+const totalItems = computed(() => {
+    const gran = Object.values(cantidades).reduce((s, c) => s + (Number.isFinite(c) ? c : 0), 0);
+    return gran + (Number.isFinite(cantidadAgregada.value) ? cantidadAgregada.value : 0);
+});
 
 const agregarAlCarrito = () => {
     if (totalItems.value === 0) return;
+    // Fix R4 · si el producto es agregado sin precio real, NO permitir compra.
+    //   El backend descartaría la línea en silencio; mejor bloquear en UI.
+    if (!puedeComprarAgregado.value) return;
     let carrito = [];
     try { carrito = JSON.parse(sessionStorage.getItem('portal.carrito') || '[]'); } catch {}
+
+    // C-F-QA4 · producto agregado (una sola línea por producto)
+    if (props.producto.es_agregado && cantidadAgregada.value > 0) {
+        const existe = carrito.find(i => i.producto_id === props.producto.id && !i.variante_id);
+        if (existe) { existe.cantidad += cantidadAgregada.value; }
+        else {
+            carrito.push({
+                producto_id: props.producto.id,
+                variante_id: null,
+                cantidad: cantidadAgregada.value,
+                precio: props.producto.precio_agregado || 0,
+                producto: props.producto.nombre,
+                referencia: props.producto.referencia,
+                detalle: 'Colores surtidos',
+                es_agregado: true,
+            });
+        }
+        cantidadAgregada.value = 0;
+    }
+
     for (const v of props.variantes) {
         const cant = cantidades[v.id] || 0;
         if (cant === 0) continue;
@@ -31,11 +73,13 @@ const agregarAlCarrito = () => {
         else {
             carrito.push({
                 variante_id: v.id,
+                producto_id: null,
                 cantidad: cant,
                 precio: v.precio,
                 producto: props.producto.nombre,
                 referencia: props.producto.referencia,
                 detalle: [v.color, v.talla].filter(Boolean).join(' · '),
+                es_agregado: false,
             });
         }
         cantidades[v.id] = 0;
@@ -60,7 +104,54 @@ const agregarAlCarrito = () => {
                 <p v-if="producto.descripcion" class="text-sm text-surface-600 dark:text-surface-400 mt-2">{{ producto.descripcion }}</p>
             </div>
 
-            <div class="card p-5">
+            <!-- C-F-QA4 · AVISO agregado (colores surtidos) -->
+            <div v-if="producto.es_agregado && producto.aviso_agregado"
+                 class="card p-4 border-l-4 border-amber-500 bg-amber-50 dark:bg-amber-900/20">
+                <div class="flex items-start gap-3">
+                    <AlertTriangle class="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5"/>
+                    <div class="text-sm text-amber-900 dark:text-amber-200">{{ producto.aviso_agregado }}</div>
+                </div>
+            </div>
+
+            <!-- C-F-QA4 · Bloque de compra para producto AGREGADO -->
+            <div v-if="producto.es_agregado" class="card p-5">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="text-xs uppercase tracking-widest font-bold text-amber-600">Producto surtido</div>
+                    <div v-if="cantidadAgregada > 0" class="text-sm text-surface-600">{{ cantidadAgregada }} unidades</div>
+                </div>
+
+                <div class="py-3 flex items-center gap-4">
+                    <div class="flex-1">
+                        <div class="font-medium">Colores surtidos según disponibilidad</div>
+                        <div class="text-xs text-surface-500 font-mono">{{ producto.referencia }}</div>
+                    </div>
+                    <div class="text-right w-28">
+                        <div v-if="puedeComprarAgregado" class="font-bold">{{ money(producto.precio_agregado) }}</div>
+                        <div v-else class="text-xs text-amber-700 font-semibold">Cotizar por WhatsApp</div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button @click="setCantidadAgregada((cantidadAgregada || 0) - 1)" :disabled="!cantidadAgregada || !puedeComprarAgregado" class="btn-ghost p-1.5 disabled:opacity-30">
+                            <Minus class="h-4 w-4"/>
+                        </button>
+                        <input :value="cantidadAgregada" @input="setCantidadAgregada($event.target.value)" :disabled="!puedeComprarAgregado" type="number" min="0" max="9999" inputmode="numeric"
+                            class="input w-16 text-center text-sm disabled:opacity-40 disabled:cursor-not-allowed"/>
+                        <button @click="setCantidadAgregada((cantidadAgregada || 0) + 1)" :disabled="!puedeComprarAgregado" class="btn-ghost p-1.5 disabled:opacity-30">
+                            <Plus class="h-4 w-4"/>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="pt-4 border-t border-surface-200 dark:border-surface-800 mt-4">
+                    <button @click="agregarAlCarrito" :disabled="totalItems === 0 || !puedeComprarAgregado" class="btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed">
+                        <ShoppingCart class="h-4 w-4"/>
+                        <span v-if="puedeComprarAgregado">Agregar {{ totalItems || '' }} al carrito</span>
+                        <span v-else>Solicitar cotización por WhatsApp</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Producto GRANULAR (variantes por color/talla) -->
+            <div v-else class="card p-5">
                 <div class="flex items-center justify-between mb-3">
                     <div class="text-xs uppercase tracking-widest font-bold text-brand-600">Variantes</div>
                     <div v-if="totalItems > 0" class="text-sm text-surface-600">{{ totalItems }} unidades seleccionadas</div>

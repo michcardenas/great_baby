@@ -57,19 +57,22 @@ class RevertirEgresoAlDesempacar
             if (! $ubicacion) return;
 
             foreach ($pedido->items as $item) {
-                if (! $item->variante_id) continue;
+                // C-F2 R2 · Reverso polimórfico: reingresa por variante O por producto agregado.
+                if (! $item->variante_id && ! $item->producto_id) continue;
                 $cantidad = (int) ($item->cantidad ?? 0);
                 if ($cantidad <= 0) continue;
 
+                $esAgregado = $item->variante_id === null && $item->producto_id !== null;
                 InventarioMovimiento::create([
                     'variante_id' => $item->variante_id,
+                    'producto_id' => $item->producto_id,
                     'ubicacion_id' => $ubicacion->id,
                     'tipo' => 'ingreso',
                     'cantidad' => $cantidad,
                     'referencia_tipo' => self::REFERENCIA_TIPO,
                     'referencia_id' => $pedido->id,
                     'user_id' => $e->userId,
-                    'notas' => "Reverso de empaque guía {$pedido->guia} (rework)",
+                    'notas' => "Reverso de empaque guía {$pedido->guia} (rework)".($esAgregado ? ' · AGREGADO' : ''),
                 ]);
             }
         });

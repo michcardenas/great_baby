@@ -213,12 +213,22 @@ class SiigoEmisionService
 
     private function construirPayload(FacturaVenta $factura, SiigoConfig $config): array
     {
+        // Fix H-2 CRÍTICO re-audit · trazabilidad SIIGO/DIAN para items agregados.
+        //   Antes: para item con variante_id NULL (agregado) enviábamos
+        //   `ITEM-{id}` como code → SIIGO creaba productos ghost o rechazaba.
+        //   Ahora: fallback a la referencia del producto agregado. La migración
+        //   100011 agregó producto_id justo para esto.
+        $factura->loadMissing(['items.variante.producto', 'items.producto']);
+
         $items = $factura->items->map(function ($item) {
             $variante = $item->variante;
-            $codigo = $variante?->codigo_barras ?? "ITEM-{$item->id}";
+            $producto = $variante?->producto ?? $item->producto;
+            $codigo = $variante?->codigo_barras
+                ?? $producto?->referencia
+                ?? "ITEM-{$item->id}";
             return [
                 'code' => (string) $codigo,
-                'description' => (string) ($item->descripcion ?? $variante?->producto?->nombre ?? 'Ítem'),
+                'description' => (string) ($item->descripcion ?? $producto?->nombre ?? 'Ítem'),
                 'quantity' => (float) $item->cantidad,
                 'price' => (float) $item->precio_unit,
                 'discount' => (float) ($item->descuento_pct ?? 0),

@@ -72,14 +72,21 @@ class RecibirMercancia
                 $ordenItem->cantidad_recibida = (float) $ordenItem->cantidad_recibida + $cantidadRecibida;
                 $ordenItem->save();
 
-                if ($it->variante_id && ! $recepcion->orden->esImportacion()) {
+                // C-F2 R2 · Recepción polimórfica.
+                //   Granular: item con variante_id → mov apunta a variante.
+                //   Agregado: item con producto_id (sin variante) → mov apunta a producto.
+                //   Solo se genera kardex si NO es importación (importaciones acumulan
+                //   costo pendiente hasta liquidar).
+                if (! $recepcion->orden->esImportacion() && ($it->variante_id || $it->producto_id)) {
                     // Re-audit M3 ρ ι · kardex ya soporta decimal(14,4); no
                     //   abortamos por fraccionarios. Grabamos `costo_unit`
                     //   para que PMP real (patrón μ) pueda calcular sin
                     //   caer al precio_proveedor del maestro.
                     $costoUnit = (float) ($ordenItem->precio_unit ?? 0);
+                    $esAgregado = $it->variante_id === null && $it->producto_id !== null;
                     InventarioMovimiento::create([
                         'variante_id' => $it->variante_id,
+                        'producto_id' => $it->producto_id, // creating hook lo popula si vacío en granular
                         'ubicacion_id' => $recepcion->bodega_id,
                         'tipo' => 'entrada_compra',
                         'cantidad' => round($cantidadRecibida, 4),
@@ -87,7 +94,8 @@ class RecibirMercancia
                         'referencia_tipo' => RecepcionCompra::class,
                         'referencia_id' => $recepcion->id,
                         'user_id' => auth()->id(),
-                        'notas' => "Rec {$recepcion->numero} OC {$recepcion->orden->numero}",
+                        'notas' => "Rec {$recepcion->numero} OC {$recepcion->orden->numero}"
+                            .($esAgregado ? ' · AGREGADO' : ''),
                         'created_at' => now(),
                     ]);
                 }

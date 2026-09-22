@@ -26,7 +26,7 @@ class KardexVariante extends Page
 
     public static function canAccess(): bool
     {
-        return auth()->user()?->esAracely() ?? false;
+        return \App\Auth\Permisos::puede(auth()->user(), 'kardex');
     }
 
     public function buscar(): void

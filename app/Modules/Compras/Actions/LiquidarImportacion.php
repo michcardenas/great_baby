@@ -159,11 +159,16 @@ class LiquidarImportacion
 
                 // Re-audit M3 ξ · kardex decimal(14,4); grabamos costo_unit
                 //   (costo final capitalizado) para PMP real.
+                // C-F2 R2 · Ingreso polimórfico:
+                //   Granular → variante_id set
+                //   Agregado → producto_id set + variante_id NULL
                 $bodegaId = $itemsBodega[$item->id] ?? null;
                 $cantidad = (float) $item->cantidad;
-                if ($bodegaId && $item->variante_id && $cantidad > 0) {
+                if ($bodegaId && $cantidad > 0 && ($item->variante_id || $item->producto_id)) {
+                    $esAgregado = $item->variante_id === null && $item->producto_id !== null;
                     InventarioMovimiento::create([
                         'variante_id' => $item->variante_id,
+                        'producto_id' => $item->producto_id, // creating hook lo llena para granular
                         'ubicacion_id' => $bodegaId,
                         'tipo' => 'entrada_importacion',
                         'cantidad' => round($cantidad, 4),
@@ -171,7 +176,8 @@ class LiquidarImportacion
                         'referencia_tipo' => Importacion::class,
                         'referencia_id' => $importacion->id,
                         'user_id' => auth()->id(),
-                        'notas' => "Liquidación IMP {$importacion->numero} · costo unit \${$costoFinalUnit}",
+                        'notas' => "Liquidación IMP {$importacion->numero} · costo unit \${$costoFinalUnit}"
+                            .($esAgregado ? ' · AGREGADO' : ''),
                         'created_at' => now(),
                     ]);
                 }

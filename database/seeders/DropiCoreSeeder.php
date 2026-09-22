@@ -20,8 +20,15 @@ class DropiCoreSeeder extends Seeder
 {
     public function run(): void
     {
-        // --- Roles §24 diseño Dropi ---
-        foreach (['Aracely', 'Alistador', 'ServicioCliente', 'Gerencia'] as $r) {
+        // --- Roles §24 diseño Dropi + roles referenciados por Permisos::MATRIZ ---
+        //   Fix crítico QA E2E re-audit · antes solo se sembraban 4 roles;
+        //   Permisos::puede() referencia además Gerente/Contador/Vendedor que
+        //   no existían en BD → toda la matriz era placebo (nadie podía tener
+        //   esos roles y por ende sólo Aracely/Gerencia (root) veían el panel).
+        foreach ([
+            'Aracely', 'Alistador', 'ServicioCliente', 'Gerencia',
+            'Gerente', 'Contador', 'Vendedor',
+        ] as $r) {
             Role::firstOrCreate(['name' => $r, 'guard_name' => 'web']);
         }
 

@@ -57,13 +57,44 @@ class InventarioController extends Controller implements HasMiddleware
     {
         if (! Schema::hasTable('inventario_movimientos')) return [];
 
-        $rows = DB::table('inventario_movimientos as m')
+        // C-F3 FIX ALTO auditor · el reporte debe INCLUIR productos agregados.
+        //   Antes: INNER JOIN a producto_variantes filtraba los agregados.
+        //   Ahora: UNION de granulares (variante_id set) + agregados (variante_id NULL).
+        $granulares = DB::table('inventario_movimientos as m')
             ->join('producto_variantes as v', 'v.id', '=', 'm.variante_id')
             ->join('productos as p', 'p.id', '=', 'v.producto_id')
             ->join('inventario_ubicaciones as u', 'u.id', '=', 'm.ubicacion_id')
-            ->selectRaw('p.referencia, p.nombre, v.color_codigo, v.talla, v.codigo_barras, u.nombre as bodega, SUM(m.cantidad) as stock')
+            ->selectRaw('
+                p.referencia,
+                p.nombre,
+                v.color_codigo as color,
+                v.talla,
+                v.codigo_barras as codigo,
+                u.nombre as bodega,
+                "granular" as modo,
+                SUM(m.cantidad) as stock
+            ')
             ->groupBy('p.referencia', 'p.nombre', 'v.color_codigo', 'v.talla', 'v.codigo_barras', 'u.nombre')
-            ->havingRaw('SUM(m.cantidad) > 0')
+            ->havingRaw('SUM(m.cantidad) > 0');
+
+        $agregados = DB::table('inventario_movimientos as m')
+            ->join('productos as p', 'p.id', '=', 'm.producto_id')
+            ->join('inventario_ubicaciones as u', 'u.id', '=', 'm.ubicacion_id')
+            ->whereNull('m.variante_id')
+            ->selectRaw('
+                p.referencia,
+                p.nombre,
+                p.descripcion as color,
+                NULL as talla,
+                NULL as codigo,
+                u.nombre as bodega,
+                "agregado" as modo,
+                SUM(m.cantidad) as stock
+            ')
+            ->groupBy('p.referencia', 'p.nombre', 'p.descripcion', 'u.nombre')
+            ->havingRaw('SUM(m.cantidad) > 0');
+
+        $rows = $granulares->union($agregados)
             ->orderByDesc('stock')
             ->limit($limit)
             ->get();
@@ -71,10 +102,11 @@ class InventarioController extends Controller implements HasMiddleware
         return $rows->map(fn ($r) => [
             'referencia' => $r->referencia,
             'nombre' => $r->nombre,
-            'color' => $r->color_codigo,
+            'color' => $r->color,
             'talla' => $r->talla,
-            'codigo' => $r->codigo_barras,
+            'codigo' => $r->codigo,
             'bodega' => $r->bodega,
+            'modo' => $r->modo,
             'stock' => (int) $r->stock,
         ])->all();
     }
@@ -117,17 +149,26 @@ class InventarioController extends Controller implements HasMiddleware
     private function alertas(): array
     {
         return AlertaStockDisparada::query()
-            ->with(['variante.producto', 'ubicacion:id,nombre', 'config'])
+            // C-F-QA3 · eager-load producto agregado
+            ->with(['variante.producto', 'producto', 'ubicacion:id,nombre', 'config'])
             ->where('resuelta', false)
             ->orderByDesc('created_at')->limit(30)
             ->get()
-            ->map(fn ($a) => [
+            ->map(function ($a) {
+                $esAgg = $a->esAgregada();
+                return [
                 'id' => $a->id,
-                'producto' => $a->variante?->producto?->nombre,
-                'referencia' => $a->variante?->producto?->referencia,
-                'talla' => $a->variante?->talla,
+                // C-F-QA3 · fallback polimórfico: agregado usa producto directo
+                'producto' => $esAgg
+                    ? (($a->producto?->nombre ?? '—').' · AGREGADO')
+                    : $a->variante?->producto?->nombre,
+                'referencia' => $esAgg
+                    ? $a->producto?->referencia
+                    : $a->variante?->producto?->referencia,
+                'talla' => $esAgg ? null : $a->variante?->talla,
                 'bodega' => $a->ubicacion?->nombre,
                 'tipo' => $a->tipo,
+                'es_agregado' => $esAgg,
                 'stock_actual' => (int) $a->saldo_al_disparar,
                 // Re-audit M3 PATRÓN ζ (FUNC-A6 / DATOS-C1) · bug: la columna
                 // real es `stock_minimo`, no `umbral_minimo`. Antes el KPI
@@ -137,6 +178,7 @@ class InventarioController extends Controller implements HasMiddleware
                 'punto_reorden' => (int) ($a->config?->punto_reorden ?? 0),
                 'stock_maximo' => (int) ($a->config?->stock_maximo ?? 0),
                 'creada' => $a->created_at?->diffForHumans(),
-            ])->all();
+                ];
+            })->all();
     }
 }

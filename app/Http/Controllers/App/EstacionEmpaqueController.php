@@ -309,16 +309,21 @@ class EstacionEmpaqueController extends Controller implements HasMiddleware
             'ciudad' => $p->cliente_ciudad,
             'transportadora' => $p->transportadora,
             'corte' => $p->corte?->numero,
-            'items' => $p->items->map(fn ($it) => [
-                'id' => $it->id,
-                'producto' => $it->variante?->producto?->nombre ?? '—',
-                'color' => $it->variante?->color_nombre,
-                'talla' => $it->variante?->talla,
-                'codigo' => $it->variante?->codigo_barras,
-                'cantidad' => (int) ($it->cantidad ?? 1),
-                'cantidad_pickeada' => (int) ($it->cantidad_pickeada ?? 0),
-                'completo' => (int) ($it->cantidad_pickeada ?? 0) >= (int) ($it->cantidad ?? 1),
-            ])->toArray(),
+            'items' => $p->items->map(function ($it) {
+                // C-F-QA2 · Fallback polimórfico: item agregado usa producto directo.
+                $esAgregado = $it->variante_id === null && $it->producto_id !== null;
+                return [
+                    'id' => $it->id,
+                    'producto' => $it->variante?->producto?->nombre ?? $it->producto?->nombre ?? '—',
+                    'color' => $esAgregado ? 'colores surtidos' : $it->variante?->color_nombre,
+                    'talla' => $it->variante?->talla,
+                    'codigo' => $it->variante?->codigo_barras ?? $it->producto?->referencia,
+                    'es_agregado' => $esAgregado,
+                    'cantidad' => (int) ($it->cantidad ?? 1),
+                    'cantidad_pickeada' => (int) ($it->cantidad_pickeada ?? 0),
+                    'completo' => (int) ($it->cantidad_pickeada ?? 0) >= (int) ($it->cantidad ?? 1),
+                ];
+            })->toArray(),
         ];
     }
 

@@ -95,9 +95,13 @@ class CerrarTomaFisica
                 $diff = (int) $it->diferencia;
                 if ($diff === 0) continue;
                 if ((float) ($it->costo_unit ?? 0) <= 0) {
+                    // C-F2 R2 · mensaje polimórfico según el sujeto del item.
+                    $etiqueta = $it->esAgregado()
+                        ? "producto agregado #{$it->producto_id}"
+                        : "variante #{$it->variante_id}";
                     throw new InvalidArgumentException(sprintf(
-                        'Item variante %d con diferencia %d pero costo_unit=%.2f. Captura costo real (costo promedio ponderado) antes de cerrar; de lo contrario el asiento contable quedaría descuadrado vs kardex.',
-                        $it->variante_id, $diff, (float) ($it->costo_unit ?? 0),
+                        'Item %s con diferencia %d pero costo_unit=%.2f. Captura costo real (costo promedio ponderado) antes de cerrar; de lo contrario el asiento contable quedaría descuadrado vs kardex.',
+                        $etiqueta, $diff, (float) ($it->costo_unit ?? 0),
                     ));
                 }
             }
@@ -113,23 +117,29 @@ class CerrarTomaFisica
 
                 // PATRÓN H (arrastre M2) · abort si diferencia no es entera.
                 if ($diff !== (int) $diff || abs($diff - round($diff)) > 0.0001) {
+                    $etiqueta = $it->esAgregado() ? "producto {$it->producto_id}" : "variante {$it->variante_id}";
                     throw new InvalidArgumentException(
-                        "Kardex no soporta fraccionarios · variante {$it->variante_id} diff={$diff}."
+                        "Kardex no soporta fraccionarios · {$etiqueta} diff={$diff}."
                     );
                 }
 
                 $itemsConDiferencia++;
                 $valorAjuste += round($diff * (float) $it->costo_unit, 2);
 
+                // C-F2 R2 · Ajuste polimórfico:
+                //   Granular → variante_id set (producto_id lo puebla el creating hook)
+                //   Agregado → producto_id set + variante_id NULL
                 InventarioMovimiento::create([
-                    'variante_id' => $it->variante_id,
+                    'variante_id' => $it->variante_id,     // NULL si item agregado
+                    'producto_id' => $it->producto_id,     // ambos modos lo tienen
                     'ubicacion_id' => $toma->ubicacion_id,
                     'tipo' => 'ajuste_toma',
                     'cantidad' => $diff,
                     'referencia_tipo' => TomaFisica::class,
                     'referencia_id' => $toma->id,
                     'user_id' => $u->id,
-                    'notas' => "Toma física {$toma->numero} · sistema={$it->saldo_sistema} · contado={$it->cantidad_contada}",
+                    'notas' => "Toma física {$toma->numero} · sistema={$it->saldo_sistema} · contado={$it->cantidad_contada}"
+                        .($it->esAgregado() ? ' · AGREGADO' : ''),
                     'created_at' => $ts,
                 ]);
             }

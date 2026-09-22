@@ -81,6 +81,9 @@ class PortalCatalogoController extends Controller implements HasMiddleware
                 'precio_desde' => $preciosVar->min() ?: null,
                 'precio_hasta' => $preciosVar->max() ?: null,
                 'precio_proveedor' => (float) $p->precio_proveedor,
+                // C-F6 · flag para el front — pinta badge "Colores surtidos" si es agregado.
+                'es_agregado' => ! (bool) $p->desglose_stock,
+                'variacion_texto' => ! $p->desglose_stock ? (string) ($p->descripcion ?? '') : null,
             ];
         })->values();
 
@@ -118,6 +121,27 @@ class PortalCatalogoController extends Controller implements HasMiddleware
                 ->all()
             : [];
 
+        // Fix R5 CRÍTICO re-audit · NO exponer precio_proveedor (COSTO interno)
+        //   al cliente B2B. Antes se caía al costo como "placeholder" pero el
+        //   front lo pintaba idéntico a un precio de lista real y (a) revelaba
+        //   nuestro margen, (b) el cliente confirmaba pedidos a costo, (c) el
+        //   checkout facturaba con esa cifra. Ahora: precio null → el front
+        //   muestra "Cotizar por WhatsApp" y bloquea agregar al carrito, igual
+        //   comportamiento que ya usa el catálogo cuando falta rango.
+        //   Se poblará precio real cuando M8 Marketing tenga PrecioProducto por lista.
+        $precioProductoAgregado = null;
+        $modeloPrecioProducto = '\\App\\Modules\\Catalogo\\Models\\PrecioProducto';
+        if (! $p->desglose_stock && $listaId && class_exists($modeloPrecioProducto)) {
+            $precioProductoAgregado = $modeloPrecioProducto::query()
+                ->where('producto_id', $p->id)
+                ->where('lista_id', $listaId)
+                ->where(function ($w) {
+                    $w->whereNull('vigente_hasta')->orWhere('vigente_hasta', '>=', now()->toDateString());
+                })
+                ->value('precio');
+            $precioProductoAgregado = $precioProductoAgregado !== null ? (float) $precioProductoAgregado : null;
+        }
+
         return Inertia::render('Portal/Catalogo/Show', [
             'producto' => [
                 'id' => $p->id,
@@ -125,6 +149,12 @@ class PortalCatalogoController extends Controller implements HasMiddleware
                 'nombre' => $p->nombre,
                 'descripcion' => $p->descripcion,
                 'requiere_talla' => (bool) $p->requiere_talla,
+                // C-F6 · señalización dual + aviso legal para colores surtidos.
+                'es_agregado' => ! (bool) $p->desglose_stock,
+                'aviso_agregado' => ! $p->desglose_stock
+                    ? '⚠️ Este producto se envía surtido según disponibilidad. Los colores/variaciones son referenciales. Si necesitas un color específico, contacta a ventas antes de ordenar.'
+                    : null,
+                'precio_agregado' => $precioProductoAgregado,
             ],
             'variantes' => $p->variantes->map(fn ($v) => [
                 'id' => $v->id,

@@ -68,8 +68,22 @@
                             @if($dif === 0) ✅ @else ⚠️ @endif
                         @else ⏳ @endif
                     </td>
-                    <td style="font-family:monospace;font-size:.8rem;">{{ $item->variante?->codigo_barras }}</td>
-                    <td>{{ \Illuminate\Support\Str::limit($item->variante?->producto?->nombre ?? '—', 32) }}</td>
+                    {{-- C-F-QA2 · Fila polimórfica: agregado usa producto.referencia + nombre + badge --}}
+                    @php $esAggItem = $item->variante_id === null && $item->producto_id !== null; @endphp
+                    <td style="font-family:monospace;font-size:.8rem;">
+                        {{ $esAggItem ? $item->producto?->referencia : $item->variante?->codigo_barras }}
+                    </td>
+                    <td>
+                        {{ \Illuminate\Support\Str::limit(
+                            $esAggItem
+                                ? ($item->producto?->nombre ?? '—')
+                                : ($item->variante?->producto?->nombre ?? '—'),
+                            32
+                        ) }}
+                        @if($esAggItem)
+                            <span style="margin-left:.4rem;padding:.1rem .4rem;background:rgba(245,158,11,.18);color:#b45309;border-radius:.35rem;font-size:.65rem;font-weight:700;">AGREGADO</span>
+                        @endif
+                    </td>
                     <td style="text-align:right;color:#9ca3af;">{{ $item->saldo_sistema }}</td>
                     <td style="text-align:right;">
                         <input type="number" inputmode="numeric" pattern="[0-9]*" min="0"

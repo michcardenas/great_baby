@@ -80,9 +80,16 @@ const rangoPrecio = (p) => {
                         <img v-if="p.imagen" :src="p.imagen" :alt="p.nombre" class="w-full h-full object-cover"/>
                         <ShoppingBag v-else class="h-12 w-12 text-surface-400"/>
                     </div>
-                    <div class="text-[10px] font-mono text-surface-500">{{ p.referencia }}</div>
+                    <div class="text-[10px] font-mono text-surface-500 flex items-center gap-1">
+                        {{ p.referencia }}
+                        <!-- C-F-QA4 · badge visible para productos agregados (colores surtidos) -->
+                        <span v-if="p.es_agregado" class="px-1 py-px rounded text-[9px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">SURTIDO</span>
+                    </div>
                     <div class="font-semibold text-sm line-clamp-2 mt-0.5">{{ p.nombre }}</div>
-                    <div class="text-xs text-surface-500 mt-1">{{ p.variantes_count }} variantes</div>
+                    <div class="text-xs text-surface-500 mt-1">
+                        <span v-if="p.es_agregado">Colores surtidos</span>
+                        <span v-else>{{ p.variantes_count }} variantes</span>
+                    </div>
                     <div class="mt-auto pt-2">
                         <div v-if="rangoPrecio(p)" class="font-bold text-brand-600">{{ rangoPrecio(p) }}</div>
                         <a v-else :href="`https://wa.me/573001234567?text=${encodeURIComponent('Hola GREAT BABY, quisiera cotizar el producto ' + p.referencia + ' - ' + p.nombre)}`"

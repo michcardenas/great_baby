@@ -30,7 +30,12 @@ class ContabilizarDevolucionDropi
 
     public function handle(DropiDevolucion $devolucion): int
     {
-        $devolucion->loadMissing('pedido.items.variante.producto');
+        // Fix H-3 CRÍTICO re-audit · items agregados pierden cuentas contables.
+        //   Antes solo cargábamos variante.producto → para item con variante_id
+        //   NULL (agregado, ahora legal por fix QA1) $producto quedaba null y
+        //   las cuentas (cta_devolucion, cta_inventario, cta_costo) caían al
+        //   default global. Descuadraba reportes por cuenta/centro-de-costo.
+        $devolucion->loadMissing(['pedido.items.variante.producto', 'pedido.items.producto']);
         $pedido = $devolucion->pedido;
         if (! $pedido) return 0;
 
@@ -124,7 +129,8 @@ class ContabilizarDevolucionDropi
             $porcion = $porciones[$idx] ?? 0.0;
             if ($porcion <= 0) continue;
 
-            $producto = $item->variante?->producto;
+            // Fix H-3 · fallback polimórfico item agregado (sin variante).
+            $producto = $item->variante?->producto ?? $item->producto;
             $ctaDev = $producto?->cta('devolucion') ?? setting('contable.cta_devolucion_default', '4175');
             $ctaInv = $producto?->cta('inventario') ?? setting('contable.cta_inventario_default', '1435');
             $ctaCosto = $producto?->cta('costo') ?? setting('contable.cta_costo_default', '6135');

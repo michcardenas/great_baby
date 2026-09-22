@@ -3,6 +3,8 @@
 namespace App\Modules\Inventario\Actions;
 
 use App\Modules\Dropi\Models\InventarioMovimiento;
+use App\Modules\Dropi\Models\Producto;
+use App\Modules\Dropi\Models\ProductoVariante;
 use App\Modules\Inventario\Models\ReservaInventario;
 use App\Modules\Inventario\Services\StockService;
 use Illuminate\Database\Eloquent\Model;
@@ -21,6 +23,11 @@ use Lorisleiva\Actions\Concerns\AsAction;
  *     unidad: saldo real -1.
  *   - Sin rate-limit → loop de reservas de 1u sobre miles de SKUs paralizaba
  *     ventas.
+ *
+ * C-F2 · Desglose dual — ahora es polimórfico:
+ *   - handleSujeto(ProductoVariante) → reserva por variante (comportamiento clásico).
+ *   - handleSujeto(Producto agregado) → reserva por producto (variante_id NULL).
+ *   - handle(varianteId, ...) → wrapper legacy, resuelve la variante y delega.
  */
 class ReservarStock
 {
@@ -30,8 +37,30 @@ class ReservarStock
     {
     }
 
+    /**
+     * API legacy · reserva por variante_id. Se mantiene por compatibilidad
+     * con TODOS los callers actuales sin tocarlos. Delega en handleSujeto.
+     */
     public function handle(
         int $varianteId,
+        int $ubicacionId,
+        int $cantidad,
+        Model $origen,
+        ?\DateTimeInterface $expiraAt = null,
+    ): ReservaInventario {
+        if ($varianteId <= 0) {
+            throw new InvalidArgumentException('variante_id es obligatorio (> 0).');
+        }
+        $variante = ProductoVariante::findOrFail($varianteId);
+
+        return $this->handleSujeto($variante, $ubicacionId, $cantidad, $origen, $expiraAt);
+    }
+
+    /**
+     * C-F2 · API polimórfica · reserva por sujeto (Producto agregado O Variante granular).
+     */
+    public function handleSujeto(
+        Producto|ProductoVariante $sujeto,
         int $ubicacionId,
         int $cantidad,
         Model $origen,
@@ -44,43 +73,27 @@ class ReservarStock
         if ($cantidad > 10000) {
             throw new InvalidArgumentException("Cantidad de reserva excede el máximo permitido (10.000 u).");
         }
-        if ($varianteId <= 0 || $ubicacionId <= 0) {
-            throw new InvalidArgumentException('variante_id y ubicacion_id son obligatorios.');
+        if ($ubicacionId <= 0) {
+            throw new InvalidArgumentException('ubicacion_id es obligatorio.');
         }
 
-        return DB::transaction(function () use ($varianteId, $ubicacionId, $cantidad, $origen, $expiraAt) {
-            // PATRÓN β · lock kardex + reservas de esta variante+ubicación.
-            InventarioMovimiento::query()
-                ->where('variante_id', $varianteId)
-                ->where('ubicacion_id', $ubicacionId)
-                ->lockForUpdate()->get();
-            ReservaInventario::query()
-                ->where('variante_id', $varianteId)
-                ->where('ubicacion_id', $ubicacionId)
-                ->where('activa', true)
-                ->lockForUpdate()->get();
+        // Resolver ids del sujeto según su tipo.
+        [$varianteId, $productoId, $etiquetaError] = $this->idsDelSujeto($sujeto);
 
-            // Re-audit M3 PATRÓN ν (FUNC-M3) · IDEMPOTENCIA por (origen, variante).
-            //   Antes: dos llamadas al mismo pedido creaban dos reservas y
-            //   bloqueaban 2× el stock hasta expirar. Ahora: si ya existe
-            //   una reserva activa para (origen_type, origen_id, variante,
-            //   ubicacion), la actualizamos en lugar de duplicar.
-            $existente = ReservaInventario::query()
-                ->where('origen_type', get_class($origen))
-                ->where('origen_id', $origen->getKey())
-                ->where('variante_id', $varianteId)
-                ->where('ubicacion_id', $ubicacionId)
-                ->where('activa', true)
-                ->first();
+        return DB::transaction(function () use ($sujeto, $varianteId, $productoId, $ubicacionId, $cantidad, $origen, $expiraAt, $etiquetaError) {
+            // PATRÓN β · lock kardex + reservas activas del sujeto+ubicación.
+            $this->lockearMovimientosYReservas($varianteId, $productoId, $ubicacionId);
+
+            // PATRÓN ν · IDEMPOTENCIA por (origen, sujeto).
+            $existente = $this->reservaActivaExistente($varianteId, $productoId, $ubicacionId, $origen);
 
             if ($existente) {
-                // Chequeo del delta contra disponible (no del total).
                 $delta = $cantidad - (int) $existente->cantidad;
                 if ($delta > 0) {
-                    $disp = $this->stock->saldoDisponible($varianteId, $ubicacionId);
+                    $disp = $this->disponibleDelSujeto($sujeto, $ubicacionId);
                     if ($disp < $delta) {
                         throw new InvalidArgumentException(
-                            "Stock insuficiente para ampliar reserva · variante {$varianteId}: disponible {$disp}, delta requerido {$delta}."
+                            "Stock insuficiente para ampliar reserva · {$etiquetaError}: disponible {$disp}, delta requerido {$delta}."
                         );
                     }
                 }
@@ -90,15 +103,16 @@ class ReservarStock
                 return $existente;
             }
 
-            $disp = $this->stock->saldoDisponible($varianteId, $ubicacionId);
+            $disp = $this->disponibleDelSujeto($sujeto, $ubicacionId);
             if ($disp < $cantidad) {
                 throw new InvalidArgumentException(
-                    "Stock insuficiente · variante {$varianteId} en ubicación {$ubicacionId}: disponible {$disp}, requerido {$cantidad}."
+                    "Stock insuficiente · {$etiquetaError} en ubicación {$ubicacionId}: disponible {$disp}, requerido {$cantidad}."
                 );
             }
 
             return ReservaInventario::create([
                 'variante_id' => $varianteId,
+                'producto_id' => $productoId,
                 'ubicacion_id' => $ubicacionId,
                 'cantidad' => $cantidad,
                 'origen_type' => get_class($origen),
@@ -108,5 +122,63 @@ class ReservarStock
                 'user_id' => auth()->id(),
             ]);
         });
+    }
+
+    /**
+     * Extrae variante_id / producto_id según el tipo de sujeto, y una etiqueta
+     * humana para mensajes de error.
+     *
+     * @return array{0: ?int, 1: ?int, 2: string} [varianteId, productoId, etiqueta]
+     */
+    private function idsDelSujeto(Producto|ProductoVariante $sujeto): array
+    {
+        if ($sujeto instanceof ProductoVariante) {
+            return [$sujeto->id, null, "variante #{$sujeto->id}"];
+        }
+        if ($sujeto->esGranular()) {
+            throw new InvalidArgumentException(
+                "Producto #{$sujeto->id} ({$sujeto->referencia}) tiene desglose_stock=true. ".
+                "Reserva por variante en su lugar."
+            );
+        }
+        return [null, $sujeto->id, "producto agregado #{$sujeto->id} ({$sujeto->referencia})"];
+    }
+
+    private function lockearMovimientosYReservas(?int $varianteId, ?int $productoId, int $ubicacionId): void
+    {
+        $lock = fn ($q) => $varianteId !== null
+            ? $q->where('variante_id', $varianteId)
+            : $q->where('producto_id', $productoId)->whereNull('variante_id');
+
+        $lock(InventarioMovimiento::query())
+            ->where('ubicacion_id', $ubicacionId)
+            ->lockForUpdate()->get();
+
+        $lock(ReservaInventario::query())
+            ->where('ubicacion_id', $ubicacionId)
+            ->where('activa', true)
+            ->lockForUpdate()->get();
+    }
+
+    private function reservaActivaExistente(?int $varianteId, ?int $productoId, int $ubicacionId, Model $origen): ?ReservaInventario
+    {
+        $q = ReservaInventario::query()
+            ->where('origen_type', get_class($origen))
+            ->where('origen_id', $origen->getKey())
+            ->where('ubicacion_id', $ubicacionId)
+            ->where('activa', true);
+
+        if ($varianteId !== null) {
+            $q->where('variante_id', $varianteId);
+        } else {
+            $q->where('producto_id', $productoId)->whereNull('variante_id');
+        }
+
+        return $q->first();
+    }
+
+    private function disponibleDelSujeto(Producto|ProductoVariante $sujeto, int $ubicacionId): int
+    {
+        return $this->stock->saldoDisponibleSujeto($sujeto, $ubicacionId);
     }
 }
