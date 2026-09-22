@@ -41,8 +41,7 @@ class ProductoResource extends Resource
 
     public static function canViewAny(): bool
     {
-        // C-F-QA5 · usar matriz oficial en vez de esAracely (permite Gerente por matriz).
-        return \App\Auth\Permisos::puede(auth()->user(), 'productos');
+        return auth()->user()?->esAracely() ?? false;
     }
 
     public static function getGloballySearchableAttributes(): array
@@ -82,27 +81,6 @@ class ProductoResource extends Resource
                     Toggle::make('es_set')->label('Es set/kit'),
                     Toggle::make('neto')->label('Neto (aplica descuentos y flete)')->default(true)
                         ->helperText('Si NO es neto, quedará protegido de descuentos comerciales'),
-                    // C-F3 · Toggle desglose_stock
-                    //   - Default true (comportamiento clásico).
-                    //   - Deshabilitado si el producto ya tiene movimientos (política enforced
-                    //     también en BD por trigger trg_bloqueo_toggle_desglose_stock).
-                    //   - Cuando OFF, el campo `stock_directo` aparece y las variantes quedan
-                    //     ocultas en pestaña aparte.
-                    Toggle::make('desglose_stock')
-                        ->label('Desglosar stock por variante')
-                        ->helperText(fn ($record) => $record?->exists && $record->movimientos()->exists()
-                            ? '🔒 Bloqueado: este producto ya tiene movimientos de kardex. El cambio quebraría el kardex append-only.'
-                            : 'ON = stock granular por color/talla · OFF = un solo stock agregado (para productos que no diferencias por variación).')
-                        ->default(true)
-                        ->disabled(fn ($record) => $record?->exists && $record->movimientos()->exists())
-                        ->live()
-                        ->columnSpanFull(),
-                    TextInput::make('stock_directo')
-                        ->label('Stock inicial (agregado)')
-                        ->numeric()->minValue(0)->default(0)
-                        ->helperText('Solo aplica cuando NO desglosa por variante. Se registra un movimiento inicial en la primera bodega activa.')
-                        ->visible(fn ($get) => $get('desglose_stock') === false)
-                        ->columnSpanFull(),
                     TextInput::make('peso_gr')->numeric()->suffix('g')->label('Peso'),
                     TextInput::make('alto_cm')->numeric()->suffix('cm')->label('Alto'),
                     TextInput::make('ancho_cm')->numeric()->suffix('cm')->label('Ancho'),
@@ -152,15 +130,7 @@ class ProductoResource extends Resource
                 TextColumn::make('marca.nombre')->badge()->color('info')->toggleable(),
                 TextColumn::make('categoriaMaestra.nombre')->label('Categoría')->badge()->toggleable(),
                 TextColumn::make('precio_proveedor')->money('COP')->alignEnd()->sortable(),
-                TextColumn::make('variantes_count')->counts('variantes')->label('Variantes')->badge()
-                    ->formatStateUsing(fn ($state, $record) => $record->desglose_stock ? $state : '—')
-                    ->tooltip(fn ($record) => $record->desglose_stock ? null : 'Producto sin desglose · stock agregado'),
-                // C-F3 · badge dual: 🔵 Granular / 🟠 Agregado
-                \Filament\Tables\Columns\IconColumn::make('desglose_stock')
-                    ->label('Modo')
-                    ->icon(fn ($state) => $state ? 'heroicon-o-squares-2x2' : 'heroicon-o-cube')
-                    ->color(fn ($state) => $state ? 'info' : 'warning')
-                    ->tooltip(fn ($state) => $state ? 'Granular · stock por variante' : 'Agregado · stock único'),
+                TextColumn::make('variantes_count')->counts('variantes')->label('Variantes')->badge(),
                 IconColumn::make('siigo_id')
                     ->label('SIIGO')
                     ->getStateUsing(fn ($record) => ! empty($record->siigo_id))
@@ -182,11 +152,6 @@ class ProductoResource extends Resource
                         false: fn ($q) => $q->whereNull('siigo_id'),
                         blank: fn ($q) => $q,
                     ),
-                // C-F3 · filtro por modo desglose_stock
-                \Filament\Tables\Filters\TernaryFilter::make('desglose_stock')
-                    ->label('Modo')
-                    ->trueLabel('Solo granulares (por variante)')
-                    ->falseLabel('Solo agregados (stock único)'),
             ])
             ->recordActions([
                 ViewAction::make(),
