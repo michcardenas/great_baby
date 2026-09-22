@@ -1,13 +1,11 @@
 <script setup>
-import { ref, computed } from 'vue';
-import { Head, useForm, router } from '@inertiajs/vue3';
+import { ref, computed, watch, nextTick } from 'vue';
+import { Head, useForm } from '@inertiajs/vue3';
 import { Upload, FileSpreadsheet, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 
 const props = defineProps({
     bodegas: { type: Array, required: true },
-    flash: { type: Object, default: () => ({}) },
-    errors: { type: Object, default: () => ({}) },
 });
 
 const form = useForm({
@@ -22,6 +20,9 @@ const nombreArchivo = computed(() => form.archivo?.name || null);
 const tamanoArchivo = computed(() => form.archivo
     ? (form.archivo.size / 1024).toFixed(1) + ' KB'
     : null);
+
+const resultadoRef = ref(null);
+const mensajeOverlay = ref('');
 
 const seleccionar = (file) => {
     if (!file) return;
@@ -45,19 +46,38 @@ const enviar = (dryRun = false) => {
         return;
     }
     form.dry_run = dryRun;
+    mensajeOverlay.value = dryRun
+        ? 'Simulando carga sin guardar en BD…'
+        : 'Cargando inventario en la base de datos…';
     form.post('/app/inventario/importar-cliente', {
         forceFormData: true,
-        preserveScroll: true,
+        preserveScroll: false,
         onSuccess: () => {
             if (!dryRun) form.reset('archivo');
+            // Scroll automático al banner de resultado.
+            nextTick(() => {
+                resultadoRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            });
         },
     });
 };
+
 </script>
 
 <template>
     <Head title="Importar inventario del cliente"/>
     <AppLayout>
+        <!-- OVERLAY FULLSCREEN mientras procesa (bloquea todo el UI) -->
+        <div v-if="form.processing"
+             class="fixed inset-0 z-[9999] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+            <div class="bg-white dark:bg-surface-900 rounded-2xl shadow-2xl p-8 max-w-md w-full text-center">
+                <Loader2 class="h-16 w-16 mx-auto text-brand-500 animate-spin"/>
+                <h2 class="mt-4 text-xl font-bold text-surface-900 dark:text-surface-100">Procesando…</h2>
+                <p class="mt-2 text-sm text-surface-600 dark:text-surface-400">{{ mensajeOverlay }}</p>
+                <p class="mt-4 text-xs text-surface-500">Esto puede tardar entre 5 y 30 segundos. <strong>No cierres esta pestaña.</strong></p>
+            </div>
+        </div>
+
         <div class="max-w-3xl mx-auto space-y-4 p-4">
 
             <div class="card p-6">
@@ -76,15 +96,49 @@ const enviar = (dryRun = false) => {
                 </div>
             </div>
 
-            <!-- Flash de resultado -->
-            <div v-if="$page.props.flash?.flash" class="card p-4 border-l-4"
-                 :class="$page.props.flash.flash.type === 'success' ? 'border-l-emerald-500 bg-emerald-50 dark:bg-emerald-900/20' : 'border-l-red-500 bg-red-50 dark:bg-red-900/20'">
-                <div class="flex items-start gap-3">
-                    <CheckCircle2 v-if="$page.props.flash.flash.type === 'success'" class="h-5 w-5 text-emerald-600 flex-shrink-0 mt-0.5"/>
-                    <AlertTriangle v-else class="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5"/>
-                    <div>
-                        <div class="font-semibold">{{ $page.props.flash.flash.title }}</div>
-                        <div class="text-sm text-surface-700 dark:text-surface-300 mt-1">{{ $page.props.flash.flash.body }}</div>
+            <!-- RESULTADO — banner GRANDE con emoji, colores fuertes y auto-scroll -->
+            <div v-if="$page.props.flash?.importResumen" ref="resultadoRef"
+                 class="rounded-2xl p-6 border-2 shadow-lg animate-pulse-slow"
+                 :class="$page.props.flash.importResumen.dry_run
+                    ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/30'
+                    : 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/30'">
+                <div class="flex items-start gap-4">
+                    <CheckCircle2 class="h-10 w-10 text-emerald-600 flex-shrink-0"/>
+                    <div class="flex-1">
+                        <div class="text-2xl font-bold text-emerald-900 dark:text-emerald-100">
+                            {{ $page.props.flash.importResumen.accion }}
+                        </div>
+                        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
+                            <div class="bg-white dark:bg-surface-900 rounded-lg p-3 text-center">
+                                <div class="text-3xl font-bold text-emerald-600">{{ $page.props.flash.importResumen.creados }}</div>
+                                <div class="text-xs text-surface-500 mt-1">Productos creados</div>
+                            </div>
+                            <div class="bg-white dark:bg-surface-900 rounded-lg p-3 text-center">
+                                <div class="text-3xl font-bold text-blue-600">{{ $page.props.flash.importResumen.actualizados }}</div>
+                                <div class="text-xs text-surface-500 mt-1">Actualizados</div>
+                            </div>
+                            <div class="bg-white dark:bg-surface-900 rounded-lg p-3 text-center">
+                                <div class="text-3xl font-bold text-brand-600">{{ $page.props.flash.importResumen.movs }}</div>
+                                <div class="text-xs text-surface-500 mt-1">Movs de kardex</div>
+                            </div>
+                            <div class="bg-white dark:bg-surface-900 rounded-lg p-3 text-center">
+                                <div class="text-3xl font-bold text-surface-500">{{ $page.props.flash.importResumen.ignoradas }}</div>
+                                <div class="text-xs text-surface-500 mt-1">Ignoradas</div>
+                            </div>
+                        </div>
+                        <div v-if="$page.props.flash.importResumen.omitidos_granular > 0" class="mt-3 p-3 rounded bg-amber-100 text-amber-900 text-sm">
+                            <strong>⚠️ {{ $page.props.flash.importResumen.omitidos_granular }}</strong> productos saltados porque ya existen como granular. Renombra su referencia si son distintos.
+                        </div>
+                        <div v-if="$page.props.flash.importResumen.sin_cat > 0" class="mt-3 p-3 rounded bg-red-100 text-red-900 text-sm">
+                            <strong>❌ {{ $page.props.flash.importResumen.sin_cat }}</strong> filas ignoradas por falta de categoría en el Excel.
+                        </div>
+                        <div v-if="$page.props.flash.importResumen.dry_run" class="mt-4 text-sm text-blue-800 dark:text-blue-200 font-semibold">
+                            ✅ La simulación completó. Ahora presiona <strong>"Cargar inventario definitivo"</strong> para guardar de verdad.
+                        </div>
+                        <div v-else class="mt-4 flex flex-wrap gap-2">
+                            <a href="/app/catalogo" class="btn-primary">Ver productos en catálogo →</a>
+                            <a href="/app/inventario/reporte-stock" class="btn-ghost">Ver stock por bodega →</a>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -188,3 +242,13 @@ const enviar = (dryRun = false) => {
         </div>
     </AppLayout>
 </template>
+
+<style scoped>
+@keyframes pulse-slow {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
+    50% { box-shadow: 0 0 0 12px rgba(16, 185, 129, 0); }
+}
+.animate-pulse-slow {
+    animation: pulse-slow 2s ease-in-out 3;
+}
+</style>

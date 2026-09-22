@@ -60,15 +60,28 @@ class ImportarInventarioClienteController extends Controller
             ]);
         }
 
-        $accion = $dryRun ? 'Simulación (dry-run) OK' : 'Carga completada';
-        return back()->with('flash', [
-            'type' => 'success',
-            'title' => $accion,
-            'body' => "Productos creados: {$resumen['creados']} · actualizados: {$resumen['actualizados']} · "
-                ."movs kardex: {$resumen['movs']} · filas ignoradas: {$resumen['ignoradas']}"
-                .($resumen['sin_cat'] > 0 ? " · SIN CATEGORÍA: {$resumen['sin_cat']}" : '')
-                .($resumen['omitidos_granular'] > 0 ? " · saltados (ya existen como granular): {$resumen['omitidos_granular']}" : ''),
-        ]);
+        $accion = $dryRun ? '✅ Simulación (dry-run) completada' : '✅ Inventario cargado correctamente';
+        $detalle = "Productos creados: {$resumen['creados']} · actualizados: {$resumen['actualizados']} · "
+            ."movimientos de kardex: {$resumen['movs']} · filas ignoradas: {$resumen['ignoradas']}"
+            .($resumen['sin_cat'] > 0 ? " · SIN CATEGORÍA: {$resumen['sin_cat']}" : '')
+            .($resumen['omitidos_granular'] > 0 ? " · saltados (ya existen como granular): {$resumen['omitidos_granular']}" : '');
+
+        // Fix bug feedback UX · usar clave 'success' que sí está compartida por
+        // HandleInertiaRequests. Antes usaba 'flash' custom → Vue no la veía y
+        // Aracely no sabía si la carga funcionó.
+        return back()
+            ->with('success', $accion.' · '.$detalle)
+            ->with('importResumen', [
+                'accion' => $accion,
+                'detalle' => $detalle,
+                'creados' => $resumen['creados'],
+                'actualizados' => $resumen['actualizados'],
+                'movs' => $resumen['movs'],
+                'ignoradas' => $resumen['ignoradas'],
+                'sin_cat' => $resumen['sin_cat'],
+                'omitidos_granular' => $resumen['omitidos_granular'],
+                'dry_run' => $dryRun,
+            ]);
     }
 
     /**

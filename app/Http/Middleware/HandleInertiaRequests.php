@@ -67,6 +67,7 @@ class HandleInertiaRequests extends Middleware
                 'info' => fn () => $request->session()->get('info'),
                 'empaqueResultado' => fn () => $request->session()->get('empaqueResultado'),
                 'errores' => fn () => $request->session()->get('errores'),
+                'importResumen' => fn () => $request->session()->get('importResumen'),
             ],
             'app' => [
                 'name' => config('app.name'),
