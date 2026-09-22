@@ -27,25 +27,9 @@ class ProductoVariante extends Model
     protected static function booted(): void
     {
         static::saving(function (ProductoVariante $v) {
-            // C-F3 · Guardarraíl · un producto AGREGADO (desglose_stock=false)
-            //   NO puede tener variantes. Bloqueamos aquí para atrapar cualquier
-            //   flujo (Filament, seeder, comando, API) — no solo el editor Dropi.
-            //   Alternativa correcta: activar desglose_stock del producto primero
-            //   (permitido solo si no tiene movimientos).
-            if ($v->producto_id) {
-                $prod = Producto::find($v->producto_id);
-                if ($prod && ! $prod->desglose_stock) {
-                    throw new \DomainException(
-                        "No se puede agregar variantes al producto #{$prod->id} ({$prod->referencia}): ".
-                        "está en modo AGREGADO (desglose_stock=false). Activa el desglose primero ".
-                        "(solo permitido si el producto no tiene movimientos de kardex)."
-                    );
-                }
-            }
-
             // Auto-generar código de barras si no viene y hay producto asociado
             if (! $v->codigo_barras && $v->producto_id) {
-                $prod ??= Producto::find($v->producto_id);
+                $prod = Producto::find($v->producto_id);
                 if ($prod) {
                     $v->codigo_barras = self::generarCodigoBarras(
                         $prod->referencia,
@@ -86,16 +70,5 @@ class ProductoVariante extends Model
             . ($this->color_nombre ?? '') . ' '
             . ($this->diseno_nombre ?? '') . ' '
             . ($this->talla ?? ''));
-    }
-
-    /**
-     * C-F2 · Saldo físico de la variante en una ubicación (o total si null).
-     * Wrapper semántico para simetría con Producto::stockEn().
-     * Delegado en StockService para mantener la fuente única de verdad.
-     */
-    public function stockEn(?int $ubicacionId = null): int
-    {
-        return app(\App\Modules\Inventario\Services\StockService::class)
-            ->saldoFisico($this->id, $ubicacionId);
     }
 }

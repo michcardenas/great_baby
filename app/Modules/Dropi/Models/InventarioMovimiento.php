@@ -45,25 +45,6 @@ class InventarioMovimiento extends Model implements AuditableContract
 
     protected static function booted(): void
     {
-        // C-F2 R1 FIX CRÍTICO · Auto-populate `producto_id` desde la variante.
-        //   Sin esto, TODOS los movimientos nuevos creados por las 8 Actions
-        //   (EjecutarTraslado, RecibirMercancia, CerrarTomaFisica, etc.)
-        //   quedan con `producto_id NULL` → el trigger de bloqueo del toggle
-        //   desglose_stock se vuelve un placebo (no encuentra los movs
-        //   granulares porque busca por producto_id).
-        //
-        //   Este hook garantiza que TODO mov granular lleva su producto_id
-        //   sin tener que auditar y modificar cada caller. Los movs agregados
-        //   (variante_id NULL, producto_id ya set) pasan sin cambio.
-        //   El CHECK constraint chk_invmov_sujeto exige que al menos uno de
-        //   los dos exista — esta lógica cumple con esa invariante.
-        static::creating(function (self $mov) {
-            if ($mov->producto_id === null && $mov->variante_id !== null) {
-                $mov->producto_id = ProductoVariante::whereKey($mov->variante_id)
-                    ->value('producto_id');
-            }
-        });
-
         // APPEND-ONLY: nunca se modifica un movimiento existente.
         // Reversas se hacen con nuevo movimiento de signo contrario.
         static::updating(function (self $mov) {
@@ -78,18 +59,9 @@ class InventarioMovimiento extends Model implements AuditableContract
         // políticas del panel lo permiten explícitamente.)
     }
 
-    /**
-     * C-F1 · Un movimiento apunta a variante (granular) O a producto (agregado).
-     * El CHECK constraint chk_invmov_sujeto garantiza que al menos uno exista.
-     */
     public function variante(): BelongsTo
     {
         return $this->belongsTo(ProductoVariante::class, 'variante_id');
-    }
-
-    public function producto(): BelongsTo
-    {
-        return $this->belongsTo(Producto::class, 'producto_id');
     }
 
     public function ubicacion(): BelongsTo
@@ -100,19 +72,5 @@ class InventarioMovimiento extends Model implements AuditableContract
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
-    }
-
-    /** ¿Este movimiento es de producto agregado (sin variante)? */
-    public function esAgregado(): bool
-    {
-        return $this->variante_id === null && $this->producto_id !== null;
-    }
-
-    /** El sujeto del movimiento — variante si es granular, producto si es agregado. */
-    public function sujeto(): Producto|ProductoVariante|null
-    {
-        return $this->esAgregado()
-            ? $this->producto
-            : $this->variante;
     }
 }
