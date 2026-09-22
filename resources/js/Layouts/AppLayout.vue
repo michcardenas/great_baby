@@ -139,22 +139,9 @@ const groups = [
         key: 'dropi',
         label: 'Dropi',
         items: [
-            // Bodega (operativa diaria)
-            { name: 'Dropi · Panel', href: '/app/dropi', icon: LayoutDashboard },
-            { name: 'Vista Alistador', href: '/app/dropi/alistador', icon: Boxes },
-            { name: 'Escáner cámara', href: '/app/dropi/escaner-camara', icon: Camera },
-            { name: 'Registrar devolución', href: '/app/dropi/devolucion/registrar', icon: Undo2 },
-            // Administración
-            { name: 'Cortes', href: '/app/dropi/cortes', icon: Scissors },
-            { name: 'Wallet · movimientos', href: '/app/dropi/wallet', icon: Wallet },
-            { name: 'Discrepancias wallet', href: '/app/dropi/discrepancias', icon: AlertTriangle },
-            { name: 'Ubicaciones inventario', href: '/app/dropi/ubicaciones', icon: MapPin },
-            { name: 'Inventario en vivo', href: '/app/dropi/inventario-en-vivo', icon: Radio },
-            { name: 'Reportes Dropi', href: '/app/dropi/reportes', icon: BarChart3 },
-            { name: 'Importar productos', href: '/app/dropi/productos/importar', icon: Upload },
-            // Catálogo (compartido)
-            { name: 'Catálogo', href: '/app/catalogo', icon: Package },
-            { name: 'Catálogo · Maestras', href: '/app/catalogo/maestras', icon: FileText },
+            // El módulo Dropi se opera desde el panel Filament (todas las pantallas de
+            // pedidos, cortes, wallet, alistador, escáner, devoluciones, reportes).
+            { name: '🚚 Abrir módulo Dropi (Filament)', href: '/admin/dropi-pedidos', icon: LayoutDashboard, external: true },
         ],
     },
     {
@@ -226,24 +213,36 @@ const toggleGroup = (key) => { openGroups.value[key] = !openGroups.value[key]; }
                         <ChevronDown :class="['h-4 w-4 transition-transform', openGroups[group.key] ? 'rotate-0' : '-rotate-90']"/>
                     </button>
                     <div v-show="openGroups[group.key]" class="mt-1 space-y-0.5">
-                        <Link
-                            v-for="item in group.items"
-                            :key="item.href"
-                            :href="item.href"
-                            :class="[
-                                'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors',
-                                isActive(item.href)
-                                    ? 'bg-brand-50 text-brand-800 dark:bg-brand-900/30 dark:text-brand-300'
-                                    : 'text-surface-700 dark:text-surface-300 hover:bg-surface-100 dark:hover:bg-surface-800',
-                            ]"
-                        >
-                            <component :is="item.icon" class="h-4 w-4 flex-shrink-0"/>
-                            <span class="flex-1">{{ item.name }}</span>
-                            <span v-if="item.badge === 'pedidosB2BPend' && pedidosB2BPend > 0"
-                                class="ml-auto min-w-5 h-5 px-1.5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center animate-pulse">
-                                {{ pedidosB2BPend }}
-                            </span>
-                        </Link>
+                        <template v-for="item in group.items" :key="item.href">
+                            <!-- Links externos (ej. panel Filament /admin/*) se renderizan como <a> normal
+                                 y abren en nueva pestaña. Los internos usan <Link> de Inertia. -->
+                            <a v-if="item.external"
+                                :href="item.href"
+                                target="_blank"
+                                rel="noopener"
+                                class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors text-surface-700 dark:text-surface-300 hover:bg-surface-100 dark:hover:bg-surface-800"
+                            >
+                                <component :is="item.icon" class="h-4 w-4 flex-shrink-0"/>
+                                <span class="flex-1">{{ item.name }}</span>
+                                <span class="text-[10px] uppercase text-surface-400">↗</span>
+                            </a>
+                            <Link v-else
+                                :href="item.href"
+                                :class="[
+                                    'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors',
+                                    isActive(item.href)
+                                        ? 'bg-brand-50 text-brand-800 dark:bg-brand-900/30 dark:text-brand-300'
+                                        : 'text-surface-700 dark:text-surface-300 hover:bg-surface-100 dark:hover:bg-surface-800',
+                                ]"
+                            >
+                                <component :is="item.icon" class="h-4 w-4 flex-shrink-0"/>
+                                <span class="flex-1">{{ item.name }}</span>
+                                <span v-if="item.badge === 'pedidosB2BPend' && pedidosB2BPend > 0"
+                                    class="ml-auto min-w-5 h-5 px-1.5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center animate-pulse">
+                                    {{ pedidosB2BPend }}
+                                </span>
+                            </Link>
+                        </template>
                     </div>
                 </div>
             </nav>
