@@ -90,6 +90,9 @@ const fmtCOP = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('es-CO');
                 </div>
             </div>
 
+            <div class="text-xs text-surface-500 text-center py-4">
+                Para crear/editar productos usá el <a href="/admin/productos" class="text-brand-600 hover:underline">panel Filament</a> (con imágenes, variantes y pestaña contable).
+            </div>
         </div>
     </AppLayout>
 </template>
