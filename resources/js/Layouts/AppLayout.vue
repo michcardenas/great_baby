@@ -128,6 +128,7 @@ const groups = [
             { name: 'Inventario · Traslados', href: '/app/inventario/traslados', icon: Warehouse },
             { name: 'Inventario · Alertas', href: '/app/inventario/alertas', icon: Warehouse },
             { name: 'Inventario · Reporte', href: '/app/inventario/reporte-stock', icon: BarChart3 },
+            { name: '📥 Importar inventario del cliente', href: '/app/inventario/importar-cliente', icon: Warehouse },
             { name: 'Contabilidad', href: '/app/contabilidad', icon: Calculator },
             { name: 'Contabilidad · Panel', href: '/app/contabilidad/panel', icon: Calculator },
             { name: 'Contabilidad · Reportes (9)', href: '/app/contabilidad/reportes', icon: BarChart3 },

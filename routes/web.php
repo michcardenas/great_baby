@@ -92,6 +92,9 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     Route::post('/compras/importacion/{importacion}/gasto', [\App\Http\Controllers\App\ComprasGestionController::class, 'importacionGastoAgregar'])->middleware('throttle:60,1')->name('app.compras.importacion.gasto');
     Route::post('/compras/importacion/{importacion}/liquidar', [\App\Http\Controllers\App\ComprasGestionController::class, 'importacionLiquidar'])->middleware('throttle:20,1')->name('app.compras.importacion.liquidar');
     Route::get('/inventario', [\App\Http\Controllers\App\InventarioController::class, 'index'])->name('app.inventario.index');
+    // Importador Excel del cliente Aracely (formato REPORTE · productos agregados)
+    Route::get('/inventario/importar-cliente', [\App\Http\Controllers\App\ImportarInventarioClienteController::class, 'show'])->name('app.inventario.importar.cliente');
+    Route::post('/inventario/importar-cliente', [\App\Http\Controllers\App\ImportarInventarioClienteController::class, 'procesar'])->middleware('throttle:5,1')->name('app.inventario.importar.cliente.procesar');
     // Re-audit M3 PATRÓN θ (SEG-A3) · throttle en /app/inventario/* — antes sin
     //   límite; kardex agregaba 500 movs, reporte-stock hacía SUM group by sobre
     //   todo el kardex. Un actor autenticado saturaba la DB con requests.
