@@ -3,6 +3,7 @@
 namespace App\Modules\Siigo\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
 
 class SiigoConfig extends Model
@@ -11,7 +12,7 @@ class SiigoConfig extends Model
 
     protected $fillable = [
         'username', 'access_key', 'partner_id',
-        'ambiente', 'activo',
+        'ambiente', 'activo', 'push_auto',
         'nit_emisor', 'tipo_documento_id', 'seller_id', 'payment_type_id',
     ];
 
@@ -21,7 +22,9 @@ class SiigoConfig extends Model
         'sync_productos_at' => 'datetime',
         'sync_clientes_at' => 'datetime',
         'sync_stock_at' => 'datetime',
+        'push_auto_updated_at' => 'datetime',
         'activo' => 'bool',
+        'push_auto' => 'bool',
         'tipo_documento_id' => 'integer',
         'seller_id' => 'integer',
         'payment_type_id' => 'integer',
@@ -51,5 +54,29 @@ class SiigoConfig extends Model
             $config = self::create(['ambiente' => 'sandbox', 'activo' => false]);
         }
         return $config;
+    }
+
+    /**
+     * F8 · kill-switch efectivo del push automático.
+     * Precedencia: valor persistido en BD (`push_auto` no NULL) > env `FEATURE_SIIGO_PUSH_AUTO`.
+     * Cache 60s para no golpear la BD en cada job encolado.
+     */
+    public static function pushAutoActivo(): bool
+    {
+        return Cache::remember('siigo:push_auto', 60, function () {
+            try {
+                $db = self::query()->value('push_auto');
+                if ($db !== null) return (bool) $db;
+            } catch (\Throwable) {
+                // BD no disponible (tests unit sin migraciones) → cae al env.
+            }
+            return (bool) config('siigo.push_auto', false);
+        });
+    }
+
+    /** F8 · invalidar el cache tras un toggle desde UI (Vue o Filament). */
+    public static function invalidarPushAutoCache(): void
+    {
+        Cache::forget('siigo:push_auto');
     }
 }

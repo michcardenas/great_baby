@@ -18,16 +18,27 @@ Schedule::command('dropi:reconciliar-huerfanos')->everyThirtyMinutes()->withoutO
 // §7 TO-BE Cartera — barrido diario de cobranza WhatsApp a las 9:00.
 Schedule::command('cartera:cobrar')->dailyAt('09:00')->withoutOverlapping();
 
-// SIIGO — sync inventario/productos cada hora, clientes cada 3 horas.
-Schedule::command('siigo:sync productos')->hourly()->withoutOverlapping();
+// SIIGO — sync incremental de productos (B3-M6 · escalonado al minuto :02 de
+// cada cuarto de hora para no colisionar con inventario/empaque; usa cursor
+// updated_start ISO-8601 desde el último sync exitoso).
+Schedule::command('siigo:sync-productos')
+    ->cron('2-59/15 * * * *')
+    ->withoutOverlapping();
 Schedule::command('siigo:sync clientes')->everyThreeHours()->withoutOverlapping();
 Schedule::command('siigo:sync catalogos')->dailyAt('03:00')->withoutOverlapping();
+// B3-M5 · purga nocturna del log SIIGO (retención 30 días por default).
+Schedule::command('siigo:purgar-logs')->dailyAt('02:30')->withoutOverlapping();
 
-// M3 Inventario — barrido cada 15 min (alertas de stock + reservas expiradas).
-Schedule::command('inventario:barrer')->everyFifteenMinutes()->withoutOverlapping();
+// M3 Inventario — barrido cada 15 min · escalonado al minuto :07.
+Schedule::command('inventario:barrer')
+    ->cron('7-59/15 * * * *')
+    ->withoutOverlapping();
 
-// Empaque — cierra registros en_curso abandonados (> 30 min sin actividad).
-Schedule::command('empaque:cerrar-huerfanos')->everyFifteenMinutes()->withoutOverlapping();
+// Empaque — cierra registros en_curso abandonados (> 30 min sin actividad)
+// · escalonado al minuto :12.
+Schedule::command('empaque:cerrar-huerfanos')
+    ->cron('12-59/15 * * * *')
+    ->withoutOverlapping();
 
 // Backup nocturno: BD (mysqldump) + fotos empaque (tar.gz), retención 14 días.
 Schedule::command('gb:backup --keep=14')->dailyAt('02:00')->withoutOverlapping();

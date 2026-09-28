@@ -1,6 +1,7 @@
 <script setup>
-import { Head, Link } from '@inertiajs/vue3';
-import { ArrowLeft, Truck } from 'lucide-vue-next';
+import { ref } from 'vue';
+import { Head, Link, router } from '@inertiajs/vue3';
+import { ArrowLeft, Truck, Cloud, CloudOff, RefreshCw } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import { useMoney } from '@/composables/useMoney';
 import { fechaCorta } from '@/composables/useFecha';
@@ -8,13 +9,23 @@ import { fechaCorta } from '@/composables/useFecha';
 const props = defineProps({ recepcion: { type: Object, required: true } });
 const { money } = useMoney();
 
-// Re-audit M2 UX-M7 · badge dinámico según estado (antes siempre emerald).
 const badgeEstado = (e) => ({
     confirmada: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200',
     borrador: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200',
     parcial: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200',
     rechazada: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200',
 }[e] || 'bg-surface-100 dark:bg-surface-800');
+
+// Sprint 3 · D.1 · reenvío manual a SIIGO desde detalle.
+const reenviando = ref(false);
+const reenviarSiigo = () => {
+    if (! confirm('¿Reenviar esta recepción a SIIGO?\n\nSe encola un job manual (bypasea el kill-switch).')) return;
+    reenviando.value = true;
+    router.post(`/app/compras/recepcion/${props.recepcion.id}/reenviar-siigo`, {}, {
+        preserveScroll: true,
+        onFinish: () => { reenviando.value = false; },
+    });
+};
 </script>
 
 <template>
@@ -44,6 +55,37 @@ const badgeEstado = (e) => ({
                     <div><b>Transportista:</b> {{ recepcion.transportista || '—' }}</div>
                 </div>
                 <a v-if="recepcion.id" :href="`/compras/recepcion/${recepcion.id}/pdf`" target="_blank" rel="noopener" class="btn-ghost mt-4">PDF Recepción</a>
+
+                <!-- Sprint 3 · D.1 · badge estado SIIGO -->
+                <div class="mt-4 pt-4 border-t flex items-center justify-between gap-3">
+                    <div class="flex items-center gap-2 text-sm">
+                        <template v-if="recepcion.siigo_id">
+                            <Cloud class="h-5 w-5 text-emerald-600"/>
+                            <div>
+                                <div class="font-semibold text-emerald-700">Sincronizada con SIIGO</div>
+                                <div class="text-xs text-surface-500">
+                                    <span class="font-mono">{{ recepcion.siigo_number || recepcion.siigo_id }}</span>
+                                    <span v-if="recepcion.siigo_sync_hace"> · {{ recepcion.siigo_sync_hace }}</span>
+                                </div>
+                            </div>
+                        </template>
+                        <template v-else>
+                            <CloudOff class="h-5 w-5 text-amber-600"/>
+                            <div>
+                                <div class="font-semibold text-amber-700">Pendiente de SIIGO</div>
+                                <div class="text-xs text-surface-500">
+                                    Se enviará automáticamente al confirmar (con kill-switch encendido).
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                    <button v-if="recepcion.estado === 'confirmada'" @click="reenviarSiigo" :disabled="reenviando"
+                            class="btn-ghost text-sm inline-flex items-center gap-1"
+                            :class="reenviando ? 'opacity-50 cursor-wait' : ''">
+                        <RefreshCw :class="['h-4 w-4', reenviando ? 'animate-spin' : '']"/>
+                        {{ recepcion.siigo_id ? 'Reenviar' : 'Enviar ahora' }}
+                    </button>
+                </div>
             </div>
 
             <div class="card p-4">

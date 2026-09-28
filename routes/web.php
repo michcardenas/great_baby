@@ -83,9 +83,58 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     Route::get('/compras/oc/{orden}', [\App\Http\Controllers\App\ComprasGestionController::class, 'ocShow'])->name('app.compras.oc.show');
     Route::post('/compras/oc/{orden}/aprobar', [\App\Http\Controllers\App\ComprasGestionController::class, 'ocAprobar'])->middleware('throttle:60,1')->name('app.compras.oc.aprobar');
     Route::post('/compras/oc/{orden}/anular', [\App\Http\Controllers\App\ComprasGestionController::class, 'ocAnular'])->middleware('throttle:20,1')->name('app.compras.oc.anular');
+    // Sprint 3 · A.1 · duplicar OC + reenviar recepción a SIIGO.
+    Route::post('/compras/oc/{orden}/duplicar', [\App\Http\Controllers\App\ComprasGestionController::class, 'ocDuplicar'])->middleware('throttle:20,1')->name('app.compras.oc.duplicar');
+    Route::post('/compras/oc/{orden}/reenviar-siigo', [\App\Http\Controllers\App\ComprasGestionController::class, 'ocReenviarSiigo'])->middleware('throttle:20,1')->name('app.compras.oc.reenviar-siigo');
+    Route::post('/compras/recepcion/{recepcion}/reenviar-siigo', [\App\Http\Controllers\App\ComprasGestionController::class, 'recepcionReenviarSiigo'])->middleware('throttle:20,1')->name('app.compras.recepcion.reenviar-siigo');
+    // Sprint 4 · G.3 · CRUD Productos Vue formato SIIGO (4 pestañas).
+    Route::get('/catalogo/productos', [\App\Http\Controllers\App\ProductosController::class, 'index'])->name('app.catalogo.productos');
+    Route::get('/catalogo/productos/nuevo', [\App\Http\Controllers\App\ProductosController::class, 'crearForm'])->name('app.catalogo.productos.nuevo');
+    Route::get('/catalogo/productos/{producto}', [\App\Http\Controllers\App\ProductosController::class, 'show'])->name('app.catalogo.productos.show');
+    Route::post('/catalogo/productos', [\App\Http\Controllers\App\ProductosController::class, 'guardar'])->name('app.catalogo.productos.crear');
+    Route::put('/catalogo/productos/{producto}', [\App\Http\Controllers\App\ProductosController::class, 'guardar'])->name('app.catalogo.productos.actualizar');
+    Route::delete('/catalogo/productos/{producto}', [\App\Http\Controllers\App\ProductosController::class, 'eliminar'])->name('app.catalogo.productos.eliminar');
+    Route::get('/catalogo/productos-buscar', [\App\Http\Controllers\App\ProductosController::class, 'buscar'])->name('app.catalogo.productos.buscar');
+    Route::get('/catalogo/siigo-grupos', [\App\Http\Controllers\App\ProductosController::class, 'grupos']);
+    Route::get('/catalogo/siigo-subgrupos', [\App\Http\Controllers\App\ProductosController::class, 'subgrupos']);
+    Route::get('/catalogo/siigo-clases', [\App\Http\Controllers\App\ProductosController::class, 'clases']);
+    // Sprint 4 · G.2 · CRUD jerarquía SIIGO.
+    Route::get('/catalogo/jerarquia-siigo', [\App\Http\Controllers\App\JerarquiaSiigoController::class, 'index'])->name('app.catalogo.jerarquia-siigo');
+    Route::post('/catalogo/jerarquia-siigo/linea', [\App\Http\Controllers\App\JerarquiaSiigoController::class, 'lineaGuardar']);
+    Route::delete('/catalogo/jerarquia-siigo/linea/{linea}', [\App\Http\Controllers\App\JerarquiaSiigoController::class, 'lineaEliminar']);
+    Route::post('/catalogo/jerarquia-siigo/grupo', [\App\Http\Controllers\App\JerarquiaSiigoController::class, 'grupoGuardar']);
+    Route::delete('/catalogo/jerarquia-siigo/grupo/{grupo}', [\App\Http\Controllers\App\JerarquiaSiigoController::class, 'grupoEliminar']);
+    Route::post('/catalogo/jerarquia-siigo/subgrupo', [\App\Http\Controllers\App\JerarquiaSiigoController::class, 'subgrupoGuardar']);
+    Route::delete('/catalogo/jerarquia-siigo/subgrupo/{subgrupo}', [\App\Http\Controllers\App\JerarquiaSiigoController::class, 'subgrupoEliminar']);
+    Route::post('/catalogo/jerarquia-siigo/clase', [\App\Http\Controllers\App\JerarquiaSiigoController::class, 'claseGuardar']);
+    Route::delete('/catalogo/jerarquia-siigo/clase/{clase}', [\App\Http\Controllers\App\JerarquiaSiigoController::class, 'claseEliminar']);
+    // Sprint 4 · B.3 · CRUD Retenciones (Retefuente/Reteica/Reteiva).
+    Route::get('/cartera/retenciones', [\App\Http\Controllers\App\RetencionesController::class, 'index'])->name('app.cartera.retenciones');
+    Route::post('/cartera/retenciones', [\App\Http\Controllers\App\RetencionesController::class, 'guardar']);
+    Route::delete('/cartera/retenciones/{regla}', [\App\Http\Controllers\App\RetencionesController::class, 'eliminar']);
+    // Sprint 4 · B.1 · Notas crédito manuales.
+    Route::get('/cartera/notas-credito', [\App\Http\Controllers\App\NotasCreditoController::class, 'index'])->name('app.cartera.notas-credito');
+    Route::post('/cartera/notas-credito', [\App\Http\Controllers\App\NotasCreditoController::class, 'crear'])->middleware('throttle:30,1');
+    Route::post('/cartera/notas-credito/{notaCredito}/reenviar-siigo', [\App\Http\Controllers\App\NotasCreditoController::class, 'reenviarSiigo'])->middleware('throttle:20,1');
+    // Sprint 4 · B.2 · Notas débito.
+    Route::get('/cartera/notas-debito', [\App\Http\Controllers\App\NotasDebitoController::class, 'index'])->name('app.cartera.notas-debito');
+    Route::post('/cartera/notas-debito', [\App\Http\Controllers\App\NotasDebitoController::class, 'crear'])->middleware('throttle:30,1');
+    Route::post('/cartera/notas-debito/{notaDebito}/reenviar-siigo', [\App\Http\Controllers\App\NotasDebitoController::class, 'reenviarSiigo'])->middleware('throttle:20,1');
+    // Sprint 4 · B.4 · Asientos manuales.
+    Route::get('/contabilidad/asientos-manuales', [\App\Http\Controllers\App\AsientosManualesController::class, 'index'])->name('app.contabilidad.asientos-manuales');
+    Route::post('/contabilidad/asientos-manuales', [\App\Http\Controllers\App\AsientosManualesController::class, 'crear'])->middleware('throttle:20,1');
+    Route::post('/contabilidad/asientos-manuales/{asientoManual}/aprobar', [\App\Http\Controllers\App\AsientosManualesController::class, 'aprobar'])->middleware('throttle:20,1');
+    Route::post('/contabilidad/asientos-manuales/{asientoManual}/reenviar-siigo', [\App\Http\Controllers\App\AsientosManualesController::class, 'reenviarSiigo'])->middleware('throttle:20,1');
+    // Sprint 4 · B.3+ · Pagos a proveedor (con retenciones aplicadas).
+    Route::get('/cartera/pagos-proveedor', [\App\Http\Controllers\App\PagosProveedorController::class, 'index'])->name('app.cartera.pagos-proveedor');
+    Route::post('/cartera/pagos-proveedor', [\App\Http\Controllers\App\PagosProveedorController::class, 'crear'])->middleware('throttle:30,1');
+    Route::post('/cartera/pagos-proveedor/{pagoProveedor}/reenviar-siigo', [\App\Http\Controllers\App\PagosProveedorController::class, 'reenviarSiigo'])->middleware('throttle:20,1');
+    // QA-FIX #11 · preview retenciones desde el motor real.
+    Route::post('/api/retenciones/preview', [\App\Http\Controllers\App\PagosProveedorController::class, 'previewRetenciones'])->middleware('throttle:120,1');
     Route::get('/compras/recepcion/nueva', [\App\Http\Controllers\App\ComprasGestionController::class, 'recepcionForm'])->name('app.compras.recepcion.nueva');
     Route::post('/compras/recepcion', [\App\Http\Controllers\App\ComprasGestionController::class, 'recepcionCrear'])->middleware('throttle:60,1')->name('app.compras.recepcion.crear');
     Route::get('/compras/recepcion/{recepcion}', [\App\Http\Controllers\App\ComprasGestionController::class, 'recepcionShow'])->name('app.compras.recepcion.show');
+    Route::get('/compras/importacion', [\App\Http\Controllers\App\ComprasGestionController::class, 'importacionIndex'])->name('app.compras.importacion');
     Route::get('/compras/importacion/nueva', [\App\Http\Controllers\App\ComprasGestionController::class, 'importacionForm'])->name('app.compras.importacion.nueva');
     Route::get('/compras/importacion/{importacion}', [\App\Http\Controllers\App\ComprasGestionController::class, 'importacionShow'])->name('app.compras.importacion.show');
     Route::post('/compras/importacion', [\App\Http\Controllers\App\ComprasGestionController::class, 'importacionCrear'])->middleware('throttle:60,1')->name('app.compras.importacion.crear');
@@ -116,6 +165,9 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     Route::post('/inventario/conteos/{id}/iniciar', [\App\Http\Controllers\App\InventarioGestionController::class, 'conteoIniciar'])->middleware('throttle:20,1')->name('app.inventario.conteo.iniciar');
     Route::post('/inventario/conteos/{id}/items/{itemId}', [\App\Http\Controllers\App\InventarioGestionController::class, 'conteoItemGuardar'])->middleware('throttle:120,1')->name('app.inventario.conteo.item');
     Route::post('/inventario/conteos/{id}/cerrar', [\App\Http\Controllers\App\InventarioGestionController::class, 'conteoCerrar'])->middleware('throttle:20,1')->name('app.inventario.conteo.cerrar');
+    // Sprint 3 · A.4 · anular en curso + eliminar borrador vacío.
+    Route::post('/inventario/conteos/{id}/anular', [\App\Http\Controllers\App\InventarioGestionController::class, 'conteoAnular'])->middleware('throttle:20,1')->name('app.inventario.conteo.anular');
+    Route::delete('/inventario/conteos/{id}', [\App\Http\Controllers\App\InventarioGestionController::class, 'conteoEliminar'])->middleware('throttle:20,1')->name('app.inventario.conteo.eliminar');
     Route::get('/inventario/alertas', [\App\Http\Controllers\App\InventarioGestionController::class, 'alertasIndex'])->middleware('throttle:60,1')->name('app.inventario.alertas');
     Route::post('/inventario/alertas', [\App\Http\Controllers\App\InventarioGestionController::class, 'alertaGuardar'])->middleware('throttle:30,1')->name('app.inventario.alerta.guardar');
     Route::delete('/inventario/alertas/{id}', [\App\Http\Controllers\App\InventarioGestionController::class, 'alertaEliminar'])->middleware('throttle:30,1')->name('app.inventario.alerta.eliminar');
@@ -175,6 +227,16 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     Route::get('/empresa', [\App\Http\Controllers\App\EmpresaController::class, 'index'])->name('app.empresa.index');
     Route::post('/empresa', [\App\Http\Controllers\App\EmpresaController::class, 'guardar'])->name('app.empresa.guardar');
     Route::get('/siigo', [\App\Http\Controllers\App\SiigoController::class, 'index'])->name('app.siigo.index');
+    // F8 · panel de control del sync SIIGO
+    Route::post('/siigo/kill-switch', [\App\Http\Controllers\App\SiigoController::class, 'toggleKillSwitch'])->name('app.siigo.kill-switch');
+    Route::post('/siigo/logs/{log}/reintentar', [\App\Http\Controllers\App\SiigoController::class, 'reintentar'])->name('app.siigo.reintentar');
+    Route::get('/siigo/logs', [\App\Http\Controllers\App\SiigoController::class, 'logs'])->name('app.siigo.logs');
+    // Plan de cuentas (PUC) en Vue · reutiliza ImportadorPlanCuentas + PlanCuenta existentes
+    Route::get('/contabilidad/plan-cuentas', [\App\Http\Controllers\App\PlanCuentasController::class, 'index'])->name('app.contabilidad.plan-cuentas');
+    Route::post('/contabilidad/plan-cuentas', [\App\Http\Controllers\App\PlanCuentasController::class, 'guardar'])->name('app.contabilidad.plan-cuentas.guardar');
+    Route::delete('/contabilidad/plan-cuentas/{planCuenta}', [\App\Http\Controllers\App\PlanCuentasController::class, 'eliminar'])->name('app.contabilidad.plan-cuentas.eliminar');
+    Route::post('/contabilidad/plan-cuentas/importar', [\App\Http\Controllers\App\PlanCuentasController::class, 'importar'])->name('app.contabilidad.plan-cuentas.importar');
+    Route::get('/contabilidad/plan-cuentas/plantilla', [\App\Http\Controllers\App\PlanCuentasController::class, 'plantilla'])->name('app.contabilidad.plan-cuentas.plantilla');
     // FIL-E · Catálogo maestras + Bandeja
     Route::get('/catalogo/maestras', [\App\Http\Controllers\App\CatalogoMaestrasController::class, 'index'])->name('app.catalogo.maestras');
     Route::post('/catalogo/marca', [\App\Http\Controllers\App\CatalogoMaestrasController::class, 'marcaGuardar']);

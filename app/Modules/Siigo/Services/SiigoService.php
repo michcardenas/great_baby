@@ -70,30 +70,50 @@ class SiigoService
      * Sincroniza productos desde SIIGO (paginado).
      * Cada producto SIIGO se mapea a un Producto local — la referencia es siigo_code.
      * Si el producto tiene variantes internas del catálogo GB, se preservan (no borra variantes locales).
+     *
+     * @param  int          $paginaInicial
+     * @param  int          $tamPagina
+     * @param  string|null  $updatedStart  Filtro incremental yyyy-MM-dd — si viene,
+     *                                     solo pide productos actualizados desde esa fecha
+     *                                     (respeta rate limit para sync cada 15 min).
      */
-    public function sincronizarProductos(int $paginaInicial = 1, int $tamPagina = 100): array
+    public function sincronizarProductos(int $paginaInicial = 1, int $tamPagina = 100, ?string $updatedStart = null): array
     {
         $inicio = microtime(true);
         $nuevos = 0; $actualizados = 0; $errores = 0;
         $pagina = $paginaInicial;
         $totalProcesados = 0;
+        $paginacionCompleta = false;  // X3 · flag para no envenenar el cursor
+        $capAlcanzado = false;
 
         do {
             try {
-                $response = $this->client->request('GET', '/v1/products', [
+                $params = [
                     'page' => $pagina,
                     'page_size' => $tamPagina,
-                ]);
+                ];
+                if ($updatedStart) {
+                    $params['updated_start'] = $updatedStart;
+                }
+                $response = $this->client->request('GET', '/v1/products', $params);
 
                 if ($response->failed()) break;
 
                 $data = $response->json();
                 $items = $data['results'] ?? [];
-                if (empty($items)) break;
+                if (empty($items)) { $paginacionCompleta = true; break; }
+
+                // B3-P3 · batch-fetch de todos los `siigo_id` de la página en 1 sola
+                // query (antes: 1 SELECT por item = 100 queries/página · con 5 páginas
+                // = 500 queries innecesarias). El `keyBy` deja lookup O(1).
+                $siigoIds = array_column($items, 'id');
+                $existentes = Producto::whereIn('siigo_id', $siigoIds)
+                    ->get()
+                    ->keyBy('siigo_id');
 
                 foreach ($items as $p) {
                     try {
-                        $creado = $this->guardarProducto($p);
+                        $creado = $this->guardarProducto($p, $existentes[$p['id']] ?? null);
                         $creado ? $nuevos++ : $actualizados++;
                         $totalProcesados++;
                     } catch (\Throwable $e) {
@@ -106,15 +126,34 @@ class SiigoService
 
                 $pagina++;
                 $hayMas = count($items) === $tamPagina;
+                if (! $hayMas) $paginacionCompleta = true;
             } catch (\Throwable $e) {
                 Log::channel('siigo')->error('Error paginando productos SIIGO', ['error' => $e->getMessage()]);
                 break;
             }
         } while ($hayMas && $pagina < 500);  // límite defensivo
 
-        SiigoConfig::current()->forceFill(['sync_productos_at' => now(), 'sync_stock_at' => now()])->save();
+        if ($pagina >= 500) {
+            $capAlcanzado = true;
+            Log::channel('siigo')->warning('Cap 500 páginas alcanzado en sync productos · algunos productos pueden no haberse traído', [
+                'pagina' => $pagina, 'total' => $totalProcesados,
+            ]);
+        }
 
-        $r = ['nuevos' => $nuevos, 'actualizados' => $actualizados, 'errores' => $errores, 'total' => $totalProcesados];
+        // X3 · solo mover el cursor si (a) no hubo errores y (b) la paginación
+        // terminó limpia. Si algo se rompió, el próximo tick reintenta desde
+        // el mismo cursor (no perdemos datos).
+        if ($errores === 0 && $paginacionCompleta && ! $capAlcanzado) {
+            SiigoConfig::current()->forceFill([
+                'sync_productos_at' => now(),
+                'sync_stock_at' => now(),
+            ])->save();
+        }
+
+        $r = [
+            'nuevos' => $nuevos, 'actualizados' => $actualizados, 'errores' => $errores,
+            'total' => $totalProcesados, 'cursor_avanzado' => $errores === 0 && $paginacionCompleta && ! $capAlcanzado,
+        ];
         $this->log('productos', $errores === 0 ? 'exitoso' : 'parcial', $nuevos, $actualizados, $errores, $inicio,
             "Sync productos: {$nuevos} nuevos + {$actualizados} actualizados + {$errores} errores", $r);
 
@@ -205,33 +244,68 @@ class SiigoService
         }
     }
 
-    /** Guarda un producto SIIGO. Retorna true si es nuevo, false si actualizado. */
-    private function guardarProducto(array $p): bool
+    /**
+     * Guarda un producto SIIGO. Retorna true si es nuevo, false si actualizado.
+     *
+     * X2 · Merge selectivo en updates + withoutEvents:
+     *   - En CREATE: se poblan todos los campos (es el primer sync).
+     *   - En UPDATE: solo sobrescribimos campos que SIIGO controla como fuente
+     *     (nombre, descripcion, activo, categoria, sync_at). NO tocamos
+     *     `precio_proveedor` ni `requiere_talla` ni `es_set` — esos son
+     *     locales editables por Aracely. Además:
+     *   - Comparación `updated_at local > siigo_sync_at`: si Aracely editó
+     *     LOCALMENTE después del último sync, saltamos el update completo
+     *     para no pisar sus cambios (el PUSH se encargará de subirlos).
+     *   - `Producto::withoutEvents()` evita disparar el Observer y el
+     *     loop de sync bidireccional (Pull → Observer → Push → Pull …).
+     */
+    private function guardarProducto(array $p, ?Producto $existente = null): bool
     {
-        $existente = Producto::where('siigo_id', $p['id'])->first();
-        $creado = ! $existente;
+        return Producto::withoutEvents(function () use ($p, $existente): bool {
+            // B3-P3 · si el caller lo pre-cargó (batch), lo reutilizamos.
+            $existente = $existente ?? Producto::where('siigo_id', $p['id'])->first();
+            $creado = ! $existente;
 
-        $datos = [
-            'siigo_id' => $p['id'],
-            'siigo_code' => $p['code'] ?? null,
-            'referencia' => $p['reference'] ?? $p['code'] ?? $p['id'],
-            'nombre' => $p['name'] ?? 'Producto sin nombre',
-            'descripcion' => $p['description'] ?? null,
-            'categoria' => $p['account_group']['name'] ?? null,
-            'precio_proveedor' => (float) ($p['prices'][0]['price_list'][0]['value'] ?? 0),
-            'activo' => (bool) ($p['active'] ?? true),
-            'requiere_talla' => false,
-            'es_set' => false,
-            'siigo_sync_at' => now(),
-        ];
+            if ($existente) {
+                // ¿La copia local fue editada después del último sync?
+                if ($existente->updated_at
+                    && $existente->siigo_sync_at
+                    && $existente->updated_at->gt($existente->siigo_sync_at)
+                ) {
+                    // Sí → conservamos lo local, solo tocamos sync_at para no
+                    // reprocesar esta misma fila en el próximo tick.
+                    $existente->forceFill(['siigo_sync_at' => now()])->save();
+                    return false;
+                }
 
-        if ($existente) {
-            $existente->fill($datos)->save();
-        } else {
-            Producto::create($datos);
-        }
+                // Merge selectivo · SOLO campos que SIIGO controla.
+                $existente->fill([
+                    'siigo_code' => $p['code'] ?? $existente->siigo_code,
+                    'nombre' => $p['name'] ?? $existente->nombre,
+                    'descripcion' => $p['description'] ?? $existente->descripcion,
+                    'categoria' => $p['account_group']['name'] ?? $existente->categoria,
+                    'activo' => (bool) ($p['active'] ?? $existente->activo),
+                    'siigo_sync_at' => now(),
+                ])->save();
+                return false;
+            }
 
-        return $creado;
+            // CREATE · primer sync, poblamos todo.
+            Producto::create([
+                'siigo_id' => $p['id'],
+                'siigo_code' => $p['code'] ?? null,
+                'referencia' => $p['reference'] ?? $p['code'] ?? $p['id'],
+                'nombre' => $p['name'] ?? 'Producto sin nombre',
+                'descripcion' => $p['description'] ?? null,
+                'categoria' => $p['account_group']['name'] ?? null,
+                'precio_proveedor' => (float) ($p['prices'][0]['price_list'][0]['value'] ?? 0),
+                'activo' => (bool) ($p['active'] ?? true),
+                'requiere_talla' => false,
+                'es_set' => false,
+                'siigo_sync_at' => now(),
+            ]);
+            return true;
+        });
     }
 
     /** Guarda un cliente SIIGO. Retorna true si es nuevo. */

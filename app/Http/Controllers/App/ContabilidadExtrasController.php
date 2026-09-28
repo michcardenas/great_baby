@@ -135,13 +135,28 @@ class ContabilidadExtrasController extends Controller implements HasMiddleware
             // estar anulado pero queremos mostrar el header + badge "anulado").
             $origen = $tipoClass::query()->withTrashed()->find($id);
             if ($origen) {
+                // Sprint 3 · F.3 · badge SIIGO del documento origen (factura/pago/NC).
+                //   factura → siigo_id + cufe (factura electrónica DIAN)
+                //   pago    → siigo_id (voucher SIIGO)
+                //   NC      → siigo_id
+                $siigoId = $origen->siigo_id ?? null;
+                $siigoNumero = $origen->numero_siigo ?? $origen->siigo_number ?? null;
+                $syncAt = $origen->siigo_sync_at ?? $origen->emitida_at ?? null;
+                $cufe = $origen->cufe ?? null;
+
                 $meta = [
                     'numero' => $origen->numero ?? ($origen->referencia ?? "#{$id}"),
                     'fecha' => optional($origen->fecha_emision ?? $origen->fecha ?? $origen->created_at)->toDateString(),
                     'tercero' => $origen->contacto?->nombre_completo ?? '—',
                     'total' => (float) ($origen->total ?? $origen->monto_recibido ?? $origen->valor ?? 0),
-                    // Re-audit R2 SEG-B4 · badge anulado en meta.
                     'anulado' => $origen->deleted_at !== null,
+                    // F.3 · info SIIGO del origen
+                    'siigo_id' => $siigoId,
+                    'siigo_numero' => $siigoNumero,
+                    'siigo_sync_hace' => $syncAt instanceof \Carbon\Carbon ? $syncAt->diffForHumans() : null,
+                    'cufe' => $cufe,
+                    'es_electronica' => (bool) ($origen->es_electronica ?? false),
+                    'stamp_status' => $origen->stamp_status ?? null,
                 ];
             }
 
@@ -192,23 +207,27 @@ class ContabilidadExtrasController extends Controller implements HasMiddleware
 
     public function reportes(): Response
     {
-        // Re-audit M5 UX-C1 · sin duplicados. 3 pares apuntaban al mismo URL.
-        // Ahora cada tarjeta es única y las que aún no existen quedan `listo=false`
-        // (gris + disabled en el hub).
+        // Sprint 3 · F.4 · agregar metadata SIIGO por reporte (cuentas PUC que usa,
+        // exportable Excel, formato compatible SIIGO). Todos los reportes listos
+        // usan `movimientos_contables` con cuenta_puc + PUC Great Baby oficial.
         return Inertia::render('Contabilidad/Reportes', [
             'reportes' => [
-                ['nombre' => 'Balance de comprobación', 'desc' => 'Sumas y saldos por cuenta PUC', 'href' => '/app/contabilidad', 'listo' => true, 'familia' => 'Estados'],
-                ['nombre' => 'Panel contable',          'desc' => 'KPIs, top cuentas y por origen', 'href' => '/app/contabilidad/panel', 'listo' => true, 'familia' => 'Estados'],
-                ['nombre' => 'Libro diario',            'desc' => 'Todos los asientos cronológicos del mes', 'href' => '/app/cartera/movimientos', 'listo' => true, 'familia' => 'Auxiliares'],
-                ['nombre' => 'Movimientos por cuenta',  'desc' => 'Filtra por prefijo PUC (ej. 1305 clientes)', 'href' => '/app/cartera/movimientos?cuenta=1305', 'listo' => true, 'familia' => 'Auxiliares'],
-                ['nombre' => 'Facturas emitidas',       'desc' => 'Ventas del periodo', 'href' => '/app/facturas', 'listo' => true, 'familia' => 'Auxiliares'],
-                ['nombre' => 'Pagos recibidos',         'desc' => 'Ingresos del periodo', 'href' => '/app/pagos', 'listo' => true, 'familia' => 'Auxiliares'],
-                ['nombre' => 'Compras del periodo',     'desc' => 'OCs recibidas', 'href' => '/app/compras/reporte', 'listo' => true, 'familia' => 'Auxiliares'],
-                // Re-audit M5 FUNC-A4 · retenciones ahora incluye las 3 cuentas
-                // (2365 RETEFTE + 2367 RETEIVA + 2368 RETEICA). Antes solo 2365.
-                ['nombre' => 'Retenciones (RETEFTE + RETEIVA + RETEICA)', 'desc' => 'Base para declaración DIAN', 'href' => '/app/cartera/movimientos?cuentas=2365,2367,2368', 'listo' => true, 'familia' => 'Impuestos'],
-                ['nombre' => 'Balance general',         'desc' => 'Activo/Pasivo/Patrimonio (por familia PUC)', 'href' => null, 'listo' => false, 'familia' => 'Estados'],
-                ['nombre' => 'Estado de resultados',    'desc' => 'Ingresos vs egresos con margen', 'href' => null, 'listo' => false, 'familia' => 'Estados'],
+                ['nombre' => 'Balance de comprobación', 'desc' => 'Sumas y saldos por cuenta PUC', 'href' => '/app/contabilidad', 'listo' => true, 'familia' => 'Estados', 'siigo_ok' => true, 'export' => 'Excel'],
+                ['nombre' => 'Panel contable',          'desc' => 'KPIs, top cuentas y por origen', 'href' => '/app/contabilidad/panel', 'listo' => true, 'familia' => 'Estados', 'siigo_ok' => true, 'export' => null],
+                ['nombre' => 'Libro diario',            'desc' => 'Todos los asientos cronológicos del mes', 'href' => '/app/cartera/movimientos', 'listo' => true, 'familia' => 'Auxiliares', 'siigo_ok' => true, 'export' => 'Excel'],
+                ['nombre' => 'Movimientos por cuenta',  'desc' => 'Filtra por prefijo PUC (ej. 1305 clientes)', 'href' => '/app/cartera/movimientos?cuenta=1305', 'listo' => true, 'familia' => 'Auxiliares', 'siigo_ok' => true, 'export' => 'Excel'],
+                ['nombre' => 'Facturas emitidas',       'desc' => 'Ventas del periodo', 'href' => '/app/facturas', 'listo' => true, 'familia' => 'Auxiliares', 'siigo_ok' => true, 'export' => 'PDF+Excel'],
+                ['nombre' => 'Pagos recibidos',         'desc' => 'Ingresos del periodo', 'href' => '/app/pagos', 'listo' => true, 'familia' => 'Auxiliares', 'siigo_ok' => true, 'export' => 'Excel'],
+                ['nombre' => 'Compras del periodo',     'desc' => 'OCs recibidas', 'href' => '/app/compras/reporte', 'listo' => true, 'familia' => 'Auxiliares', 'siigo_ok' => true, 'export' => 'Excel'],
+                ['nombre' => 'Retenciones (RETEFTE + RETEIVA + RETEICA)', 'desc' => 'Base para declaración DIAN · cuentas 2365/2367/2368', 'href' => '/app/cartera/movimientos?cuentas=2365,2367,2368', 'listo' => true, 'familia' => 'Impuestos', 'siigo_ok' => true, 'export' => 'Excel'],
+                ['nombre' => 'Balance general',         'desc' => 'Activo/Pasivo/Patrimonio (por familia PUC)', 'href' => null, 'listo' => false, 'familia' => 'Estados', 'siigo_ok' => false, 'export' => null],
+                ['nombre' => 'Estado de resultados',    'desc' => 'Ingresos vs egresos con margen', 'href' => null, 'listo' => false, 'familia' => 'Estados', 'siigo_ok' => false, 'export' => null],
+            ],
+            // Sprint 3 · F.4 · info de sync SIIGO al hub.
+            'siigo_estado' => [
+                'push_activo' => \App\Modules\Siigo\Models\SiigoConfig::pushAutoActivo(),
+                'ambiente' => optional(\App\Modules\Siigo\Models\SiigoConfig::query()->first())->ambiente ?? 'sandbox',
+                'ultima_sync_productos' => optional(\App\Modules\Siigo\Models\SiigoConfig::query()->first()?->sync_productos_at)->diffForHumans(),
             ],
         ]);
     }

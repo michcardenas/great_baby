@@ -1,7 +1,7 @@
 <script setup>
 import { ref, reactive } from 'vue';
 import { Head, Link, router } from '@inertiajs/vue3';
-import { ArrowLeftRight, Plus, ExternalLink } from 'lucide-vue-next';
+import { ArrowLeftRight, Plus, ExternalLink, Ban, Truck, CheckCircle } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import { useEscClose } from '@/composables/useEscClose';
 import { useFecha } from '@/composables/useFecha';
@@ -45,6 +45,46 @@ const badge = (e) => ({
 
 const filtroEstado = ref(props.filtros.estado || '');
 const aplicarFiltro = () => router.get('/app/inventario/traslados', { estado: filtroEstado.value || undefined }, { preserveState: true, preserveScroll: true });
+
+// Sprint 3 · A.5 · acciones por fila (enviar, recibir, anular).
+const enviando = ref(null);
+const recibiendo = ref(null);
+const anulando = ref(null);
+
+const enviar = (t) => {
+    if (! confirm(`¿Enviar traslado ${t.numero}?\n\nSale de ${t.origen} · queda EN TRÁNSITO.`)) return;
+    enviando.value = t.id;
+    router.post(`/app/inventario/traslados/${t.id}/enviar`, {}, {
+        preserveScroll: true,
+        onFinish: () => { enviando.value = null; },
+    });
+};
+
+const recibir = (t) => {
+    if (! confirm(`¿Confirmar recepción del traslado ${t.numero}?\n\nEntra a bodega ${t.destino}. Genera asiento SIIGO automático.`)) return;
+    recibiendo.value = t.id;
+    router.post(`/app/inventario/traslados/${t.id}/recibir`, {}, {
+        preserveScroll: true,
+        onFinish: () => { recibiendo.value = null; },
+    });
+};
+
+const anular = (t) => {
+    const motivo = prompt(`Motivo de anulación del traslado ${t.numero}\n(mínimo 10 caracteres):`);
+    if (! motivo || motivo.trim().length < 10) {
+        if (motivo !== null) alert('El motivo debe tener al menos 10 caracteres.');
+        return;
+    }
+    anulando.value = t.id;
+    router.post(`/app/inventario/traslados/${t.id}/anular`, { motivo }, {
+        preserveScroll: true,
+        onFinish: () => { anulando.value = null; },
+    });
+};
+
+const puedeEnviar = (t) => t.estado === 'borrador';
+const puedeRecibir = (t) => t.estado === 'en_transito';
+const puedeAnular = (t) => ['borrador', 'en_transito'].includes(t.estado);
 </script>
 
 <template>
@@ -87,7 +127,7 @@ const aplicarFiltro = () => router.get('/app/inventario/traslados', { estado: fi
                             <th class="text-left p-3">Solicitante</th>
                             <th class="text-left p-3">Fecha</th>
                             <th class="text-center p-3">Estado</th>
-                            <th class="text-center p-3">Abrir</th>
+                            <th class="text-right p-3">Acciones</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y">
@@ -101,10 +141,28 @@ const aplicarFiltro = () => router.get('/app/inventario/traslados', { estado: fi
                             <td class="p-3 text-center">
                                 <span :class="['inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase', badge(t.estado)]">{{ t.estado }}</span>
                             </td>
-                            <td class="p-3 text-center">
-                                <Link :href="`/app/inventario/traslados/${t.id}`" class="text-brand-600 hover:underline inline-flex items-center gap-1 text-xs">
-                                    <ExternalLink class="h-3 w-3" /> Abrir
+                            <td class="p-3 text-right whitespace-nowrap">
+                                <Link :href="`/app/inventario/traslados/${t.id}`" class="text-brand-600 hover:text-brand-700 p-1 inline-block" title="Abrir">
+                                    <ExternalLink class="h-4 w-4"/>
                                 </Link>
+                                <button v-if="puedeEnviar(t)" @click="enviar(t)" :disabled="enviando === t.id"
+                                        class="text-blue-600 hover:text-blue-700 p-1"
+                                        :class="enviando === t.id ? 'opacity-50 cursor-wait' : ''"
+                                        title="Enviar (poner en tránsito)">
+                                    <Truck class="h-4 w-4"/>
+                                </button>
+                                <button v-if="puedeRecibir(t)" @click="recibir(t)" :disabled="recibiendo === t.id"
+                                        class="text-emerald-600 hover:text-emerald-700 p-1"
+                                        :class="recibiendo === t.id ? 'opacity-50 cursor-wait' : ''"
+                                        title="Recibir (confirmar entrada)">
+                                    <CheckCircle class="h-4 w-4"/>
+                                </button>
+                                <button v-if="puedeAnular(t)" @click="anular(t)" :disabled="anulando === t.id"
+                                        class="text-red-500 hover:text-red-700 p-1"
+                                        :class="anulando === t.id ? 'opacity-50 cursor-wait' : ''"
+                                        title="Anular traslado">
+                                    <Ban class="h-4 w-4"/>
+                                </button>
                             </td>
                         </tr>
                     </tbody>

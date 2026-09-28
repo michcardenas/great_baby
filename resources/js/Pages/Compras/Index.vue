@@ -1,7 +1,10 @@
 <script setup>
 import { ref } from 'vue';
-import { Head, Link } from '@inertiajs/vue3';
-import { ShoppingCart, Ship, Package, DollarSign, Plus, Globe } from 'lucide-vue-next';
+import { Head, Link, router } from '@inertiajs/vue3';
+import {
+    ShoppingCart, Ship, Package, DollarSign, Plus, Globe,
+    Eye, Copy, Ban, Truck, Cloud, RefreshCw,
+} from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import KpiCard from '@/Components/KpiCard.vue';
 import { useMoney } from '@/composables/useMoney';
@@ -15,7 +18,6 @@ const props = defineProps({
     recepciones: { type: Array, required: true },
 });
 const tabAct = ref(props.tab);
-// Re-audit M2 UX-C2 · useMoney en vez de fmtCOP inline.
 const { money } = useMoney();
 
 const badge = (color) => ({
@@ -24,7 +26,53 @@ const badge = (color) => ({
     danger: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200',
     info: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200',
     gray: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200',
+    amber: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200',
+    emerald: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200',
 }[color] || 'bg-slate-100');
+
+// Sprint 3 · A.1 · Acciones CRUD por fila de OC.
+const anulando = ref(null);
+const duplicando = ref(null);
+
+const duplicar = (o) => {
+    if (! confirm(`¿Duplicar OC ${o.numero}?\n\nSe crea una nueva OC en borrador con los mismos ítems y proveedor.`)) return;
+    duplicando.value = o.id;
+    router.post(`/app/compras/oc/${o.id}/duplicar`, {}, {
+        preserveScroll: true,
+        onFinish: () => { duplicando.value = null; },
+    });
+};
+
+const anular = (o) => {
+    const motivo = prompt(`Motivo de anulación de OC ${o.numero}\n(mínimo 10 caracteres):`);
+    if (! motivo || motivo.trim().length < 10) {
+        if (motivo !== null) alert('El motivo debe tener al menos 10 caracteres.');
+        return;
+    }
+    anulando.value = o.id;
+    router.post(`/app/compras/oc/${o.id}/anular`, { motivo }, {
+        preserveScroll: true,
+        onFinish: () => { anulando.value = null; },
+    });
+};
+
+// Sprint 3 · D.1 · reenviar recepción a SIIGO.
+const reenviandoSiigo = ref(null);
+const reenviarSiigoRecepcion = (r) => {
+    if (! confirm(`¿Reenviar recepción ${r.orden_numero} a SIIGO?\n\nEsto encola un nuevo push manual (bypasea el kill-switch).`)) return;
+    reenviandoSiigo.value = r.id;
+    router.post(`/app/compras/oc/${r.orden_id}/reenviar-siigo`, {}, {
+        preserveScroll: true,
+        onFinish: () => { reenviandoSiigo.value = null; },
+    });
+};
+
+const iconoSiigo = (color) => ({
+    emerald: '🟢',
+    amber: '🟡',
+    red: '🔴',
+    gray: '⚪',
+}[color] || '⚪');
 </script>
 
 <template>
@@ -39,7 +87,6 @@ const badge = (color) => ({
                     </h1>
                     <p class="text-sm text-surface-500 mt-1">Órdenes de compra, contenedores, recepciones a bodega.</p>
                 </div>
-                <!-- Re-audit M2 UX-M8 · CTAs principales visibles desde Index. -->
                 <div class="flex gap-2 flex-wrap">
                     <Link href="/app/compras/oc/nueva" class="btn-primary text-sm">
                         <Plus class="h-4 w-4"/> Nueva OC
@@ -71,11 +118,11 @@ const badge = (color) => ({
                 </button>
             </div>
 
-            <!-- Órdenes -->
+            <!-- Órdenes con acciones CRUD -->
             <div v-if="tabAct==='ordenes'" class="card overflow-hidden">
                 <div v-if="!ordenes.length" class="text-center py-12 text-surface-500 text-sm">Sin órdenes de compra registradas.</div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full min-w-[800px] text-sm">
+                    <table class="w-full min-w-[900px] text-sm">
                         <thead class="bg-surface-50 dark:bg-surface-900"><tr class="text-surface-500 text-xs uppercase">
                             <th class="text-left px-4 py-2">Número</th>
                             <th class="text-left">Proveedor</th>
@@ -84,6 +131,7 @@ const badge = (color) => ({
                             <th class="text-right">Esperada</th>
                             <th class="text-right">Total</th>
                             <th class="text-center">Estado</th>
+                            <th class="text-right pr-4">Acciones</th>
                         </tr></thead>
                         <tbody>
                             <tr v-for="o in ordenes" :key="o.id" class="border-t border-surface-100 dark:border-surface-900 hover:bg-surface-50 dark:hover:bg-surface-900/50">
@@ -96,6 +144,20 @@ const badge = (color) => ({
                                 <td class="text-right text-surface-500 text-xs">{{ fechaCorta(o.fecha_esperada) }}</td>
                                 <td class="text-right font-bold font-mono">{{ money(o.total) }}</td>
                                 <td class="text-center"><span :class="['px-2 py-0.5 rounded text-xs font-bold', badge(o.estado_color)]">{{ o.estado_label }}</span></td>
+                                <td class="text-right pr-4 whitespace-nowrap">
+                                    <Link :href="`/app/compras/oc/${o.id}`" class="text-brand-600 hover:text-brand-700 p-1 inline-block" title="Ver detalle">
+                                        <Eye class="h-4 w-4"/>
+                                    </Link>
+                                    <button v-if="o.puede_recibir" @click="router.get(`/app/compras/recepcion/nueva?oc=${o.id}`)" class="text-emerald-600 hover:text-emerald-700 p-1" title="Recibir mercancía">
+                                        <Truck class="h-4 w-4"/>
+                                    </button>
+                                    <button v-if="o.puede_duplicar" @click="duplicar(o)" :disabled="duplicando === o.id" class="text-blue-600 hover:text-blue-700 p-1" :class="duplicando === o.id ? 'opacity-50 cursor-wait' : ''" title="Duplicar">
+                                        <Copy class="h-4 w-4"/>
+                                    </button>
+                                    <button v-if="o.puede_anular" @click="anular(o)" :disabled="anulando === o.id" class="text-red-500 hover:text-red-700 p-1" :class="anulando === o.id ? 'opacity-50 cursor-wait' : ''" title="Anular OC">
+                                        <Ban class="h-4 w-4"/>
+                                    </button>
+                                </td>
                             </tr>
                         </tbody>
                     </table>
@@ -138,17 +200,19 @@ const badge = (color) => ({
                 </div>
             </div>
 
-            <!-- Recepciones -->
+            <!-- Recepciones · con badge SIIGO y botón reenviar (D.1) -->
             <div v-if="tabAct==='recepciones'" class="card overflow-hidden">
                 <div v-if="!recepciones.length" class="text-center py-12 text-surface-500 text-sm">Sin recepciones registradas.</div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full min-w-[600px] text-sm">
+                    <table class="w-full min-w-[900px] text-sm">
                         <thead class="bg-surface-50 dark:bg-surface-900"><tr class="text-surface-500 text-xs uppercase">
                             <th class="text-left px-4 py-2">Fecha</th>
                             <th class="text-left">OC</th>
                             <th class="text-left">Estado</th>
                             <th class="text-left">Recibió</th>
+                            <th class="text-left">SIIGO</th>
                             <th class="text-left">Observaciones</th>
+                            <th class="text-right pr-4">Acciones</th>
                         </tr></thead>
                         <tbody>
                             <tr v-for="r in recepciones" :key="r.id" class="border-t border-surface-100 dark:border-surface-900 hover:bg-surface-50 dark:hover:bg-surface-900/50">
@@ -160,7 +224,24 @@ const badge = (color) => ({
                                     <span class="px-2 py-0.5 rounded text-xs font-bold" :class="r.estado === 'confirmada' ? badge('success') : badge('warning')">{{ r.estado }}</span>
                                 </td>
                                 <td class="text-xs">{{ r.receptor }}</td>
-                                <td class="text-xs text-surface-500 max-w-md truncate" :title="r.observaciones">{{ r.observaciones || '—' }}</td>
+                                <td class="text-xs">
+                                    <span :title="`Estado sync SIIGO · ${r.siigo_sync_hace || 'sin sincronizar'}`">
+                                        {{ iconoSiigo(r.siigo_color) }}
+                                        <span v-if="r.siigo_number" class="font-mono text-brand-600 ml-1">{{ r.siigo_number }}</span>
+                                        <span v-else class="text-surface-400 ml-1">pendiente</span>
+                                    </span>
+                                </td>
+                                <td class="text-xs text-surface-500 max-w-xs truncate" :title="r.observaciones">{{ r.observaciones || '—' }}</td>
+                                <td class="text-right pr-4 whitespace-nowrap">
+                                    <Link :href="`/app/compras/recepcion/${r.id}`" class="text-brand-600 hover:text-brand-700 p-1 inline-block" title="Ver detalle">
+                                        <Eye class="h-4 w-4"/>
+                                    </Link>
+                                    <button v-if="r.puede_reenviar_siigo" @click="reenviarSiigoRecepcion(r)" :disabled="reenviandoSiigo === r.id"
+                                            class="text-blue-600 hover:text-blue-700 p-1" :class="reenviandoSiigo === r.id ? 'opacity-50 cursor-wait' : ''"
+                                            title="Reenviar a SIIGO">
+                                        <RefreshCw :class="['h-4 w-4', reenviandoSiigo === r.id ? 'animate-spin' : '']"/>
+                                    </button>
+                                </td>
                             </tr>
                         </tbody>
                     </table>

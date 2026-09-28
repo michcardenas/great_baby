@@ -1,7 +1,7 @@
 <script setup>
 import { ref, watch, computed, nextTick } from 'vue';
 import { Head, router, Link } from '@inertiajs/vue3';
-import { FileSearch, ArrowLeft, Search, AlertTriangle, Eye, EyeOff } from 'lucide-vue-next';
+import { FileSearch, ArrowLeft, Search, AlertTriangle, Eye, EyeOff, Cloud, CloudOff, ExternalLink } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import { useMoney } from '@/composables/useMoney';
 import { pucLabel } from '@/composables/pucLabels';
@@ -122,6 +122,39 @@ const tieneMeta = computed(() => props.meta && props.meta.numero);
                     <div v-if="meta.fecha"><span class="text-surface-500">Fecha:</span> {{ fechaCorta(meta.fecha) }}</div>
                     <div v-if="meta.tercero !== '—'"><span class="text-surface-500">Tercero:</span> {{ meta.tercero }}</div>
                     <div v-if="meta.total"><span class="text-surface-500">Total:</span> <span class="font-bold">{{ money(meta.total) }}</span></div>
+                </div>
+
+                <!-- Sprint 3 · F.3 · badge SIIGO del documento origen -->
+                <div class="mt-3 pt-3 border-t flex items-start gap-3">
+                    <template v-if="meta.siigo_id">
+                        <Cloud class="h-5 w-5 text-emerald-600 mt-0.5 flex-shrink-0"/>
+                        <div class="flex-1 text-sm">
+                            <div class="font-semibold text-emerald-700 flex items-center gap-2">
+                                Sincronizado con SIIGO
+                                <span v-if="meta.es_electronica && meta.stamp_status" class="text-[10px] uppercase font-bold px-2 py-0.5 rounded"
+                                      :class="meta.stamp_status.toLowerCase() === 'accepted' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'">
+                                    DIAN {{ meta.stamp_status }}
+                                </span>
+                            </div>
+                            <div class="text-xs text-surface-500 mt-1">
+                                <span v-if="meta.siigo_numero">Nº <span class="font-mono">{{ meta.siigo_numero }}</span> · </span>
+                                <span v-if="meta.siigo_sync_hace">{{ meta.siigo_sync_hace }}</span>
+                            </div>
+                            <div v-if="meta.cufe" class="text-[10px] font-mono text-surface-400 mt-1 truncate max-w-lg" :title="meta.cufe">
+                                CUFE: {{ meta.cufe.slice(0, 32) }}…
+                            </div>
+                        </div>
+                    </template>
+                    <template v-else>
+                        <CloudOff class="h-5 w-5 text-amber-600 mt-0.5 flex-shrink-0"/>
+                        <div class="flex-1 text-sm">
+                            <div class="font-semibold text-amber-700">Pendiente de sincronizar con SIIGO</div>
+                            <div class="text-xs text-surface-500 mt-1">
+                                El documento existe en el ERP pero aún no tiene contraparte en SIIGO.
+                                Verifica el <a href="/app/siigo" class="text-brand-600 underline">panel de sync SIIGO</a> para ver estado o reintentar.
+                            </div>
+                        </div>
+                    </template>
                 </div>
             </div>
 

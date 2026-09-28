@@ -1,7 +1,7 @@
 <script setup>
 import { ref, reactive } from 'vue';
 import { Head, Link, router } from '@inertiajs/vue3';
-import { ClipboardList, Plus, ExternalLink } from 'lucide-vue-next';
+import { ClipboardList, Plus, ExternalLink, Trash2, Ban } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import { useEscClose } from '@/composables/useEscClose';
 import { useFecha } from '@/composables/useFecha';
@@ -40,6 +40,35 @@ const badge = (e) => ({
     ajustada: 'bg-emerald-100 text-emerald-800',
     anulada: 'bg-red-100 text-red-800',
 }[e] || 'bg-surface-100');
+
+// Sprint 3 · A.4 · acciones eliminar/anular por fila.
+const eliminando = ref(null);
+const anulando = ref(null);
+
+const eliminar = (t) => {
+    if (! confirm(`¿Eliminar toma ${t.numero}?\n\nSolo se permite si está en BORRADOR y no tiene items contados.`)) return;
+    eliminando.value = t.id;
+    router.delete(`/app/inventario/conteos/${t.id}`, {
+        preserveScroll: true,
+        onFinish: () => { eliminando.value = null; },
+    });
+};
+
+const anular = (t) => {
+    const motivo = prompt(`Motivo de anulación de la toma ${t.numero}\n(mínimo 10 caracteres):`);
+    if (! motivo || motivo.trim().length < 10) {
+        if (motivo !== null) alert('El motivo debe tener al menos 10 caracteres.');
+        return;
+    }
+    anulando.value = t.id;
+    router.post(`/app/inventario/conteos/${t.id}/anular`, { motivo }, {
+        preserveScroll: true,
+        onFinish: () => { anulando.value = null; },
+    });
+};
+
+const puedeEliminar = (t) => t.estado === 'borrador' && (t.items_diferentes || 0) === 0;
+const puedeAnular = (t) => ['borrador', 'en_conteo'].includes(t.estado);
 </script>
 
 <template>
@@ -71,7 +100,7 @@ const badge = (e) => ({
                             <th class="text-left p-3">Fecha</th>
                             <th class="text-right p-3">Diferencias</th>
                             <th class="text-center p-3">Estado</th>
-                            <th class="text-center p-3">Abrir</th>
+                            <th class="text-right p-3">Acciones</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y">
@@ -86,10 +115,22 @@ const badge = (e) => ({
                             <td class="p-3 text-center">
                                 <span :class="['inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase', badge(t.estado)]">{{ t.estado }}</span>
                             </td>
-                            <td class="p-3 text-center">
-                                <Link :href="`/app/inventario/conteos/${t.id}`" class="text-brand-600 hover:underline inline-flex items-center gap-1 text-xs">
-                                    <ExternalLink class="h-3 w-3"/> Abrir
+                            <td class="p-3 text-right whitespace-nowrap">
+                                <Link :href="`/app/inventario/conteos/${t.id}`" class="text-brand-600 hover:text-brand-700 p-1 inline-block" title="Abrir">
+                                    <ExternalLink class="h-4 w-4"/>
                                 </Link>
+                                <button v-if="puedeAnular(t)" @click="anular(t)" :disabled="anulando === t.id"
+                                        class="text-amber-600 hover:text-amber-700 p-1"
+                                        :class="anulando === t.id ? 'opacity-50 cursor-wait' : ''"
+                                        title="Anular toma en curso">
+                                    <Ban class="h-4 w-4"/>
+                                </button>
+                                <button v-if="puedeEliminar(t)" @click="eliminar(t)" :disabled="eliminando === t.id"
+                                        class="text-red-500 hover:text-red-700 p-1"
+                                        :class="eliminando === t.id ? 'opacity-50 cursor-wait' : ''"
+                                        title="Eliminar toma vacía">
+                                    <Trash2 class="h-4 w-4"/>
+                                </button>
                             </td>
                         </tr>
                     </tbody>

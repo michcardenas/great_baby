@@ -7,7 +7,7 @@ import {
     FileText, Users, Truck, Settings, Bell, Search, LogOut,
     Menu as MenuIcon, X, ChevronDown, Home, BarChart3, MessageSquare,
     Boxes, Camera, Scissors, Wallet, MapPin, AlertTriangle, Radio, Upload,
-    Undo2, ScanLine,
+    Undo2, ScanLine, Tag, Layers,
 } from 'lucide-vue-next';
 import CommandPalette from '@/Components/CommandPalette.vue';
 import CopilotoChat from '@/Components/CopilotoChat.vue';
@@ -95,6 +95,16 @@ const groups = [
             { name: 'Cobranzas registros', href: '/app/cartera/cobranzas', icon: MessageSquare },
             { name: 'Solicitudes crédito', href: '/app/cartera/solicitudes', icon: FileText },
             { name: 'Movimientos contables', href: '/app/cartera/movimientos', icon: Calculator },
+            // Sprint 4 · B.3 · reglas retención tributaria
+            { name: 'Retenciones (Retefuente/Reteica/Reteiva)', href: '/app/cartera/retenciones', icon: Calculator },
+            // Sprint 4 · B.1 · NC manuales
+            { name: 'Notas crédito', href: '/app/cartera/notas-credito', icon: FileText },
+            // Sprint 4 · B.2 · ND manuales
+            { name: 'Notas débito', href: '/app/cartera/notas-debito', icon: FileText },
+            // Sprint 4 · B.4 · Asientos manuales (bajo CARTERA por afinidad; ideal bajo Contabilidad)
+            { name: 'Asientos manuales', href: '/app/contabilidad/asientos-manuales', icon: FileText },
+            // Sprint 4 · B.3+ · Pagos a proveedor con retenciones
+            { name: 'Pagos a proveedor', href: '/app/cartera/pagos-proveedor', icon: FileText },
             { name: 'Pedidos B2B', href: '/app/pedidos-b2b', icon: Package, badge: 'pedidosB2BPend' },
         ],
     },
@@ -121,6 +131,8 @@ const groups = [
         items: [
             { name: 'Compras · Órdenes', href: '/app/compras', icon: ShoppingCart },
             { name: 'Compras · Nueva OC', href: '/app/compras/oc/nueva', icon: ShoppingCart },
+            // Sprint 4 · A.3 · Importaciones (contenedores + nacionalización)
+            { name: 'Importaciones · contenedores', href: '/app/compras/importacion', icon: ShoppingCart },
             { name: 'Compras · Reporte', href: '/app/compras/reporte', icon: BarChart3 },
             { name: 'Inventario · Stock', href: '/app/inventario', icon: Warehouse },
             { name: 'Inventario · Kardex', href: '/app/inventario/kardex', icon: Warehouse },
@@ -131,6 +143,11 @@ const groups = [
             { name: '📥 Importar inventario del cliente', href: '/app/inventario/importar-cliente', icon: Warehouse },
             { name: 'Contabilidad', href: '/app/contabilidad', icon: Calculator },
             { name: 'Contabilidad · Panel', href: '/app/contabilidad/panel', icon: Calculator },
+            { name: 'Contabilidad · Plan de cuentas (PUC)', href: '/app/contabilidad/plan-cuentas', icon: FileText },
+            // Sprint 4 · G.3 · CRUD Productos con 4 pestañas SIIGO (Kardex Referencias).
+            { name: 'Catálogo · Productos (SIIGO)', href: '/app/catalogo/productos', icon: Package },
+            // Sprint 4 · G.2 · CRUD Línea/Grupo/Subgrupo/Clase.
+            { name: 'Catálogo · Jerarquía SIIGO', href: '/app/catalogo/jerarquia-siigo', icon: Tag },
             { name: 'Contabilidad · Reportes (9)', href: '/app/contabilidad/reportes', icon: BarChart3 },
             { name: 'Contabilidad · Detalle', href: '/app/contabilidad/reporte-detalle', icon: FileText },
         ],

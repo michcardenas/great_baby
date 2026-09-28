@@ -65,6 +65,21 @@ class ProductoVariante extends Model
     public function precios(): HasMany { return $this->hasMany(PrecioVariante::class, 'variante_id'); }
 
     /**
+     * B3-P1 · precios vigentes (sin `vigente_hasta` o con fecha ≥ hoy),
+     * ordenados por lista_id · usado por el eager de PayloadBuilder para
+     * evitar N+1 en sync SIIGO granular.
+     */
+    public function preciosVigentes(): HasMany
+    {
+        return $this->hasMany(PrecioVariante::class, 'variante_id')
+            ->where(function ($q) {
+                $q->whereNull('vigente_hasta')
+                  ->orWhere('vigente_hasta', '>=', now()->toDateString());
+            })
+            ->orderBy('lista_id');
+    }
+
+    /**
      * §9 Diseño Dropi — Generar código de barras propio de la variante.
      * [Referencia] - [ColorCodigo][DiseñoCodigo] - [Talla]
      */

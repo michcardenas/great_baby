@@ -78,6 +78,11 @@ final class Permisos
         'productos'        => ['Gerente'],
         'ubicaciones'      => ['Gerente'],
         'importar_productos' => ['Gerente'],
+        // B3-A5 · llave dedicada para el botón «Sincronizar con SIIGO»
+        // (push MANUAL desde ProductoResource). Consume rate limit real y
+        // afecta contabilidad en SIIGO, así que la lista es más corta que
+        // la del CRUD de productos. Root siempre bypasea.
+        'productos.push_siigo' => ['Gerente'],
 
         // BANDEJAS + IMPORTACIONES
         'bandeja_importaciones' => ['Gerente', 'Contador', 'Alistador', 'ServicioCliente'],

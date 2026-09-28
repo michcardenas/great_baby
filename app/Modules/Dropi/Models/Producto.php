@@ -34,6 +34,13 @@ class Producto extends Model implements AuditableContract, HasMedia
         'copy_comercial', 'specs_json', 'keywords_seo', 'beneficios',
         // C-F1 · Desglose dual de stock
         'desglose_stock', 'stock_directo',
+        // Sprint 4 · G.1 · Campos SIIGO Kardex Referencias
+        'linea_id', 'grupo_id', 'subgrupo_id', 'clase_id',
+        'posicion_arancelaria', 'unidad_compra_id', 'factor_conversion',
+        'rentabilidad_pct', 'reposicion_max_dias', 'descuento_default_pct',
+        'descripcion_ampliada', 'ficha_tecnica',
+        'proteger_precio', 'maneja_lotes', 'maneja_seriales', 'es_estadistico',
+        'valor_gasto_venta_niif', 'valor_neto_realizable_niif',
     ];
 
     protected $casts = [
@@ -49,9 +56,38 @@ class Producto extends Model implements AuditableContract, HasMedia
         // C-F1 · Desglose dual
         'desglose_stock' => 'boolean',
         'stock_directo' => 'decimal:4',
+        // Sprint 4 · G.1 SIIGO
+        'factor_conversion' => 'decimal:4',
+        'rentabilidad_pct' => 'decimal:2',
+        'descuento_default_pct' => 'decimal:2',
+        'valor_gasto_venta_niif' => 'decimal:2',
+        'valor_neto_realizable_niif' => 'decimal:2',
+        'proteger_precio' => 'boolean',
+        'maneja_lotes' => 'boolean',
+        'maneja_seriales' => 'boolean',
+        'es_estadistico' => 'boolean',
     ];
 
     public function variantes(): HasMany { return $this->hasMany(ProductoVariante::class); }
+
+    // Sprint 4 · G.1 · Maestras SIIGO Kardex Referencias.
+    public function linea() { return $this->belongsTo(\App\Modules\Catalogo\Models\CatalogoLinea::class, 'linea_id'); }
+    public function grupo() { return $this->belongsTo(\App\Modules\Catalogo\Models\CatalogoGrupo::class, 'grupo_id'); }
+    public function subgrupo() { return $this->belongsTo(\App\Modules\Catalogo\Models\CatalogoSubgrupo::class, 'subgrupo_id'); }
+    public function clase() { return $this->belongsTo(\App\Modules\Catalogo\Models\CatalogoClase::class, 'clase_id'); }
+    public function unidadCompra() { return $this->belongsTo(\App\Modules\Catalogo\Models\UnidadMedida::class, 'unidad_compra_id'); }
+
+    // M:M para accesorios (facturados con el producto) y sustitutos (alternativas).
+    public function accesorios()
+    {
+        return $this->belongsToMany(self::class, 'producto_accesorios', 'producto_id', 'accesorio_id')
+            ->withPivot('cantidad_default')->withTimestamps();
+    }
+    public function sustitutos()
+    {
+        return $this->belongsToMany(self::class, 'producto_sustitutos', 'producto_id', 'sustituto_id')
+            ->withTimestamps();
+    }
 
     /**
      * C-F1 · Movimientos de kardex del producto (granular O agregado).

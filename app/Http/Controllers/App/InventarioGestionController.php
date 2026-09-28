@@ -32,7 +32,11 @@ class InventarioGestionController extends Controller implements HasMiddleware
     public function kardex(Request $request): Response
     {
         $codigo = trim((string) $request->input('codigo', ''));
-        $variante = null; $movimientos = []; $saldoTotal = 0;
+        $variante = null;
+        $movimientos = [];
+        $saldoTotal = 0;
+        $costoPromedio = 0;
+        $valorStock = 0;
 
         if ($codigo) {
             $variante = ProductoVariante::with('producto:id,referencia,nombre')
@@ -40,35 +44,72 @@ class InventarioGestionController extends Controller implements HasMiddleware
                 ->orWhereHas('producto', fn ($p) => $p->where('referencia', $codigo))
                 ->first();
             if ($variante) {
-                // Re-audit M3 λ (SEG-M6) · Alistador sólo ve movs de sus bodegas
-                //   asignadas. Aracely/Gerencia ve todo.
                 $u = $request->user();
                 $q = InventarioMovimiento::where('variante_id', $variante->id)
                     ->with('ubicacion:id,codigo,nombre');
                 if (! $u->esAracely()) {
                     $bodegas = $u->bodegasAsignadasIds();
                     if (empty($bodegas)) {
-                        $q->whereRaw('1=0'); // fail-closed: sin bodegas asignadas → nada
+                        $q->whereRaw('1=0');
                     } else {
                         $q->whereIn('ubicacion_id', $bodegas);
                     }
                 }
                 $movs = $q->orderBy('created_at')->limit(500)->get();
-                $saldo = 0;
-                $movimientos = $movs->map(function ($m) use (&$saldo) {
-                    $saldo += (int) $m->cantidad;
+
+                // Sprint 3 · Kardex FORMATO SIIGO · calcula:
+                //   1. Costo promedio ponderado tras cada entrada.
+                //   2. Valor de cada movimiento (cantidad × costo).
+                //   3. Valor total inventario tras cada movimiento (saldo × costo_prom).
+                //   4. Documento origen con label legible + link.
+                //   5. Estado sync SIIGO (siigo_journal_id, color badge).
+                $saldo = 0; $costoProm = 0;
+                $movimientos = $movs->map(function ($m) use (&$saldo, &$costoProm) {
+                    $cantidad = (int) $m->cantidad;
+                    $costoUnit = (float) ($m->costo_unit ?? 0);
+                    $valorMov = round(abs($cantidad) * $costoUnit, 2);
+
+                    // Costo promedio ponderado: solo se recalcula en ENTRADAS con costo.
+                    if ($cantidad > 0 && $costoUnit > 0) {
+                        $saldoAnterior = $saldo;
+                        $valorAnterior = $saldoAnterior * $costoProm;
+                        $valorNuevo = $valorAnterior + ($cantidad * $costoUnit);
+                        $saldoNuevo = $saldoAnterior + $cantidad;
+                        $costoProm = $saldoNuevo > 0 ? round($valorNuevo / $saldoNuevo, 4) : 0;
+                    }
+
+                    $saldo += $cantidad;
+                    $valorStock = round($saldo * $costoProm, 2);
+
+                    // SIIGO badge según siigo_journal_id.
+                    $siigoColor = $m->siigo_journal_id
+                        ? 'emerald'
+                        : (in_array($m->tipo, ['traslado_salida', 'traslado_entrada', 'merma', 'faltante', 'sobrante', 'ajuste_toma_fisica'], true) ? 'amber' : 'gray');
+
                     return [
                         'id' => $m->id,
                         'fecha' => $m->created_at?->format('Y-m-d H:i'),
                         'tipo' => $m->tipo,
                         'ubicacion' => $m->ubicacion?->codigo . ' · ' . $m->ubicacion?->nombre,
-                        'cantidad' => (int) $m->cantidad,
+                        'cantidad' => $cantidad,
+                        'costo_unit' => $costoUnit,
+                        'valor_mov' => $valorMov,
                         'saldo' => $saldo,
-                        'referencia' => $m->referencia_tipo ? class_basename($m->referencia_tipo) . '#' . $m->referencia_id : '—',
+                        'costo_prom' => $costoProm,
+                        'valor_stock' => $valorStock,
+                        'referencia_tipo' => $m->referencia_tipo ? class_basename($m->referencia_tipo) : null,
+                        'referencia_id' => $m->referencia_id,
+                        'referencia_label' => $this->labelReferencia($m->referencia_tipo, $m->referencia_id),
+                        'referencia_link' => $this->linkReferencia($m->referencia_tipo, $m->referencia_id),
                         'notas' => $m->notas,
+                        'siigo_journal_id' => $m->siigo_journal_id,
+                        'siigo_sync_hace' => $m->siigo_sync_at?->diffForHumans(),
+                        'siigo_color' => $siigoColor,
                     ];
                 });
                 $saldoTotal = $saldo;
+                $costoPromedio = $costoProm;
+                $valorStock = round($saldo * $costoProm, 2);
             }
         }
 
@@ -78,44 +119,100 @@ class InventarioGestionController extends Controller implements HasMiddleware
                 'id' => $variante->id, 'codigo' => $variante->codigo_barras,
                 'producto' => $variante->producto?->nombre, 'referencia' => $variante->producto?->referencia,
                 'detalle' => trim(($variante->color_nombre ?? '') . ' ' . ($variante->talla ?? '')),
+                'siigo_id' => $variante->siigo_id,
+                'siigo_code' => $variante->siigo_code,
             ] : null,
             'movimientos' => $movimientos,
             'saldoTotal' => $saldoTotal,
+            'costoPromedio' => $costoPromedio,
+            'valorStock' => $valorStock,
         ]);
+    }
+
+    /**
+     * Sprint 3 · Kardex SIIGO · label legible del documento origen.
+     */
+    private function labelReferencia(?string $tipo, ?int $id): string
+    {
+        if (! $tipo || ! $id) return '—';
+        return match (class_basename($tipo)) {
+            'RecepcionCompra' => "Recepción #{$id}",
+            'FacturaVenta' => "Factura #{$id}",
+            'Traslado' => "Traslado #{$id}",
+            'TomaFisica' => "Toma física #{$id}",
+            'DropiPedido' => "Pedido Dropi #{$id}",
+            default => class_basename($tipo) . " #{$id}",
+        };
+    }
+
+    /**
+     * Sprint 3 · Kardex SIIGO · link Vue al documento origen.
+     */
+    private function linkReferencia(?string $tipo, ?int $id): ?string
+    {
+        if (! $tipo || ! $id) return null;
+        return match (class_basename($tipo)) {
+            'RecepcionCompra' => "/app/compras/recepcion/{$id}",
+            'FacturaVenta' => "/app/cartera/facturas/{$id}",
+            'Traslado' => "/app/inventario/traslados/{$id}",
+            'TomaFisica' => "/app/inventario/conteos/{$id}",
+            default => null,
+        };
     }
 
     // ---------- REPORTE STOCK POR BODEGA/UBICACIÓN ----------
     public function reporteStock(): Response
     {
-        // Total unidades por ubicación (activa)
+        // Sprint 3 · F.2 · Reporte stock FORMATO SIIGO.
+        // Añade: valorización por bodega, costo promedio agregado, valor total inventario,
+        // costo promedio y valor por SKU en el top.
+
+        // Costo promedio por variante (basado en entradas con costo).
+        $costoPromedios = $this->calcularCostosPromedio();
+
+        // Total unidades por ubicación
         $saldos = InventarioMovimiento::selectRaw('ubicacion_id, SUM(cantidad) as total, COUNT(DISTINCT variante_id) as skus')
             ->groupBy('ubicacion_id')
             ->having('total', '!=', 0)
             ->get()->keyBy('ubicacion_id');
 
+        // Valorización por ubicación: Σ (saldo × costo_prom) por cada SKU en esa ubicación.
+        $valorPorUbicacion = $this->calcularValorPorUbicacion($costoPromedios);
+
         $ubicaciones = InventarioUbicacion::where('activa', true)->orderBy('codigo')->get()
-            ->map(function ($u) use ($saldos) {
+            ->map(function ($u) use ($saldos, $valorPorUbicacion) {
                 $r = $saldos->get($u->id);
                 return [
                     'codigo' => $u->codigo, 'nombre' => $u->nombre,
                     'categoria' => is_object($u->categoria) ? $u->categoria->value : $u->categoria,
                     'skus' => (int) ($r->skus ?? 0),
                     'unidades' => (int) ($r->total ?? 0),
+                    'valor' => (float) ($valorPorUbicacion[$u->id] ?? 0),
                 ];
             });
 
-        // Top 30 variantes con más stock
+        // Top 30 variantes con más stock · agregando costo_prom y valor
         $topStock = InventarioMovimiento::selectRaw('variante_id, SUM(cantidad) as total')
+            ->whereNotNull('variante_id')
             ->groupBy('variante_id')->having('total', '>', 0)->orderByDesc('total')->limit(30)->get();
 
-        $ids = $topStock->pluck('variante_id')->all();
+        $ids = $topStock->pluck('variante_id')->filter()->all();
         $vars = ProductoVariante::with('producto:id,referencia,nombre')->whereIn('id', $ids)->get()->keyBy('id');
 
-        $top = $topStock->map(fn ($r) => [
-            'codigo' => $vars[$r->variante_id]?->codigo_barras ?? '—',
-            'producto' => $vars[$r->variante_id]?->producto?->nombre ?? '—',
-            'total' => (int) $r->total,
-        ]);
+        $top = $topStock->map(function ($r) use ($vars, $costoPromedios) {
+            $vid = (int) $r->variante_id;
+            $v = $vars->get($vid);
+            $costoProm = (float) ($costoPromedios[$vid] ?? 0);
+            $total = (int) $r->total;
+            return [
+                'codigo' => $v?->codigo_barras ?? '—',
+                'producto' => $v?->producto?->nombre ?? '—',
+                'total' => $total,
+                'costo_prom' => $costoProm,
+                'valor' => round($total * $costoProm, 2),
+                'siigo_code' => $v?->siigo_code,
+            ];
+        });
 
         return Inertia::render('Inventario/ReporteStock', [
             'ubicaciones' => $ubicaciones->values(),
@@ -124,8 +221,49 @@ class InventarioGestionController extends Controller implements HasMiddleware
                 'ubicaciones_activas' => $ubicaciones->count(),
                 'unidades_totales' => (int) $ubicaciones->sum('unidades'),
                 'skus_con_stock' => $topStock->count(),
+                'valor_total_inventario' => (float) $ubicaciones->sum('valor'),
             ],
         ]);
+    }
+
+    /**
+     * Sprint 3 · F.2 · costo promedio ponderado por variante desde ENTRADAS
+     * (traversal 1× de inventario_movimientos con costo_unit > 0).
+     * Devuelve [variante_id => costo_prom].
+     */
+    private function calcularCostosPromedio(): array
+    {
+        $entradas = InventarioMovimiento::selectRaw(
+            'variante_id, SUM(cantidad * costo_unit) as valor_ent, SUM(cantidad) as cant_ent'
+        )
+            ->where('cantidad', '>', 0)
+            ->where('costo_unit', '>', 0)
+            ->groupBy('variante_id')
+            ->get()->keyBy('variante_id');
+
+        $out = [];
+        foreach ($entradas as $vid => $r) {
+            $out[$vid] = $r->cant_ent > 0 ? round((float) $r->valor_ent / (float) $r->cant_ent, 4) : 0;
+        }
+        return $out;
+    }
+
+    /**
+     * Sprint 3 · F.2 · valor de inventario por ubicación · Σ(saldo_variante × costo_prom).
+     * Devuelve [ubicacion_id => valor].
+     */
+    private function calcularValorPorUbicacion(array $costos): array
+    {
+        $saldos = InventarioMovimiento::selectRaw('ubicacion_id, variante_id, SUM(cantidad) as saldo')
+            ->groupBy('ubicacion_id', 'variante_id')
+            ->having('saldo', '>', 0)
+            ->get();
+        $out = [];
+        foreach ($saldos as $r) {
+            $costo = (float) ($costos[$r->variante_id] ?? 0);
+            $out[$r->ubicacion_id] = ($out[$r->ubicacion_id] ?? 0) + ((int) $r->saldo * $costo);
+        }
+        return array_map(fn ($v) => round($v, 2), $out);
     }
 
     // ---------- CONTEO FÍSICO ----------
@@ -388,6 +526,56 @@ class InventarioGestionController extends Controller implements HasMiddleware
         } catch (\Throwable $e) {
             return back()->with('error', $e->getMessage());
         }
+    }
+
+    /**
+     * Sprint 3 · A.4 · Elimina una toma que aún no ha empezado (estado=borrador,
+     * cero items contados). Preserva integridad contable: si hay conteos ya
+     * hechos, no elimina, sugerir anular en su lugar.
+     */
+    public function conteoEliminar(int $id): RedirectResponse
+    {
+        $toma = TomaFisica::findOrFail($id);
+        if ($toma->estado !== 'borrador') {
+            return back()->with('flash', [
+                'type' => 'error',
+                'message' => "Solo se pueden eliminar tomas en BORRADOR. Esta está {$toma->estado} · usa Anular.",
+            ]);
+        }
+        $contados = $toma->items()->whereNotNull('cantidad_contada')->count();
+        if ($contados > 0) {
+            return back()->with('flash', [
+                'type' => 'error',
+                'message' => "La toma tiene {$contados} items ya contados · usa Anular en vez de eliminar.",
+            ]);
+        }
+        $num = $toma->numero;
+        $toma->items()->delete();
+        $toma->delete();
+        return back()->with('flash', ['type' => 'success', 'message' => "Toma {$num} eliminada."]);
+    }
+
+    /**
+     * Sprint 3 · A.4 · Anula una toma en curso (estado=en_conteo).
+     * NO borra los items — deja registro de auditoría.
+     */
+    public function conteoAnular(Request $r, int $id): RedirectResponse
+    {
+        $data = $r->validate(['motivo' => ['required', 'string', 'min:10', 'max:300']]);
+        $toma = TomaFisica::findOrFail($id);
+
+        if (! in_array($toma->estado, ['borrador', 'en_conteo'], true)) {
+            return back()->with('flash', [
+                'type' => 'error',
+                'message' => "No se puede anular una toma {$toma->estado}.",
+            ]);
+        }
+
+        $toma->estado = 'anulada';
+        $toma->observaciones = trim(($toma->observaciones ?? '') . "\n[ANULADA " . now()->toDateString() . " por " . auth()->user()?->name . "] " . $data['motivo']);
+        $toma->save();
+
+        return back()->with('flash', ['type' => 'success', 'message' => "Toma {$toma->numero} anulada."]);
     }
 
     // ---------- ALERTAS CRUD ----------

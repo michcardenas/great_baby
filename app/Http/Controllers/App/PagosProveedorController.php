@@ -1,0 +1,139 @@
+<?php
+
+namespace App\Http\Controllers\App;
+
+use App\Http\Controllers\Controller;
+use App\Modules\Cartera\Actions\RegistrarPagoProveedor;
+use App\Modules\Cartera\Models\PagoProveedor;
+use App\Modules\Cartera\Services\CalculadorRetenciones;
+use App\Modules\Siigo\Jobs\PushPagoProveedorASiigo;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Illuminate\Routing\Controllers\HasMiddleware;
+use Illuminate\Routing\Controllers\Middleware;
+use Inertia\Inertia;
+use Inertia\Response;
+
+/**
+ * Sprint 4 · B.3+ · Pagos a proveedor con retenciones aplicadas automáticamente.
+ */
+class PagosProveedorController extends Controller implements HasMiddleware
+{
+    public static function middleware(): array
+    {
+        return [
+            new Middleware(function (Request $r, \Closure $next) {
+                abort_unless($r->user()?->esContable(), 403);
+                return $next($r);
+            }),
+        ];
+    }
+
+    public function index(Request $r): Response
+    {
+        $q = PagoProveedor::with(['proveedor:id,nombre_completo,ciudad,regimen_iva', 'retenciones']);
+        if ($busca = trim((string) $r->query('q', ''))) {
+            $q->whereHas('proveedor', fn ($qq) => $qq->where('nombre_completo', 'like', "%$busca%"));
+        }
+
+        return Inertia::render('Cartera/PagosProveedor', [
+            'filtros' => ['q' => $r->query('q', '')],
+            'pagos' => $q->orderByDesc('fecha')->orderByDesc('id')->paginate(25)->through(fn ($p) => [
+                'id' => $p->id,
+                'fecha' => $p->fecha->format('Y-m-d'),
+                'proveedor' => $p->proveedor?->nombre_completo,
+                'ciudad' => $p->proveedor?->ciudad,
+                'monto_bruto' => (float) $p->monto_bruto,
+                'iva' => (float) $p->iva,
+                'monto_retenciones' => (float) $p->monto_retenciones,
+                'monto_neto' => (float) $p->monto_neto,
+                'metodo' => $p->metodo,
+                'retenciones' => $p->retenciones->map(fn ($r) => [
+                    'tipo' => $r->tipo,
+                    'tarifa_pct' => (float) $r->tarifa_pct,
+                    'valor' => (float) $r->valor,
+                    'cuenta_puc' => $r->cuenta_puc,
+                ]),
+                'siigo_voucher_id' => $p->siigo_voucher_id,
+            ]),
+            'kpis' => [
+                'total_mes' => (float) PagoProveedor::whereMonth('fecha', now()->month)->whereYear('fecha', now()->year)->sum('monto_neto'),
+                'retenido_mes' => (float) PagoProveedor::whereMonth('fecha', now()->month)->whereYear('fecha', now()->year)->sum('monto_retenciones'),
+                'pagos_mes' => PagoProveedor::whereMonth('fecha', now()->month)->whereYear('fecha', now()->year)->count(),
+                'sin_siigo' => PagoProveedor::whereNull('siigo_voucher_id')->count(),
+            ],
+        ]);
+    }
+
+    public function crear(Request $r): RedirectResponse
+    {
+        $data = $r->validate([
+            'fecha' => ['required', 'date'],
+            'contacto_id' => ['required', 'integer', 'exists:contactos,id'],
+            'orden_compra_id' => ['nullable', 'integer'],
+            'monto_bruto' => ['required', 'numeric', 'min:0.01'],
+            'iva' => ['nullable', 'numeric', 'min:0'],
+            'concepto_retencion' => ['required', 'string', 'max:60'],
+            'ciudad' => ['nullable', 'string', 'max:100'],
+            'gran_contribuyente' => ['nullable', 'boolean'],
+            'metodo' => ['required', 'in:transferencia,efectivo,cheque'],
+            'cuenta_puc_egreso' => ['nullable', 'string', 'max:20'],
+            'observaciones' => ['nullable', 'string', 'max:500'],
+        ]);
+        $data['user_id'] = $r->user()->id;
+
+        $pago = RegistrarPagoProveedor::run($data);
+
+        return back()->with('flash', [
+            'type' => 'success',
+            'message' => "Pago #{$pago->id} registrado · bruto \$" . number_format($pago->monto_bruto, 2)
+                . " · retenido \$" . number_format($pago->monto_retenciones, 2)
+                . " · neto \$" . number_format($pago->monto_neto, 2) . " · encolado a SIIGO.",
+        ]);
+    }
+
+    // QA-FIX #7 · reenviar manualmente si el push automático falló.
+    public function reenviarSiigo(PagoProveedor $pagoProveedor): RedirectResponse
+    {
+        PushPagoProveedorASiigo::dispatchManual($pagoProveedor->id);
+        return back()->with('flash', ['type' => 'success', 'message' => "Pago #{$pagoProveedor->id} encolado a SIIGO."]);
+    }
+
+    // QA-FIX #11 · preview de retenciones usando el motor real (evita hardcodes
+    // en la vista que mienten si Aracely edita las reglas en /retenciones).
+    public function previewRetenciones(Request $r, CalculadorRetenciones $calc): JsonResponse
+    {
+        $data = $r->validate([
+            'contacto_id' => ['nullable', 'integer'],
+            'monto_bruto' => ['required', 'numeric', 'min:0'],
+            'iva' => ['nullable', 'numeric', 'min:0'],
+            'concepto' => ['required', 'string'],
+            'ciudad' => ['nullable', 'string'],
+            'gran_contribuyente' => ['nullable', 'boolean'],
+        ]);
+        $bruto = (float) $data['monto_bruto'];
+        $iva = (float) ($data['iva'] ?? 0);
+        $base = $bruto - $iva;
+        $esAutoRet = false;
+        if (! empty($data['contacto_id'])) {
+            $c = \App\Models\Contacto::find($data['contacto_id']);
+            $esAutoRet = (bool) ($c?->es_autorretenedor ?? false);
+        }
+        $lineas = $calc->calcular(
+            base: $base,
+            concepto: $data['concepto'],
+            ciudad: $data['ciudad'] ?? null,
+            iva: $iva,
+            granContribuyente: (bool) ($data['gran_contribuyente'] ?? false),
+            esAutorretenedor: $esAutoRet,
+        );
+        $total = array_sum(array_column($lineas, 'valor'));
+        return response()->json([
+            'lineas' => $lineas,
+            'total' => $total,
+            'neto' => round($bruto - $total, 2),
+            'es_autorretenedor' => $esAutoRet,
+        ]);
+    }
+}

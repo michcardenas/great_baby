@@ -2,6 +2,7 @@
 
 namespace App\Modules\Siigo\Clients;
 
+use App\Modules\Siigo\Exceptions\SiigoRateLimitedException;
 use App\Modules\Siigo\Models\SiigoConfig;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\RequestException;
@@ -94,13 +95,15 @@ class SiigoClient
             return $this->request($method, $path, $payload, $intento + 1);
         }
 
-        if ($response->status() === 429 && $intento <= self::MAX_REINTENTOS) {
+        // B3-M1 · en 429 lanzamos excepción tipada · el Job la captura y hace
+        // release al worker (no dormimos aquí para no bloquear otros jobs
+        // 30 s enteros usando la mitad del timeout=60).
+        if ($response->status() === 429) {
             $espera = (int) ($response->header('Retry-After') ?: pow(2, $intento));
-            Log::channel('siigo')->warning('SIIGO rate limit', [
-                'path' => $path, 'intento' => $intento, 'espera_segundos' => $espera,
+            Log::channel('siigo')->warning('SIIGO rate limit → release al worker', [
+                'path' => $path, 'espera_segundos' => $espera,
             ]);
-            sleep(min($espera, 30));
-            return $this->request($method, $path, $payload, $intento + 1);
+            throw new SiigoRateLimitedException(min(max($espera, 5), 300), $path);
         }
 
         if ($response->failed()) {
@@ -145,11 +148,37 @@ class SiigoClient
         ])->save();
     }
 
-    private function sanitizarRespuesta(string $body): string
+    /**
+     * B4-M3 · redacta secretos en cualquier respuesta antes de loggear/persistir.
+     * Cubre access_token/access_key/refresh_token en JSON (a cualquier nivel de
+     * anidamiento) y "Authorization: Bearer …" en headers/body plano.
+     */
+    public function sanitizarRespuesta(string $body): string
     {
-        $body = preg_replace('/"access_token"\s*:\s*"[^"]*"/', '"access_token":"[REDACTED]"', $body) ?? $body;
-        $body = preg_replace('/"access_key"\s*:\s*"[^"]*"/', '"access_key":"[REDACTED]"', $body) ?? $body;
+        $body = preg_replace('/"access_token"\s*:\s*"[^"]*"/i', '"access_token":"[REDACTED]"', $body) ?? $body;
+        $body = preg_replace('/"access_key"\s*:\s*"[^"]*"/i',   '"access_key":"[REDACTED]"',   $body) ?? $body;
+        $body = preg_replace('/"refresh_token"\s*:\s*"[^"]*"/i','"refresh_token":"[REDACTED]"',$body) ?? $body;
+        $body = preg_replace('/Bearer\s+[A-Za-z0-9\.\-_=]+/',   'Bearer [REDACTED]',            $body) ?? $body;
         return mb_substr($body, 0, 1500);
+    }
+
+    /**
+     * B4-M3 · versión array de la sanitización · usada por las Actions al
+     * persistir `response_body` en siigo_sync_log (antes iba JSON puro sin filtro).
+     * Retorna un array con las claves sensibles reemplazadas por [REDACTED].
+     */
+    public function sanitizarRespuestaArray(?array $body): ?array
+    {
+        if ($body === null) return null;
+
+        array_walk_recursive($body, function (&$v, $k) {
+            if (! is_string($k)) return;
+            if (in_array(strtolower($k), ['access_token', 'access_key', 'refresh_token', 'authorization'], true)) {
+                $v = '[REDACTED]';
+            }
+        });
+
+        return $body;
     }
 
     /** @return array{ok: bool, mensaje: string} */

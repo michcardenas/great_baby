@@ -40,13 +40,23 @@ class Reglas
         'catalogo.bloquear_cambio_codigo' => ['grupo' => 'catalogo', 'tipo' => 'bool', 'valor' => '1', 'etiqueta' => 'Bloquear cambio manual de código de barras', 'descripcion' => 'Evita duplicados accidentales'],
 
         // ============ CONTABILIDAD · cuentas por defecto ============
-        'contable.cta_cxc_default' => ['grupo' => 'contable', 'tipo' => 'string', 'valor' => '1305', 'etiqueta' => 'Cuenta CxC por defecto (contrapartida)', 'descripcion' => 'PUC 1305 · usada como contrapartida al reversar ventas'],
-        'contable.cta_ingreso_default' => ['grupo' => 'contable', 'tipo' => 'string', 'valor' => '4135', 'etiqueta' => 'Cuenta ingreso por defecto', 'descripcion' => 'Cta contable usada cuando el producto no la define (PUC Col: 4135)'],
-        'contable.cta_iva_venta_default' => ['grupo' => 'contable', 'tipo' => 'string', 'valor' => '2408', 'etiqueta' => 'Cuenta IVA venta por defecto', 'descripcion' => ''],
-        'contable.cta_costo_default' => ['grupo' => 'contable', 'tipo' => 'string', 'valor' => '6135', 'etiqueta' => 'Cuenta costo por defecto', 'descripcion' => ''],
-        'contable.cta_inventario_default' => ['grupo' => 'contable', 'tipo' => 'string', 'valor' => '1435', 'etiqueta' => 'Cuenta inventario por defecto', 'descripcion' => ''],
-        'contable.cta_devolucion_default' => ['grupo' => 'contable', 'tipo' => 'string', 'valor' => '4175', 'etiqueta' => 'Cuenta devolución en ventas por defecto', 'descripcion' => ''],
-        'contable.cta_descuento_default' => ['grupo' => 'contable', 'tipo' => 'string', 'valor' => '5305', 'etiqueta' => 'Cuenta descuento comercial por defecto', 'descripcion' => ''],
+        // Actualizados 2026-09-28 con PUC oficial Great Baby SAS (NIT 901738354).
+        // ⚠ Las cuentas de INGRESO/COSTO/INVENTARIO específicas de producto deben ser
+        // confirmadas con Silvia (contadora) porque dependen de la línea (accesorios/ropa/etc).
+        // Dejamos GRUPO de 4 dígitos como default; en la ficha contable de cada producto
+        // se puede sobrescribir con la subcuenta específica (6 dígitos).
+        'contable.cta_cxc_default' => ['grupo' => 'contable', 'tipo' => 'string', 'valor' => '130505', 'etiqueta' => 'Cuenta CxC por defecto (Clientes nacionales)', 'descripcion' => 'PUC Great Baby · 130505 Clientes nacionales'],
+        'contable.cta_ingreso_default' => ['grupo' => 'contable', 'tipo' => 'string', 'valor' => '4135', 'etiqueta' => 'Cuenta ingreso por defecto', 'descripcion' => '⚠ Confirmar subcuenta específica con Silvia (4135xx según categoría)'],
+        'contable.cta_iva_venta_default' => ['grupo' => 'contable', 'tipo' => 'string', 'valor' => '240805', 'etiqueta' => 'Cuenta IVA venta por defecto', 'descripcion' => 'PUC Great Baby · 240805 IVA generado en ventas'],
+        'contable.cta_iva_compra_default' => ['grupo' => 'contable', 'tipo' => 'string', 'valor' => '240810', 'etiqueta' => 'Cuenta IVA compra descontable', 'descripcion' => 'PUC Great Baby · 240810 IVA descontable por compras'],
+        'contable.cta_costo_default' => ['grupo' => 'contable', 'tipo' => 'string', 'valor' => '6135', 'etiqueta' => 'Cuenta costo por defecto', 'descripcion' => '⚠ Confirmar subcuenta específica con Silvia (6135xx según categoría)'],
+        'contable.cta_inventario_default' => ['grupo' => 'contable', 'tipo' => 'string', 'valor' => '1435', 'etiqueta' => 'Cuenta inventario por defecto', 'descripcion' => '⚠ Confirmar subcuenta específica con Silvia (1435xx según categoría)'],
+        'contable.cta_devolucion_default' => ['grupo' => 'contable', 'tipo' => 'string', 'valor' => '4175', 'etiqueta' => 'Cuenta devolución en ventas por defecto', 'descripcion' => '⚠ Confirmar subcuenta específica con Silvia'],
+        'contable.cta_descuento_default' => ['grupo' => 'contable', 'tipo' => 'string', 'valor' => '5305', 'etiqueta' => 'Cuenta descuento comercial por defecto', 'descripcion' => '⚠ Confirmar subcuenta específica con Silvia'],
+        'contable.cta_bancos_default' => ['grupo' => 'contable', 'tipo' => 'string', 'valor' => '112005', 'etiqueta' => 'Cuenta bancos por defecto', 'descripcion' => 'PUC Great Baby · 112005 Bancos moneda nacional'],
+        'contable.cta_caja_default' => ['grupo' => 'contable', 'tipo' => 'string', 'valor' => '110505', 'etiqueta' => 'Cuenta caja general', 'descripcion' => 'PUC Great Baby · 110505 Caja general'],
+        'contable.cta_proveedores_default' => ['grupo' => 'contable', 'tipo' => 'string', 'valor' => '220505', 'etiqueta' => 'Cuenta proveedores nacionales', 'descripcion' => 'PUC Great Baby · 220505 Proveedores nacionales'],
+        'contable.cta_retefuente_default' => ['grupo' => 'contable', 'tipo' => 'string', 'valor' => '236575', 'etiqueta' => 'Cuenta autorretenciones por defecto', 'descripcion' => '⚠ Confirmar concepto específico con Silvia (2365xx según naturaleza)'],
         'contable.centro_costo_default' => ['grupo' => 'contable', 'tipo' => 'string', 'valor' => 'GB-01', 'etiqueta' => 'Centro de costo por defecto', 'descripcion' => 'Cuenta / centro de imputación por defecto para asientos'],
 
         // ============ CRM · segmentación ============

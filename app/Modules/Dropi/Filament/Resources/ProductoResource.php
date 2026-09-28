@@ -166,6 +166,24 @@ class ProductoResource extends Resource
                     ->getStateUsing(fn ($record) => ! empty($record->siigo_id))
                     ->boolean()
                     ->trueColor('info')->trueIcon('heroicon-o-cloud'),
+                // F6 · badge de antigüedad de la última sincronización:
+                //   verde  · <15 min  (fresco, dentro del ciclo de sync)
+                //   amarillo · <1 h   (aceptable, próximo tick lo actualizará)
+                //   rojo   · >1 h    (algo se atascó · revisar cola/logs)
+                //   gris   · nunca   (producto nuevo aún sin sync)
+                TextColumn::make('siigo_sync_at')
+                    ->label('Última sync')
+                    ->since()
+                    ->placeholder('nunca')
+                    ->badge()
+                    ->color(function ($state) {
+                        if (! $state) return 'gray';
+                        $mins = now()->diffInMinutes(\Illuminate\Support\Carbon::parse($state));
+                        if ($mins < 15) return 'success';
+                        if ($mins < 60) return 'warning';
+                        return 'danger';
+                    })
+                    ->toggleable(),
                 IconColumn::make('activo')->boolean(),
                 IconColumn::make('neto')->boolean()->toggleable(),
                 IconColumn::make('requiere_talla')->label('Talla')->boolean()->toggleable(),
@@ -191,6 +209,34 @@ class ProductoResource extends Resource
             ->recordActions([
                 ViewAction::make(),
                 EditAction::make(),
+                // F6 · botón manual «Sincronizar con SIIGO» (respaldo del push auto):
+                //   - Decide 'crear' vs 'actualizar' según si el producto tiene siigo_id.
+                //   - Usa dispatchManual() → bypasea kill-switch y debounce (es explícito
+                //     y humano), pero respeta rate limit + lock del Job.
+                //   - Requiere permiso 'productos.editar' (matriz oficial).
+                \Filament\Actions\Action::make('sincronizar_siigo')
+                    ->label('Sincronizar con SIIGO')
+                    ->icon('heroicon-o-cloud-arrow-up')
+                    ->color('info')
+                    ->requiresConfirmation()
+                    ->modalHeading(fn ($record) => $record->siigo_id
+                        ? 'Actualizar en SIIGO'
+                        : 'Crear en SIIGO')
+                    ->modalDescription('Se encolará un job para empujar los cambios a SIIGO. Igual respeta el rate limit de la API (100 req/min).')
+                    // B3-A5 · llave dedicada (más restrictiva que 'productos'):
+                    // solo roles listados en 'productos.push_siigo' pueden gastar
+                    // rate limit real hacia SIIGO. `authorize` doble-vía UI+backend.
+                    ->visible(fn () => \App\Auth\Permisos::puede(auth()->user(), 'productos.push_siigo'))
+                    ->authorize(fn () => \App\Auth\Permisos::puede(auth()->user(), 'productos.push_siigo'))
+                    ->action(function ($record): void {
+                        $accion = $record->siigo_id ? 'actualizar' : 'crear';
+                        \App\Modules\Siigo\Jobs\PushProductoASiigo::dispatchManual($record->id, $accion);
+                        \Filament\Notifications\Notification::make()
+                            ->title('SIIGO · sync encolado')
+                            ->body("Producto «{$record->referencia}» → acción {$accion}. Revisa la bandeja de sincronizaciones para el resultado.")
+                            ->success()
+                            ->send();
+                    }),
                 DeleteAction::make(),
             ])
             ->toolbarActions([

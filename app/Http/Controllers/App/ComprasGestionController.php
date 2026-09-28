@@ -115,6 +115,57 @@ class ComprasGestionController extends Controller implements HasMiddleware
         return back()->with('success', "OC {$o->numero} aprobada.");
     }
 
+    /**
+     * Sprint 3 · A.1 · Duplica una OC (crea otra en borrador con los mismos ítems).
+     * Útil cuando Aracely quiere reordenar al mismo proveedor casi lo mismo.
+     */
+    public function ocDuplicar(int $orden): RedirectResponse
+    {
+        $o = OrdenCompra::with('items')->findOrFail($orden);
+
+        // Reutiliza CrearOrdenCompra armando el payload desde la OC original.
+        $payload = [
+            'proveedor_id' => $o->proveedor_id,
+            'bodega_id' => $o->bodega_id,
+            'tipo' => $o->tipo,
+            'moneda' => $o->moneda ?? 'COP',
+            'tasa_cambio' => (float) ($o->tasa_cambio ?? 1),
+            'fecha_esperada' => null,
+            'observaciones' => "Duplicada desde {$o->numero}",
+            'items' => $o->items->map(fn ($i) => [
+                'descripcion' => $i->descripcion,
+                'cantidad' => (float) $i->cantidad,
+                'precio_unit' => (float) $i->precio_unit,
+                'iva_pct' => (float) ($i->iva_pct ?? 0),
+                'descuento_pct' => (float) ($i->descuento_pct ?? 0),
+                'producto_id' => $i->producto_id,
+                'variante_id' => $i->variante_id,
+            ])->all(),
+        ];
+        $nueva = CrearOrdenCompra::run($payload);
+        return redirect()->route('app.compras.oc.show', $nueva->id)
+            ->with('flash', ['type' => 'success', 'message' => "OC {$nueva->numero} duplicada desde {$o->numero}."]);
+    }
+
+    /**
+     * Sprint 3 · A.1 D.1 · Reenvía la última recepción confirmada de la OC a SIIGO.
+     * Bypasea kill-switch (es acción manual explícita).
+     */
+    public function ocReenviarSiigo(int $orden): RedirectResponse
+    {
+        $o = OrdenCompra::with(['recepciones' => fn ($q) => $q->where('estado', 'confirmada')->orderByDesc('id')])
+            ->findOrFail($orden);
+        $rc = $o->recepciones->first();
+        if (! $rc) {
+            return back()->with('flash', ['type' => 'error', 'message' => 'La OC no tiene recepciones confirmadas para reenviar.']);
+        }
+        \App\Modules\Siigo\Jobs\PushRecepcionASiigo::dispatchManual($rc->id);
+        return back()->with('flash', [
+            'type' => 'success',
+            'message' => "Recepción {$rc->numero} encolada · se envía a SIIGO en breve.",
+        ]);
+    }
+
     public function ocAnular(Request $r, int $orden): RedirectResponse
     {
         $data = $r->validate(['motivo' => ['required', 'string', 'min:10', 'max:300']]);
@@ -149,6 +200,7 @@ class ComprasGestionController extends Controller implements HasMiddleware
         return Inertia::render('Compras/Recepcion/Show', [
             'recepcion' => [
                 'id' => $rc->id, 'numero' => $rc->numero,
+                'orden_id' => $rc->orden?->id,
                 'orden_numero' => $rc->orden?->numero,
                 'estado' => $rc->estado,
                 'fecha_recepcion' => $rc->fecha_recepcion?->format('Y-m-d H:i'),
@@ -157,6 +209,10 @@ class ComprasGestionController extends Controller implements HasMiddleware
                 'transportista' => $rc->transportista,
                 'observaciones' => $rc->observaciones,
                 'total_recibido' => (float) $rc->total_recibido,
+                // Sprint 3 · D.1 · exponer estado SIIGO al Vue Show.
+                'siigo_id' => $rc->siigo_id,
+                'siigo_number' => $rc->siigo_number,
+                'siigo_sync_hace' => $rc->siigo_sync_at?->diffForHumans(),
                 'items' => $rc->items->map(fn ($i) => [
                     'id' => $i->id,
                     'cantidad_recibida' => (float) $i->cantidad_recibida,
@@ -166,6 +222,22 @@ class ComprasGestionController extends Controller implements HasMiddleware
                     'observaciones' => $i->observaciones,
                 ])->all(),
             ],
+        ]);
+    }
+
+    /**
+     * Sprint 3 · D.1 · reenvía la recepción a SIIGO desde la vista de detalle.
+     */
+    public function recepcionReenviarSiigo(int $recepcion): RedirectResponse
+    {
+        $rc = RecepcionCompra::findOrFail($recepcion);
+        if ($rc->estado !== 'confirmada') {
+            return back()->with('flash', ['type' => 'error', 'message' => 'Solo se pueden reenviar recepciones confirmadas.']);
+        }
+        \App\Modules\Siigo\Jobs\PushRecepcionASiigo::dispatchManual($rc->id);
+        return back()->with('flash', [
+            'type' => 'success',
+            'message' => "Recepción {$rc->numero} encolada a SIIGO.",
         ]);
     }
 
@@ -289,6 +361,49 @@ class ComprasGestionController extends Controller implements HasMiddleware
     }
 
     // ================== IMPORTACIÓN ==================
+
+    /**
+     * Sprint 4 · A.3 · Listado de contenedores (paridad Filament).
+     */
+    public function importacionIndex(Request $r): Response
+    {
+        $q = Importacion::query();
+        if ($busca = trim((string) $r->query('q', ''))) {
+            $q->where(function ($qq) use ($busca) {
+                $qq->where('numero', 'like', "%$busca%")
+                   ->orWhere('contenedor', 'like', "%$busca%")
+                   ->orWhere('bl_awb', 'like', "%$busca%");
+            });
+        }
+        if ($estado = $r->query('estado')) $q->where('estado', $estado);
+
+        return Inertia::render('Compras/Importacion/Index', [
+            'filtros' => ['q' => $r->query('q', ''), 'estado' => $estado],
+            'importaciones' => $q->orderByDesc('id')->paginate(20)->through(fn ($i) => [
+                'id' => $i->id,
+                'numero' => $i->numero,
+                'contenedor' => $i->contenedor,
+                'bl_awb' => $i->bl_awb,
+                'estado' => is_object($i->estado) ? $i->estado->value : $i->estado,
+                'moneda_origen' => $i->moneda_origen,
+                'tasa_cambio_liquidacion' => (float) $i->tasa_cambio_liquidacion,
+                'eta' => $i->eta?->format('Y-m-d'),
+                'fecha_llegada' => $i->fecha_llegada?->format('Y-m-d'),
+                'fecha_liquidacion' => $i->fecha_liquidacion?->format('Y-m-d'),
+                'total_fob' => (float) $i->lineas()->sum('costo_fob_total'),
+                'total_gastos' => (float) $i->gastos()->sum('monto_base'),
+                'lineas_count' => $i->lineas()->count(),
+            ]),
+            'kpis' => [
+                'total' => Importacion::count(),
+                // QA-FIX #6 · abarca todos los estados intermedios (en_transito + en_puerto + nacionalizada).
+                'en_transito' => Importacion::whereIn('estado', ['en_transito', 'en_puerto', 'nacionalizada'])->count(),
+                'por_liquidar' => Importacion::whereNotNull('fecha_llegada')->whereNull('fecha_liquidacion')->count(),
+                'liquidados_mes' => Importacion::whereMonth('fecha_liquidacion', now()->month)->whereYear('fecha_liquidacion', now()->year)->count(),
+            ],
+        ]);
+    }
+
     public function importacionShow(int $importacion): Response
     {
         $imp = Importacion::with(['lineas', 'gastos'])->findOrFail($importacion);

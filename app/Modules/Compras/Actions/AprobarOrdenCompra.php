@@ -52,6 +52,9 @@ class AprobarOrdenCompra
             'creado_por' => $orden->creado_por,
         ]);
 
+        // Sprint 4 · A.6 · WhatsApp cadena valor · via cola async (QA-FIX #5).
+        \App\Modules\Notificaciones\Jobs\NotificarCadenaValorJob::dispatch('oc-aprobada', $orden->id);
+
         return $orden;
     }
 }

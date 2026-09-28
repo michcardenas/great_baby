@@ -18,6 +18,18 @@ class AppServiceProvider extends ServiceProvider
     {
         // Observers de dominio
         \App\Modules\Cartera\Models\PagoVenta::observe(\App\Modules\Cartera\Observers\PagoVentaObserver::class);
+        // F9 · sync a SIIGO cuando una recepción de compra pasa a 'confirmada'.
+        \App\Modules\Compras\Models\RecepcionCompra::observe(\App\Modules\Siigo\Observers\RecepcionCompraObserver::class);
+        // F11 · asiento SIIGO por movimientos kardex contables (traslado/merma/sobrante/ajuste).
+        \App\Modules\Dropi\Models\InventarioMovimiento::observe(\App\Modules\Siigo\Observers\InventarioMovimientoObserver::class);
+        // B.1 · NC manual → SIIGO (skip las de Dropi que tienen flujo propio).
+        \App\Modules\Cartera\Models\NotaCredito::observe(\App\Modules\Siigo\Observers\NotaCreditoObserver::class);
+        // B.2 · ND manual → SIIGO.
+        \App\Modules\Cartera\Models\NotaDebito::observe(\App\Modules\Siigo\Observers\NotaDebitoObserver::class);
+        // QA-FIX #2 · Sprint 4 · producto → SIIGO (D2 estaba pendiente en Dropi).
+        \App\Modules\Dropi\Models\Producto::observe(\App\Modules\Siigo\Observers\ProductoObserver::class);
+        // QA-FIX #7 · pago proveedor → SIIGO voucher egreso.
+        \App\Modules\Cartera\Models\PagoProveedor::observe(\App\Modules\Siigo\Observers\PagoProveedorObserver::class);
 
         // Re-audit SEG A2 · rate-limiters compuestos para el Portal B2B.
         //   `portal-login`     → 5 intentos/min por email+IP (bloquea brute-force targeteado)
@@ -28,6 +40,14 @@ class AppServiceProvider extends ServiceProvider
         });
         RateLimiter::for('portal-login-ip', function (Request $request) {
             return Limit::perMinutes(10, 15)->by($request->ip());
+        });
+
+        // SIIGO API · respeta el rate limit por empresa (100 req/min en prod,
+        //   10 req/min en cuenta de pruebas). Usado por PushProductoASiigo::middleware.
+        //   Cuando se excede, el job se libera con delay = tiempo hasta el próximo
+        //   slot disponible (Laravel calcula esto automáticamente).
+        RateLimiter::for('siigo-api', function () {
+            return Limit::perMinute((int) config('siigo.rate_limit_per_min', 100));
         });
     }
 }

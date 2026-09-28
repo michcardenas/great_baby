@@ -4,16 +4,29 @@ namespace App\Modules\Cartera\Observers;
 
 use App\Modules\Cartera\Actions\RegistrarAsientoContable;
 use App\Modules\Cartera\Models\PagoVenta;
+use App\Modules\Siigo\Jobs\PushVoucherASiigo;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Observer explícito para PagoVenta.
  * Reemplaza los hooks de booted() que Auditable trait a veces intercepta.
+ *
+ * F10 · Dispara push a SIIGO (voucher) tras crear/editar pagos.
+ * Envuelto en DB::afterCommit para que un rollback no encole un job huérfano.
  */
 class PagoVentaObserver
 {
     public function created(PagoVenta $pago): void
     {
         (new RegistrarAsientoContable())->pago($pago);
+
+        // F10 · voucher SIIGO (recibo de caja aplicado a la factura).
+        // Skip si el pago no tiene monto_aplicado > 0 (parcial sin aplicar).
+        if ((float) $pago->monto_aplicado <= 0) return;
+        $id = $pago->id;
+        DB::afterCommit(function () use ($id) {
+            PushVoucherASiigo::dispatch($id);
+        });
     }
 
     /**
