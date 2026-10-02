@@ -89,11 +89,33 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     Route::post('/compras/recepcion/{recepcion}/reenviar-siigo', [\App\Http\Controllers\App\ComprasGestionController::class, 'recepcionReenviarSiigo'])->middleware('throttle:20,1')->name('app.compras.recepcion.reenviar-siigo');
     // Sprint 4 · G.3 · CRUD Productos Vue formato SIIGO (4 pestañas).
     Route::get('/catalogo/productos', [\App\Http\Controllers\App\ProductosController::class, 'index'])->name('app.catalogo.productos');
+    Route::get('/catalogo/productos/verificar-referencia', [\App\Http\Controllers\App\ProductosController::class, 'verificarReferencia']);
+    Route::get('/catalogo/productos/sugerir-referencia', [\App\Http\Controllers\App\ProductosController::class, 'sugerirReferencia']);
     Route::get('/catalogo/productos/nuevo', [\App\Http\Controllers\App\ProductosController::class, 'crearForm'])->name('app.catalogo.productos.nuevo');
     Route::get('/catalogo/productos/{producto}', [\App\Http\Controllers\App\ProductosController::class, 'show'])->name('app.catalogo.productos.show');
     Route::post('/catalogo/productos', [\App\Http\Controllers\App\ProductosController::class, 'guardar'])->name('app.catalogo.productos.crear');
     Route::put('/catalogo/productos/{producto}', [\App\Http\Controllers\App\ProductosController::class, 'guardar'])->name('app.catalogo.productos.actualizar');
     Route::delete('/catalogo/productos/{producto}', [\App\Http\Controllers\App\ProductosController::class, 'eliminar'])->name('app.catalogo.productos.eliminar');
+    // FASE C · CRUD robusto
+    Route::post('/catalogo/productos/{producto}/clonar', [\App\Http\Controllers\App\ProductosController::class, 'clonar'])->middleware('throttle:10,1')->name('app.catalogo.productos.clonar');
+    // FASE F3.A17 · bulk-edit throttle: 10/min · opera sobre lote de hasta 1000
+    // productos y encola 1 push SIIGO por cada uno. Sin throttle, un script
+    // podía saturar la cola y agotar el rate limit SIIGO (60/min).
+    Route::post('/catalogo/productos-bulk-edit', [\App\Http\Controllers\App\ProductosController::class, 'bulkEdit'])->middleware('throttle:10,1')->name('app.catalogo.productos.bulk-edit');
+    Route::get('/catalogo/productos-papelera', [\App\Http\Controllers\App\ProductosController::class, 'papelera'])->name('app.catalogo.productos.papelera');
+    Route::post('/catalogo/productos-papelera/{id}/restaurar', [\App\Http\Controllers\App\ProductosController::class, 'restaurar'])->name('app.catalogo.productos.restaurar');
+    // FASE D3 · Forzar push manual a SIIGO · FASE F3.A17 throttle 20/min
+    // (igual que otros endpoints `reenviar-siigo` del proyecto).
+    Route::post('/catalogo/productos/{producto}/forzar-sync', [\App\Http\Controllers\App\ProductosController::class, 'forzarSync'])->middleware('throttle:20,1')->name('app.catalogo.productos.forzar-sync');
+    // FASE H6 · Imágenes del producto (hasta 5 slots)
+    Route::post('/catalogo/productos/{producto}/imagenes', [\App\Http\Controllers\App\ProductosController::class, 'subirImagen'])->middleware('throttle:30,1')->name('app.catalogo.productos.imagen.subir');
+    Route::delete('/catalogo/productos/{producto}/imagenes/{imagen}', [\App\Http\Controllers\App\ProductosController::class, 'eliminarImagen'])->middleware('throttle:30,1')->name('app.catalogo.productos.imagen.eliminar');
+    // FASE G · Import / Export Excel SIIGO · throttle para evitar DoS self-inflicted
+    // en export (genera XLSX de hasta 5k productos) e import (encola push masivo).
+    Route::get('/catalogo/productos-exportar-siigo', [\App\Http\Controllers\App\ProductosController::class, 'exportarExcelSiigo'])->middleware('throttle:10,1')->name('app.catalogo.productos.exportar-siigo');
+    Route::get('/catalogo/productos-plantilla-siigo', [\App\Http\Controllers\App\ProductosController::class, 'plantillaExcelSiigo'])->name('app.catalogo.productos.plantilla-siigo');
+    Route::post('/catalogo/productos-importar-siigo', [\App\Http\Controllers\App\ProductosController::class, 'importarExcelSiigo'])->middleware('throttle:5,10')->name('app.catalogo.productos.importar-siigo');
+    Route::get('/catalogo/productos-importar-siigo/estado', [\App\Http\Controllers\App\ProductosController::class, 'importarEstado'])->name('app.catalogo.productos.importar-siigo.estado');
     Route::get('/catalogo/productos-buscar', [\App\Http\Controllers\App\ProductosController::class, 'buscar'])->name('app.catalogo.productos.buscar');
     Route::get('/catalogo/siigo-grupos', [\App\Http\Controllers\App\ProductosController::class, 'grupos']);
     Route::get('/catalogo/siigo-subgrupos', [\App\Http\Controllers\App\ProductosController::class, 'subgrupos']);
@@ -231,6 +253,18 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     Route::post('/siigo/kill-switch', [\App\Http\Controllers\App\SiigoController::class, 'toggleKillSwitch'])->name('app.siigo.kill-switch');
     Route::post('/siigo/logs/{log}/reintentar', [\App\Http\Controllers\App\SiigoController::class, 'reintentar'])->name('app.siigo.reintentar');
     Route::get('/siigo/logs', [\App\Http\Controllers\App\SiigoController::class, 'logs'])->name('app.siigo.logs');
+    // Visor en vivo · trae lo que SIIGO tiene (comprobación bidireccional del CRUD).
+    Route::get('/siigo/verificar/producto/{producto}', [\App\Http\Controllers\App\SiigoController::class, 'verificarProducto'])->name('app.siigo.verificar.producto');
+    // Reconciliar · dispara pull completo SIIGO→ERP + detección de zombies.
+    Route::post('/siigo/reconciliar', [\App\Http\Controllers\App\SiigoController::class, 'reconciliar'])->name('app.siigo.reconciliar');
+    Route::get('/siigo/reconciliar/estado', [\App\Http\Controllers\App\SiigoController::class, 'reconciliarEstado'])->name('app.siigo.reconciliar.estado');
+    // FASE E · Semáforo global ligero
+    Route::get('/siigo/semaforo', [\App\Http\Controllers\App\SiigoController::class, 'semaforo'])->name('app.siigo.semaforo');
+    Route::post('/siigo/reconciliar/deshacer', [\App\Http\Controllers\App\SiigoController::class, 'deshacerUltimaReconciliacion'])->name('app.siigo.reconciliar.deshacer');
+    // Importar un producto SIIGO por su code (útil para sandbox compartido).
+    Route::post('/siigo/importar-por-code', [\App\Http\Controllers\App\SiigoController::class, 'importarPorCode'])->name('app.siigo.importar-code');
+    // Sincronizar catálogos SIIGO (taxes, account-groups, warehouses, price-lists, etc).
+    Route::post('/siigo/sincronizar-catalogos', [\App\Http\Controllers\App\SiigoController::class, 'sincronizarCatalogos'])->name('app.siigo.sync-catalogos');
     // Plan de cuentas (PUC) en Vue · reutiliza ImportadorPlanCuentas + PlanCuenta existentes
     Route::get('/contabilidad/plan-cuentas', [\App\Http\Controllers\App\PlanCuentasController::class, 'index'])->name('app.contabilidad.plan-cuentas');
     Route::post('/contabilidad/plan-cuentas', [\App\Http\Controllers\App\PlanCuentasController::class, 'guardar'])->name('app.contabilidad.plan-cuentas.guardar');

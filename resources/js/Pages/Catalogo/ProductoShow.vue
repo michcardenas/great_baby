@@ -1,13 +1,17 @@
 <script setup>
-import { ref, reactive, watch, computed } from 'vue';
+import { ref, reactive, watch, computed, onBeforeUnmount, onMounted } from 'vue';
 import { Head, Link, useForm, router } from '@inertiajs/vue3';
 import {
     Package, ArrowLeft, Save, Info, DollarSign, Ruler, FileText,
-    Cloud, CloudOff, Trash2, Plus, X, Search,
+    Cloud, CloudOff, Trash2, Plus, X, Search, Copy,
 } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
+import { useMoney } from '@/composables/useMoney';
+const { money } = useMoney();
 
 const props = defineProps({
+    historial: { type: Array, default: () => [] },
     producto: { type: Object, default: null },
     catalogos: { type: Object, required: true },
 });
@@ -43,7 +47,11 @@ const form = useForm({
     requiere_talla: props.producto?.requiere_talla ?? false,
     es_set: props.producto?.es_set ?? false,
     neto: props.producto?.neto ?? true,
-    desglose_stock: props.producto?.desglose_stock ?? true,
+    // Default FALSE para nuevos · modo "agregado" = 1 producto SIIGO (sin
+    // variantes). Si el usuario necesita variantes, lo activa manualmente.
+    // Antes era true por default y causaba "0 productos creados en SIIGO"
+    // cuando el user guardaba sin agregar variantes.
+    desglose_stock: props.producto?.desglose_stock ?? false,
     stock_directo: props.producto?.stock_directo || 0,
     // Pestaña 2: Comercial
     impuesto_id: props.producto?.impuesto_id || null,
@@ -68,6 +76,26 @@ const form = useForm({
     // M:M
     accesorios: props.producto?.accesorios || [],
     sustitutos: props.producto?.sustitutos || [],
+    // Sprint Variantes · colección editable inline (color/diseño/talla/EAN/stock_min).
+    variantes: props.producto?.variantes || [],
+    // ─── SIIGO Paridad · campos nuevos ────────────────────────
+    tipo_siigo: props.producto?.tipo_siigo || 'Product',
+    stock_control: props.producto?.stock_control ?? true,
+    tax_classification: props.producto?.tax_classification || 'Taxed',
+    tax_included: props.producto?.tax_included ?? false,
+    tax_consumption_value: props.producto?.tax_consumption_value || null,
+    modelo_siigo: props.producto?.modelo_siigo || '',
+    barcode_padre: props.producto?.barcode_padre || '',
+    unit_label: props.producto?.unit_label || 'Unidad',
+    impuestos_ids: props.producto?.impuestos_ids || [],
+    // FASE H · Paridad 1:1 form SIIGO
+    visible_en_facturas: props.producto?.visible_en_facturas ?? true,
+    retencion_siigo_id: props.producto?.retencion_siigo_id || null,
+    impuesto_cargo_dos_id: props.producto?.impuesto_cargo_dos_id || null,
+    reference_fabrica: props.producto?.reference_fabrica || '',
+    stock_minimo: props.producto?.stock_minimo || null,
+    // FASE F2.A4 · override por producto del grupo SIIGO
+    siigo_account_group_override: props.producto?.siigo_account_group_override || null,
 });
 
 // QA-FIX #14 · Cascada Línea → Grupo → Subgrupo → Clase con filtros LOCALES
@@ -91,19 +119,113 @@ watch(() => form.subgrupo_id, () => { if (!hidratando) { form.clase_id = null; }
 // Después del primer tick, aceptar cambios como acciones del usuario.
 if (hidratando) setTimeout(() => { hidratando = false; }, 100);
 
+// SIIGO account_group · local al form porque no está en productos sino en categorias.
+// Si el user cambia este selector, actualizamos la categoría local linkeada
+// (si tiene una) para que persista a BD. Alternativa: enviar un campo extra al
+// controller y resolverlo ahí — más limpio, pero cambia la API. Por ahora
+// readonly visualizador que muestra lo que SÍ tiene la categoría local hoy.
+const categoriaActual = computed(() =>
+    form.categoria_id
+        ? (props.catalogos.categorias || []).find(c => c.id === form.categoria_id)
+        : null
+);
+const siigo_account_group_id_local = ref(categoriaActual.value?.siigo_account_group_id || null);
+const aplicarAccountGroupACategoria = () => {
+    // Si editan este selector sin elegir categoría local, no hacemos nada.
+    // En Fase 5 se puede abrir un modal "Editar categoría → asignar account_group".
+    // Por ahora el valor queda local al form (futuro: PATCH /categorias/:id).
+};
+
+// Verificación en vivo de la referencia + autogenerar.
+// Fix de raíz · antes el user podía poner un código ya existente y solo se
+// enteraba al Guardar con un 500 de MySQL. Ahora se avisa al blur del campo.
+import axios from 'axios';
+const refConflicto = ref(null);  // {id, nombre, eliminado} si existe otro
+const refOk = ref(false);         // true si pasó la verificación OK
+const refVerificando = ref(false);
+
+const verificarReferencia = async () => {
+    const r = (form.referencia || '').trim();
+    if (!r) { refConflicto.value = null; refOk.value = false; return; }
+    refVerificando.value = true;
+    try {
+        const { data } = await axios.get('/app/catalogo/productos/verificar-referencia', {
+            params: { ref: r, except: props.producto?.id || 0 },
+        });
+        if (data.existe) {
+            refConflicto.value = { id: data.id, nombre: data.nombre, eliminado: data.eliminado };
+            refOk.value = false;
+        } else {
+            refConflicto.value = null;
+            refOk.value = true;
+        }
+    } catch (e) {
+        // no bloqueamos al usuario · la validación del server hará su parte
+        refConflicto.value = null; refOk.value = false;
+    } finally {
+        refVerificando.value = false;
+    }
+};
+
+const autogenerar = async () => {
+    try {
+        const { data } = await axios.get('/app/catalogo/productos/sugerir-referencia');
+        form.referencia = data.referencia;
+        refConflicto.value = null;
+        refOk.value = true;
+    } catch (e) { /* ignore */ }
+};
+
 // Buscador de productos para accesorios/sustitutos
 const buscar = ref('');
 const resultados = ref([]);
 const buscando = ref(false);
 let debSearch;
+// FASE F4.M7 · cancelar timers pendientes al desmontar · si Aracely
+// navega a otro producto mientras un debSearch está pendiente, la
+// respuesta llegaba a un componente ya destruido y Vue warning.
+onBeforeUnmount(() => {
+    if (debSearch) clearTimeout(debSearch);
+});
+
+// PROD-10 · Dirty-state guard. Si Aracely edita cualquier input y navega
+// fuera (link Inertia, reload, cerrar pestaña), avisa antes de perder el
+// trabajo. Se arma onMounted y se desarma onBeforeUnmount para evitar
+// que la advertencia aparezca en otras páginas.
+const beforeUnloadHandler = (e) => {
+    if (form.isDirty && !form.processing) {
+        e.preventDefault();
+        e.returnValue = '';
+    }
+};
+let removeInertiaGuard = null;
+onMounted(() => {
+    window.addEventListener('beforeunload', beforeUnloadHandler);
+    // Inertia router.on('before') intercepta clicks en <Link> y router.visit()
+    removeInertiaGuard = router.on('before', (event) => {
+        if (form.isDirty && !form.processing) {
+            const ok = window.confirm('Tenés cambios sin guardar. ¿Salir sin guardar?');
+            if (!ok) event.preventDefault();
+        }
+    });
+});
+onBeforeUnmount(() => {
+    window.removeEventListener('beforeunload', beforeUnloadHandler);
+    if (removeInertiaGuard) removeInertiaGuard();
+});
 watch(buscar, () => {
     clearTimeout(debSearch);
     if (buscar.value.length < 2) { resultados.value = []; return; }
     debSearch = setTimeout(async () => {
         buscando.value = true;
         try {
-            const r = await fetch(`/app/catalogo/productos-buscar?q=${encodeURIComponent(buscar.value)}`, { credentials: 'same-origin' });
-            if (r.ok) resultados.value = await r.json();
+            // FASE F4.M5 · axios en vez de fetch · ya trae XSRF-TOKEN cookie
+            // y header X-CSRF-TOKEN de meta; fetch nativo omitía el header
+            // CSRF y rompía bajo Sanctum stateful.
+            const { data } = await axios.get(`/app/catalogo/productos-buscar`, {
+                params: { q: buscar.value },
+            });
+            resultados.value = data;
         } finally { buscando.value = false; }
     }, 300);
 });
@@ -133,17 +255,234 @@ const guardar = () => {
     }
 };
 
+// Sprint confirm → modal · reemplazamos window.confirm() nativo (bloqueado
+// en iframe). Un solo ref `modalConfirm` sirve para todos los pedidos.
+const modalConfirm = ref(null);
 const eliminar = () => {
-    if (!confirm(`¿Eliminar producto ${props.producto.referencia}?`)) return;
-    router.delete(`/app/catalogo/productos/${props.producto.id}`);
+    modalConfirm.value = {
+        titulo: `¿Eliminar producto ${props.producto.referencia}?`,
+        mensaje: 'Pasa a la papelera · puedes restaurarlo dentro de 30 días.',
+        color: 'rose',
+        textoConfirmar: 'Eliminar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            router.delete(`/app/catalogo/productos/${props.producto.id}`);
+        },
+    };
 };
 
+// FASE C1 · Duplica el producto con sufijo -COPY-N.
+// PROD-7 · Modal propio con checkboxes para que Aracely decida alcance:
+//   - Variantes (default ON) · si está en modo granular, clona la estructura.
+//   - Precios por lista (default OFF) · las listas suelen revisarse manualmente
+//     en el clon para no arrastrar un precio obsoleto.
+const modalClonar = ref(null);
+const abrirClonar = () => {
+    modalClonar.value = {
+        incluirVariantes: true,
+        incluirPrecios: false,
+    };
+};
+const confirmarClonar = () => {
+    const payload = {
+        incluir_variantes: modalClonar.value.incluirVariantes,
+        incluir_precios: modalClonar.value.incluirPrecios,
+    };
+    modalClonar.value = null;
+    router.post(`/app/catalogo/productos/${props.producto.id}/clonar`, payload);
+};
+
+// FASE D1-D2 · Visor en vivo contra SIIGO + diff.
+const siigoVivo = ref(null);
+const cargandoSiigo = ref(false);
+const verEnSiigo = async () => {
+    cargandoSiigo.value = true;
+    try {
+        const { data } = await axios.get(`/app/siigo/verificar/producto/${props.producto.id}`);
+        siigoVivo.value = data;
+    } catch (e) {
+        alert('Error consultando SIIGO: ' + (e.response?.data?.message || e.message));
+    } finally {
+        cargandoSiigo.value = false;
+    }
+};
+// D2 · Compara campos clave ERP vs SIIGO · array de {campo, local, siigo, igual}
+const diffCampos = computed(() => {
+    const r = siigoVivo.value?.respuesta_siigo;
+    if (! r || siigoVivo.value?.ok !== true) return [];
+    const p = props.producto;
+    const pares = [
+        ['Código', p.referencia, r.code],
+        ['Nombre', p.nombre, r.name],
+        ['Referencia fábrica', p.reference_fabrica, r.reference],
+        ['Activo', p.activo ? 'Sí' : 'No', r.active ? 'Sí' : 'No'],
+        ['Tipo', p.tipo_siigo || 'Product', r.type],
+        ['Lleva stock', p.stock_control ? 'Sí' : 'No', r.stock_control ? 'Sí' : 'No'],
+        ['Marca', p.marca_nombre || '—', r.brand || '—'],
+        ['Modelo', p.modelo_siigo || '—', r.model || '—'],
+        // Fix bug · antes la columna ERP comparaba r.prices contra sí mismo
+        // (siempre verde). Ahora ERP usa p.precio_proveedor; SIIGO usa r.prices.
+        ['Precio', p.precio_proveedor ?? '—', (r.prices?.[0]?.price_list?.[0]?.value ?? '—').toString()],
+    ];
+    return pares.map(([k, local, siigo]) => ({
+        campo: k,
+        local: local ?? '—',
+        siigo: siigo ?? '—',
+        igual: String(local ?? '').trim() === String(siigo ?? '').trim(),
+    }));
+});
+
+// FASE D3 · Fuerza push manual
+const forzandoSync = ref(false);
+const forzarSync = () => {
+    modalConfirm.value = {
+        titulo: '¿Reenviar este producto a SIIGO ahora?',
+        mensaje: 'Lo pondremos de primero en la cola para que SIIGO lo reciba cuanto antes.',
+        color: 'amber',
+        textoConfirmar: 'Reenviar',
+        onConfirmar: async () => {
+            modalConfirm.value = null;
+            forzandoSync.value = true;
+            try {
+                const { data } = await axios.post(`/app/catalogo/productos/${props.producto.id}/forzar-sync`);
+                // Refresca el panel SIIGO para ver el nuevo estado tras encolar.
+                await verEnSiigo();
+                alert(data.mensaje);
+            } catch (e) {
+                alert('Error: ' + (e.response?.data?.message || e.message));
+            } finally {
+                forzandoSync.value = false;
+            }
+        },
+    };
+};
+
+// FASE F2.A13 · estados globales que combinan el form.processing con otras
+// acciones asíncronas (imagen, sync, verificación) · el botón Guardar queda
+// disabled si cualquier operación está en curso.
+const subiendoImagen = ref(false);
+const estaCargando = computed(() =>
+    form.processing || subiendoImagen.value || cargandoSiigo.value || forzandoSync.value
+);
+
+// FASE H · Imágenes del producto
+const subirImagen = async (event, orden) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (file.size > 1024 * 1024) {
+        alert('La imagen supera 1 MB · reduce el tamaño antes de subir.');
+        event.target.value = '';
+        return;
+    }
+    subiendoImagen.value = true;
+    const data = new FormData();
+    data.append('imagen', file);
+    data.append('orden', orden);
+    try {
+        await axios.post(`/app/catalogo/productos/${props.producto.id}/imagenes`, data, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+        });
+        router.reload({ only: ['producto'] });
+    } catch (e) {
+        alert('Error subiendo imagen: ' + (e.response?.data?.message || e.message));
+    } finally {
+        subiendoImagen.value = false;
+        event.target.value = '';
+    }
+};
+const eliminarImagen = (id) => {
+    modalConfirm.value = {
+        titulo: '¿Eliminar esta imagen?',
+        mensaje: 'La imagen se borra del producto y del almacenamiento.',
+        color: 'rose',
+        textoConfirmar: 'Eliminar',
+        onConfirmar: async () => {
+            modalConfirm.value = null;
+            try {
+                await axios.delete(`/app/catalogo/productos/${props.producto.id}/imagenes/${id}`);
+                router.reload({ only: ['producto'] });
+            } catch (e) {
+                alert('Error: ' + (e.response?.data?.message || e.message));
+            }
+        },
+    };
+};
+
+// Sprint Variantes · pestaña nueva, visible siempre pero utilizable solo
+// con desglose_stock=true (banner interno lo explica).
 const tabs = [
     { key: 'general', label: '1. General', icon: Info },
-    { key: 'comercial', label: '2. Comercial', icon: DollarSign },
-    { key: 'caracteristicas', label: '3. Características', icon: Ruler },
-    { key: 'ficha', label: '4. Ficha técnica', icon: FileText },
+    { key: 'variantes', label: '2. Variantes', icon: Package },
+    { key: 'comercial', label: '3. Comercial', icon: DollarSign },
+    { key: 'caracteristicas', label: '4. Características', icon: Ruler },
+    { key: 'ficha', label: '5. Ficha técnica', icon: FileText },
+    { key: 'siigo', label: '6. SIIGO', icon: Cloud },
 ];
+
+// Sprint Variantes · helpers de edición inline.
+const agregarVariante = () => {
+    form.variantes.push({
+        id: null,
+        color_id: null,
+        diseno_id: null,
+        talla_id: null,
+        codigo_barras: '',
+        // Default 0 (coherente con backend NOT NULL). Antes era null y
+        // reventaba al guardar hasta que el controller lo normalizaba.
+        stock_minimo: 0,
+    });
+};
+const quitarVariante = (idx) => {
+    const v = form.variantes[idx];
+    // Confirmación solo si la variante ya fue guardada (tiene id en BD).
+    // Para filas nuevas que apenas agregaste no tiene sentido molestar.
+    if (v?.id) {
+        modalConfirm.value = {
+            titulo: '¿Eliminar esta variante guardada?',
+            mensaje: `Se borrará la variante #${v.id} del producto. Si estaba en SIIGO también se desactivará allá.`,
+            color: 'rose',
+            textoConfirmar: 'Eliminar variante',
+            onConfirmar: () => {
+                modalConfirm.value = null;
+                form.variantes.splice(idx, 1);
+            },
+        };
+        return;
+    }
+    form.variantes.splice(idx, 1);
+};
+const generarMatriz = () => {
+    // Toma los colores, tallas y diseños marcados en los <select multiple>
+    // internos y crea el producto cartesiano, respetando lo que ya existe.
+    // Incluir diseño en el eje evita duplicados color/talla con diseño
+    // distinto (ej. "Rojo-Estrellas-M" y "Rojo-Flores-M" son variantes
+    // legítimas, no una la copia de la otra).
+    const cs = matrizColores.value.map(Number),
+          ts = matrizTallas.value.map(Number),
+          ds = matrizDisenos.value.length ? matrizDisenos.value.map(Number) : [null];
+    if (!cs.length || !ts.length) return;
+    const yaExiste = (c, t, d) => form.variantes.some(v =>
+        Number(v.color_id) === c && Number(v.talla_id) === t && (v.diseno_id ?? null) === d
+    );
+    for (const c of cs) {
+        for (const t of ts) {
+            for (const d of ds) {
+                if (!yaExiste(c, t, d)) {
+                    form.variantes.push({
+                        id: null, color_id: c, diseno_id: d, talla_id: t,
+                        codigo_barras: '', stock_minimo: 0,
+                    });
+                }
+            }
+        }
+    }
+    matrizColores.value = [];
+    matrizTallas.value = [];
+    matrizDisenos.value = [];
+};
+const matrizColores = ref([]);
+const matrizTallas = ref([]);
+const matrizDisenos = ref([]);
 </script>
 
 <template>
@@ -159,7 +498,19 @@ const tabs = [
                         <Package class="h-6 w-6 text-brand-600"/>
                         {{ esNuevo ? 'Nuevo producto' : `Producto ${producto.referencia}` }}
                     </h1>
-                    <p class="text-sm text-surface-500 mt-1">Formato SIIGO Kardex Referencias · 4 pestañas.</p>
+                    <!-- FASE F2.A5 · Toggle Producto/Servicio en header como el form oficial de SIIGO -->
+                    <div class="mt-2 inline-flex items-center gap-1 p-1 bg-surface-100 dark:bg-surface-800 rounded-lg">
+                        <button type="button" @click="form.tipo_siigo = 'Product'"
+                                :class="['text-xs px-3 py-1 rounded-md font-semibold transition',
+                                         form.tipo_siigo === 'Product' ? 'bg-brand-600 text-white shadow' : 'text-surface-600 hover:text-surface-900']">
+                            Producto
+                        </button>
+                        <button type="button" @click="form.tipo_siigo = 'Service'"
+                                :class="['text-xs px-3 py-1 rounded-md font-semibold transition',
+                                         form.tipo_siigo === 'Service' ? 'bg-brand-600 text-white shadow' : 'text-surface-600 hover:text-surface-900']">
+                            Servicio
+                        </button>
+                    </div>
                 </div>
                 <div class="flex items-center gap-2">
                     <div v-if="!esNuevo" class="flex items-center gap-1 text-xs">
@@ -169,13 +520,19 @@ const tabs = [
                             {{ producto.siigo_id ? `SIIGO: ${producto.siigo_code}` : 'Pendiente SIIGO' }}
                         </span>
                     </div>
+                    <button v-if="!esNuevo" @click="abrirClonar"
+                            class="text-sm inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-sky-500 text-sky-700 hover:bg-sky-50"
+                            title="Duplicar · crea un producto nuevo con los mismos datos">
+                        <Copy class="h-4 w-4"/> Duplicar
+                    </button>
                     <button v-if="!esNuevo" @click="eliminar" class="btn-ghost text-red-500 hover:text-red-700 text-sm">
                         <Trash2 class="h-4 w-4"/>
                     </button>
-                    <button @click="guardar" :disabled="form.processing"
+                    <button @click="guardar" :disabled="estaCargando"
                             class="btn-primary text-sm inline-flex items-center gap-1"
-                            :class="form.processing ? 'opacity-50 cursor-wait' : ''">
-                        <Save class="h-4 w-4"/> {{ form.processing ? 'Guardando…' : 'Guardar' }}
+                            :class="estaCargando ? 'opacity-50 cursor-wait' : ''">
+                        <Save class="h-4 w-4"/>
+                        {{ form.processing ? 'Guardando…' : (subiendoImagen ? 'Subiendo imagen…' : 'Guardar') }}
                     </button>
                 </div>
             </div>
@@ -193,9 +550,27 @@ const tabs = [
             <div v-if="tab === 'general'" class="card p-5 space-y-4">
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div>
-                        <label class="text-xs font-semibold text-surface-600">Referencia *</label>
-                        <input v-model="form.referencia" class="input w-full font-mono" required maxlength="100"/>
-                        <div v-if="form.errors.referencia" class="text-xs text-red-600">{{ form.errors.referencia }}</div>
+                        <label class="text-xs font-semibold text-surface-600 flex items-center justify-between">
+                            <span>Referencia / SKU *</span>
+                            <button type="button" @click="autogenerar" class="text-[11px] text-sky-600 hover:underline">
+                                Generar automáticamente
+                            </button>
+                        </label>
+                        <input v-model="form.referencia"
+                               @blur="verificarReferencia"
+                               class="input w-full font-mono"
+                               :class="refConflicto ? 'border-red-500 bg-red-50' : (refOk ? 'border-emerald-500 bg-emerald-50' : '')"
+                               required maxlength="100" placeholder="Ej: GB-0001"/>
+                        <div v-if="form.errors.referencia" class="text-xs text-red-600 mt-1">{{ form.errors.referencia }}</div>
+                        <div v-else-if="refConflicto" class="text-xs text-red-600 mt-1">
+                            ⚠ Ya existe un producto con esta referencia:
+                            <Link :href="`/app/catalogo/productos/${refConflicto.id}`" class="underline font-semibold">
+                                {{ refConflicto.nombre }}
+                            </Link>
+                            <span v-if="refConflicto.eliminado">(eliminado · usa otro código)</span>
+                        </div>
+                        <div v-else-if="refOk" class="text-xs text-emerald-700 mt-1">✓ Referencia disponible</div>
+                        <div v-else-if="refVerificando" class="text-xs text-surface-500 mt-1">Verificando…</div>
                     </div>
                     <div>
                         <label class="text-xs font-semibold text-surface-600">Nombre / Descripción *</label>
@@ -327,20 +702,143 @@ const tabs = [
                     </div>
                 </div>
 
-                <!-- Desglose stock -->
+                <!-- Toggle con copy humanizado (Fix UX Aracely) -->
                 <div class="border-t pt-4">
                     <label class="flex items-center gap-2 text-sm font-semibold">
                         <input type="checkbox" v-model="form.desglose_stock" class="rounded"/>
-                        Desglosar stock por variante (color/talla)
+                        ¿Este producto se vende en varios colores o tallas?
                     </label>
+                    <p class="text-[11px] text-surface-500 mt-1">
+                        <strong>Enciende</strong> si vendes el mismo producto en distintas versiones (Rojo‑M, Rojo‑L, Azul‑M…). Vas a poder capturar cada variante en la pestaña 2 y cada una va a SIIGO como su propio producto para facturar bien.<br>
+                        <strong>Déjalo apagado</strong> si es un producto único sin variaciones (ej. un biberón, un peluche). SIIGO lo verá como un solo renglón.
+                    </p>
                     <div v-if="!form.desglose_stock" class="mt-2">
-                        <label class="text-xs font-semibold text-surface-600">Stock inicial agregado</label>
+                        <label class="text-xs font-semibold text-surface-600">Stock inicial</label>
                         <input v-model="form.stock_directo" type="number" min="0" class="input w-40"/>
+                        <p class="text-[10px] text-surface-500 mt-1">Cantidad de unidades que tienes hoy en bodega.</p>
                     </div>
                 </div>
             </div>
 
-            <!-- PESTAÑA 2: COMERCIAL -->
+            <!-- PESTAÑA 2 · VARIANTES (Sprint Variantes) -->
+            <div v-if="tab === 'variantes'" class="card p-5 space-y-4">
+                <div class="flex items-start justify-between gap-3 flex-wrap">
+                    <div>
+                        <h3 class="font-semibold text-base">Variantes del producto</h3>
+                        <p class="text-xs text-surface-600 mt-1">
+                            Cada variante viaja a SIIGO como <strong>producto independiente</strong>
+                            (code = referencia padre + sufijo de color/talla).
+                        </p>
+                    </div>
+                    <button type="button" @click="agregarVariante"
+                            class="btn btn-primary text-sm flex items-center gap-1">
+                        <Plus class="w-4 h-4"/> Variante
+                    </button>
+                </div>
+
+                <!-- Banner si desglose_stock está apagado -->
+                <div v-if="!form.desglose_stock" class="bg-amber-50 border border-amber-300 text-amber-900 rounded px-3 py-2 text-xs">
+                    El toggle <strong>"Desglosar stock por variante"</strong> está apagado
+                    (pestaña General). Puedes capturar variantes aquí, pero el kardex local
+                    seguirá en modo agregado. Actívalo si manejas stock por color/talla.
+                </div>
+
+                <!-- Generador por matriz -->
+                <div class="border rounded p-3 bg-surface-50/50">
+                    <p class="text-xs font-semibold text-surface-700 mb-2">Generar matriz (color × talla)</p>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-2 items-end">
+                        <div>
+                            <label class="text-[11px] text-surface-600">Colores</label>
+                            <select v-model="matrizColores" multiple size="4" class="input w-full text-xs">
+                                <option v-for="c in (catalogos.colores || [])" :key="c.id" :value="c.id">
+                                    {{ c.codigo }} · {{ c.nombre }}
+                                </option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="text-[11px] text-surface-600">Tallas</label>
+                            <select v-model="matrizTallas" multiple size="4" class="input w-full text-xs">
+                                <option v-for="t in (catalogos.tallas || [])" :key="t.id" :value="t.id">{{ t.nombre }}</option>
+                            </select>
+                        </div>
+                        <button type="button" @click="generarMatriz"
+                                :disabled="!matrizColores.length || !matrizTallas.length"
+                                class="btn btn-secondary text-xs h-9 disabled:opacity-40">
+                            Crear {{ (matrizColores.length || 0) * (matrizTallas.length || 0) }} variantes
+                        </button>
+                    </div>
+                    <p class="text-[10px] text-surface-500 mt-2">Mantén Ctrl/Cmd para seleccionar varios. Las combinaciones que ya existen no se duplican.</p>
+                </div>
+
+                <!-- Tabla editable -->
+                <div v-if="form.variantes.length === 0" class="text-sm text-surface-500 italic text-center py-6">
+                    Sin variantes. Agrega una fila manualmente o genera la matriz arriba.
+                </div>
+                <div v-else class="overflow-x-auto">
+                    <table class="w-full text-xs border-collapse">
+                        <thead class="bg-surface-100 text-surface-700">
+                            <tr>
+                                <th class="text-left p-2 border">Color</th>
+                                <th class="text-left p-2 border">Diseño</th>
+                                <th class="text-left p-2 border">Talla</th>
+                                <th class="text-left p-2 border">Código de barras (EAN)</th>
+                                <th class="text-left p-2 border w-24">Stock mín.</th>
+                                <th class="p-2 border w-10"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="(v, idx) in form.variantes" :key="idx" class="hover:bg-surface-50">
+                                <td class="p-1 border">
+                                    <!-- Fix v-model.number sobre select con :value=null · el modifier
+                                         convierte null → NaN y rompe el validator exists:colores,id.
+                                         Vue infiere el tipo correcto desde el :value del option. -->
+                                    <select v-model="v.color_id" class="input w-full text-xs">
+                                        <option :value="null">—</option>
+                                        <option v-for="c in (catalogos.colores || [])" :key="c.id" :value="c.id">
+                                            {{ c.codigo }} · {{ c.nombre }}
+                                        </option>
+                                    </select>
+                                </td>
+                                <td class="p-1 border">
+                                    <select v-model="v.diseno_id" class="input w-full text-xs">
+                                        <option :value="null">—</option>
+                                        <option v-for="d in (catalogos.disenos || [])" :key="d.id" :value="d.id">
+                                            {{ d.codigo }} · {{ d.nombre }}
+                                        </option>
+                                    </select>
+                                </td>
+                                <td class="p-1 border">
+                                    <select v-model="v.talla_id" class="input w-full text-xs">
+                                        <option :value="null">—</option>
+                                        <option v-for="t in (catalogos.tallas || [])" :key="t.id" :value="t.id">{{ t.nombre }}</option>
+                                    </select>
+                                </td>
+                                <td class="p-1 border">
+                                    <input v-model="v.codigo_barras" type="text" maxlength="100"
+                                           placeholder="Opcional · se genera si vacío"
+                                           class="input w-full text-xs"/>
+                                </td>
+                                <td class="p-1 border">
+                                    <input v-model.number="v.stock_minimo" type="number" min="0"
+                                           class="input w-full text-xs"/>
+                                </td>
+                                <td class="p-1 border text-center">
+                                    <button type="button" @click="quitarVariante(idx)"
+                                            class="text-rose-600 hover:text-rose-800" title="Eliminar">
+                                        <X class="w-4 h-4"/>
+                                    </button>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <p class="text-[11px] text-surface-500">
+                    {{ form.variantes.length }} variante(s) · se guardan al pulsar
+                    <strong>Guardar</strong> arriba, en la misma transacción que el producto.
+                </p>
+            </div>
+
+            <!-- PESTAÑA 3: COMERCIAL -->
             <div v-if="tab === 'comercial'" class="card p-5 space-y-4">
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                     <div>
@@ -352,7 +850,11 @@ const tabs = [
                     </div>
                     <div>
                         <label class="text-xs font-semibold text-surface-600">Precio proveedor</label>
-                        <input v-model="form.precio_proveedor" type="number" step="0.01" min="0" class="input w-full font-mono"/>
+                        <input :value="form.precio_proveedor" @input="form.precio_proveedor = Number(($event.target.value || '').replace(/[^\d.]/g,'')) || 0"
+                               type="text" inputmode="decimal" class="input w-full font-mono"/>
+                        <p v-if="form.precio_proveedor > 0" class="text-[11px] text-surface-500 mt-1">
+                            = <strong>{{ money(form.precio_proveedor) }}</strong>
+                        </p>
                     </div>
                     <div>
                         <label class="text-xs font-semibold text-surface-600">Rentabilidad % (control)</label>
@@ -491,6 +993,422 @@ const tabs = [
 
 Este texto aparece al momento de facturar y puede modificarse por línea."></textarea>
                     <p class="text-xs text-surface-500 mt-1">Se muestra en el detalle del producto en factura y catálogo B2B.</p>
+                </div>
+            </div>
+
+            <!-- PESTAÑA 5: SIIGO · configuración 1:1 con el producto en SIIGO Nube -->
+            <div v-if="tab === 'siigo'" class="space-y-4">
+                <!-- Alerta si no hay catálogos sincronizados -->
+                <div v-if="!catalogos.siigo || (catalogos.siigo.account_groups || []).length === 0"
+                     class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                    ⚠ Los catálogos SIIGO aún no están sincronizados.
+                    Ve al panel <Link href="/app/siigo" class="underline font-semibold">SIIGO</Link> y haz clic en
+                    <strong>"Sincronizar catálogos"</strong> para que los selectores de abajo tengan opciones reales.
+                </div>
+
+                <div v-else class="rounded-lg border border-sky-200 bg-sky-50 p-3 text-xs text-sky-800 flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-sky-500"></span>
+                    <span>
+                        Opciones cargadas desde tu tenant SIIGO:
+                        <strong>{{ (catalogos.siigo.account_groups || []).length }}</strong> grupos de inventario,
+                        <strong>{{ (catalogos.siigo.taxes || []).length }}</strong> impuestos,
+                        <strong>{{ (catalogos.siigo.warehouses || []).length }}</strong> bodegas,
+                        <strong>{{ (catalogos.siigo.price_lists || []).length }}</strong> listas de precios.
+                    </span>
+                    <span v-if="catalogos.siigo.sync_at" class="ml-auto text-sky-600">
+                        Última sync: {{ new Date(catalogos.siigo.sync_at).toLocaleString('es-CO') }}
+                    </span>
+                </div>
+
+                <!-- Fix UX Aracely · si el producto aún no existe, en vez de
+                     dejar la sección completamente invisible mostramos un cartel
+                     que explica qué va a aparecer ahí tras guardar. -->
+                <div v-if="esNuevo" class="card p-5 bg-sky-50 border-sky-200 text-sky-900">
+                    <h3 class="font-bold text-sm uppercase mb-1">Verificación en vivo con SIIGO</h3>
+                    <p class="text-xs">
+                        Primero guarda el producto. Después aquí vas a ver en tiempo real qué datos tiene SIIGO y
+                        podrás reenviarlo si algo no coincide con el ERP.
+                    </p>
+                </div>
+
+                <!-- FASE D · Verificación en vivo contra SIIGO -->
+                <div v-if="!esNuevo" class="card p-5 space-y-3">
+                    <div class="flex items-center justify-between flex-wrap gap-2">
+                        <h3 class="font-bold text-sm uppercase text-surface-600">Verificación en vivo con SIIGO</h3>
+                        <div class="flex items-center gap-2">
+                            <button @click="verEnSiigo" :disabled="cargandoSiigo"
+                                    class="text-xs inline-flex items-center gap-1 px-2 py-1.5 rounded border border-sky-500 text-sky-700 hover:bg-sky-50 disabled:opacity-50">
+                                <Cloud class="h-3.5 w-3.5"/>
+                                {{ cargandoSiigo ? 'Consultando…' : 'Ver en SIIGO ahora' }}
+                            </button>
+                            <button @click="forzarSync" :disabled="forzandoSync"
+                                    class="text-xs inline-flex items-center gap-1 px-2 py-1.5 rounded border border-amber-500 text-amber-700 hover:bg-amber-50 disabled:opacity-50">
+                                {{ forzandoSync ? 'Encolando…' : '⟲ Forzar re-sync' }}
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Mensaje si no hay siigo_id -->
+                    <div v-if="siigoVivo && !siigoVivo.ok" class="text-sm rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">
+                        ⚠ {{ siigoVivo.motivo || `SIIGO respondió HTTP ${siigoVivo.http}` }}
+                    </div>
+
+                    <!-- Modo AGREGADO · diff 1:1 lado a lado (producto único en SIIGO). -->
+                    <div v-if="siigoVivo && siigoVivo.ok && !form.desglose_stock" class="space-y-2">
+                        <table class="w-full text-sm border rounded-lg overflow-hidden">
+                            <thead class="bg-surface-50 text-xs uppercase text-surface-500">
+                                <tr>
+                                    <th class="p-2 text-left w-1/3">Campo</th>
+                                    <th class="p-2 text-left">ERP</th>
+                                    <th class="p-2 text-left">SIIGO</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="d in diffCampos" :key="d.campo"
+                                    :class="d.igual ? '' : 'bg-red-50'">
+                                    <td class="p-2 font-semibold">{{ d.campo }}</td>
+                                    <td class="p-2 font-mono text-xs">{{ d.local }}</td>
+                                    <td class="p-2 font-mono text-xs" :class="! d.igual && 'text-red-700'">
+                                        {{ d.siigo }}
+                                        <span v-if="! d.igual" class="ml-1 text-red-500">⚠</span>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        <details class="text-xs">
+                            <summary class="cursor-pointer text-surface-500 hover:text-surface-700">
+                                Ver JSON crudo de SIIGO
+                            </summary>
+                            <pre class="mt-2 p-3 bg-surface-900 text-emerald-300 rounded-lg overflow-x-auto max-h-96 text-[10px]">{{ JSON.stringify(siigoVivo.respuesta_siigo, null, 2) }}</pre>
+                        </details>
+                    </div>
+
+                    <!-- Modo VARIANTES · el diff 1:1 no aplica; cada variante es un
+                         producto SIIGO independiente. Mostramos el estado real de la
+                         bandada: cuántas quedaron en SIIGO, con su siigo_id. -->
+                    <div v-if="form.desglose_stock" class="space-y-2">
+                        <div class="rounded-lg border border-sky-200 bg-sky-50 p-3 text-xs text-sky-900">
+                            Este producto está en modo <strong>desglose por variante</strong>: cada variante
+                            viaja a SIIGO como producto independiente. Por eso aquí no hay un único
+                            registro padre que comparar · abajo verás el estado real de cada variante.
+                        </div>
+                        <table class="w-full text-sm border rounded-lg overflow-hidden">
+                            <thead class="bg-surface-50 text-xs uppercase text-surface-500">
+                                <tr>
+                                    <th class="p-2 text-left">Variante</th>
+                                    <th class="p-2 text-left">Código de barras</th>
+                                    <th class="p-2 text-left">Estado en SIIGO</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="v in (producto?.variantes || [])" :key="v.id">
+                                    <td class="p-2 text-xs">#{{ v.id }}
+                                        <span v-if="v.color_id || v.talla_id" class="text-surface-500">
+                                            · color {{ v.color_id ?? '—' }} · talla {{ v.talla_id ?? '—' }}
+                                        </span>
+                                    </td>
+                                    <td class="p-2 font-mono text-xs">{{ v.codigo_barras || '—' }}</td>
+                                    <td class="p-2 text-xs">
+                                        <span v-if="v.siigo_id" class="inline-flex items-center gap-1 text-emerald-700">
+                                            ✅ sincronizada
+                                            <span class="font-mono text-[10px] text-emerald-600" :title="v.siigo_id">
+                                                ({{ String(v.siigo_id).slice(0, 8) }}…)
+                                            </span>
+                                        </span>
+                                        <span v-else class="inline-flex items-center gap-1 text-amber-700">
+                                            ⌛ pendiente
+                                        </span>
+                                    </td>
+                                </tr>
+                                <tr v-if="!producto?.variantes?.length">
+                                    <td colspan="3" class="p-3 text-center text-xs text-surface-500 italic">
+                                        No hay variantes capturadas aún. Agrega filas en la pestaña 2.
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <p v-if="(producto?.variantes || []).length" class="text-[11px] text-surface-500">
+                            {{ (producto?.variantes || []).filter(v => v.siigo_id).length }}
+                            de {{ (producto?.variantes || []).length }} variantes sincronizadas con SIIGO.
+                        </p>
+                        <!-- Fix UX · antes decía "0 de 0" cuando el producto aún no tiene
+                             variantes capturadas · Aracely lo leía como "nada sincronizó". -->
+                        <p v-else class="text-[11px] text-surface-500 italic">
+                            Guarda primero el producto con sus variantes para iniciar la sincronización con SIIGO.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Clasificación SIIGO -->
+                <div class="card p-5 space-y-4">
+                    <h3 class="font-bold text-sm uppercase text-surface-600">Clasificación SIIGO</h3>
+
+                    <div class="grid md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="text-xs font-semibold text-surface-600">Tipo de producto en SIIGO</label>
+                            <select v-model="form.tipo_siigo" class="input w-full">
+                                <option v-for="t in (catalogos.siigo?.types || [])" :key="t.id" :value="t.id">{{ t.nombre }}</option>
+                            </select>
+                            <p class="text-[10px] text-surface-500 mt-1">Controla si lleva stock, si se factura como servicio, etc.</p>
+                        </div>
+
+                        <div>
+                            <label class="text-xs font-semibold text-surface-600">Clasificación tributaria</label>
+                            <select v-model="form.tax_classification" class="input w-full">
+                                <option v-for="t in (catalogos.siigo?.tax_classifications || [])" :key="t.id" :value="t.id">{{ t.nombre }}</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- FASE H · Toggle "Visible en facturas de venta" (header del form SIIGO) -->
+                    <label class="flex items-start gap-2 text-sm border-t pt-3">
+                        <input type="checkbox" v-model="form.visible_en_facturas" class="mt-1 rounded"/>
+                        <span>
+                            <strong>Visible en facturas de venta</strong>
+                            <div class="text-xs text-surface-500">Desactiva si es un producto interno que no debe aparecer en el combo del facturador.</div>
+                        </span>
+                    </label>
+
+                    <div>
+                        <label class="text-xs font-semibold text-surface-600">Grupo de inventario SIIGO (account_group)</label>
+                        <!-- FASE F2.A4 · ahora persiste a form.siigo_account_group_override -->
+                        <select v-model.number="form.siigo_account_group_override" class="input w-full">
+                            <option :value="null">— Hereda de categoría local ({{ categoriaActual?.siigo_account_group_id || '—' }}) —</option>
+                            <option v-for="g in (catalogos.siigo?.account_groups || [])" :key="g.id" :value="g.id">
+                                {{ g.id }} · {{ g.nombre }}
+                            </option>
+                        </select>
+                        <p class="text-[10px] text-surface-500 mt-1">
+                            Si lo dejas en blanco, usa el grupo asignado a la categoría local.
+                            Si lo defines aquí, SOBRESCRIBE para este producto y viaja a SIIGO como <code class="bg-surface-100 px-1">account_group</code>.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Impuestos múltiples -->
+                <div class="card p-5 space-y-3">
+                    <div class="flex items-center justify-between">
+                        <h3 class="font-bold text-sm uppercase text-surface-600">Impuestos (SIIGO acepta hasta 3)</h3>
+                        <span class="text-xs text-surface-500">{{ form.impuestos_ids.length }} seleccionado(s)</span>
+                    </div>
+
+                    <div class="grid md:grid-cols-2 gap-2 max-h-60 overflow-y-auto border rounded-lg p-3">
+                        <label v-for="imp in (catalogos.impuestos || [])" :key="imp.id"
+                               class="flex items-center gap-2 text-sm hover:bg-surface-50 p-1 rounded cursor-pointer">
+                            <input type="checkbox" :value="imp.id" v-model="form.impuestos_ids" class="rounded"/>
+                            <span>{{ imp.nombre }} <span class="text-xs text-surface-500">({{ imp.porcentaje }}%)</span></span>
+                            <span v-if="imp.siigo_id" class="ml-auto text-[10px] text-emerald-600" title="Linkeado a SIIGO">✓ SIIGO</span>
+                            <span v-else class="ml-auto text-[10px] text-amber-600" title="No linkeado — se buscará por %">⚠</span>
+                        </label>
+                    </div>
+
+                    <div class="grid md:grid-cols-3 gap-4 pt-2 border-t">
+                        <label class="flex items-center gap-2 text-sm">
+                            <input type="checkbox" v-model="form.tax_included" class="rounded"/>
+                            <span>Precio incluye IVA</span>
+                        </label>
+                        <div class="md:col-span-2">
+                            <label class="text-xs font-semibold text-surface-600">Valor impoconsumo (saludables)</label>
+                            <input v-model.number="form.tax_consumption_value" type="number" step="0.01" class="input w-full"
+                                   placeholder="Solo para bebidas azucaradas · dejar vacío si no aplica"/>
+                        </div>
+                    </div>
+
+                    <!-- FASE H · Retención + Impuesto cargo dos (del form SIIGO) -->
+                    <div class="grid md:grid-cols-2 gap-4 pt-2 border-t">
+                        <div>
+                            <label class="text-xs font-semibold text-surface-600">Retención</label>
+                            <select v-model="form.retencion_siigo_id" class="input w-full">
+                                <option :value="null">No aplica</option>
+                                <option v-for="imp in (catalogos.impuestos || []).filter(i => (i.tipo || '').toLowerCase().includes('reten'))"
+                                        :key="imp.id" :value="imp.id">
+                                    {{ imp.nombre }} ({{ imp.porcentaje }}%)
+                                </option>
+                            </select>
+                            <p class="text-[10px] text-surface-500 mt-1">Retención en la fuente aplicable al producto · SIIGO: `withholding_taxes[]`.</p>
+                        </div>
+                        <div>
+                            <label class="text-xs font-semibold text-surface-600">Impuesto cargo dos (opcional)</label>
+                            <select v-model="form.impuesto_cargo_dos_id" class="input w-full">
+                                <option :value="null">No aplica</option>
+                                <option v-for="imp in (catalogos.impuestos || []).filter(i => ! (i.tipo || '').toLowerCase().includes('reten'))"
+                                        :key="imp.id" :value="imp.id">
+                                    {{ imp.nombre }} ({{ imp.porcentaje }}%)
+                                </option>
+                            </select>
+                            <p class="text-[10px] text-surface-500 mt-1">Segundo impuesto cargo cuando aplica combinación (ej: IVA + ICA).</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- FASE H · Descripción y stock + Imágenes (replica tabs SIIGO 2 y 3) -->
+                <div class="card p-5 space-y-4">
+                    <h3 class="font-bold text-sm uppercase text-surface-600">Descripción y stock (SIIGO)</h3>
+                    <div class="grid md:grid-cols-3 gap-4">
+                        <div>
+                            <label class="text-xs font-semibold text-surface-600">Referencia de fábrica</label>
+                            <input v-model="form.reference_fabrica" type="text" maxlength="60" class="input w-full"
+                                   placeholder="Ej: REF-TEST-003"/>
+                            <p class="text-[10px] text-surface-500 mt-1">Distinta del SKU · SIIGO: campo `reference`.</p>
+                        </div>
+                        <div>
+                            <label class="text-xs font-semibold text-surface-600">Stock mínimo</label>
+                            <input v-model.number="form.stock_minimo" type="number" step="0.0001" min="0" class="input w-full"
+                                   placeholder="0"/>
+                            <p class="text-[10px] text-surface-500 mt-1">Alerta cuando el stock baja de este valor.</p>
+                        </div>
+                        <div>
+                            <label class="text-xs font-semibold text-surface-600">Etiqueta de unidad en factura</label>
+                            <input v-model="form.unit_label" type="text" maxlength="50" class="input w-full"
+                                   placeholder="Unidad / Caja / Paquete"/>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Imágenes (tab "Subir imágenes" del form SIIGO · hasta 5) -->
+                <div class="card p-5 space-y-3">
+                    <div class="flex items-center justify-between">
+                        <h3 class="font-bold text-sm uppercase text-surface-600">Imágenes del producto (hasta 5 · PNG/JPG · 1MB c/u)</h3>
+                        <span class="text-xs text-surface-500">{{ (producto?.imagenes || []).length }}/5</span>
+                    </div>
+
+                    <div v-if="esNuevo" class="rounded-lg border border-sky-200 bg-sky-50 p-3 text-xs text-sky-800">
+                        💡 Guarda primero el producto · después podrás subir imágenes desde el detalle.
+                    </div>
+
+                    <div v-else>
+                        <div class="grid grid-cols-5 gap-2">
+                            <div v-for="slot in 5" :key="slot" class="relative aspect-square border-2 border-dashed border-surface-200 rounded-lg overflow-hidden">
+                                <img v-if="producto?.imagenes?.[slot-1]"
+                                     :src="producto.imagenes[slot-1].url"
+                                     :alt="`Imagen ${slot}`"
+                                     class="w-full h-full object-cover"/>
+                                <label v-else
+                                       class="flex flex-col items-center justify-center h-full text-xs text-surface-400 cursor-pointer hover:bg-surface-50">
+                                    <input type="file" accept="image/png,image/jpeg" class="hidden"
+                                           @change="(e) => subirImagen(e, slot - 1)"/>
+                                    <span class="text-2xl">+</span>
+                                    <span>Slot {{ slot }}</span>
+                                </label>
+                                <button v-if="producto?.imagenes?.[slot-1]" type="button"
+                                        @click="eliminarImagen(producto.imagenes[slot-1].id)"
+                                        class="absolute top-1 right-1 bg-red-500 text-white rounded-full w-5 h-5 text-xs flex items-center justify-center">
+                                    ✕
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Flags adicionales SIIGO -->
+                <div class="card p-5 space-y-3">
+                    <h3 class="font-bold text-sm uppercase text-surface-600">Comportamiento en SIIGO</h3>
+                    <div class="grid md:grid-cols-2 gap-4">
+                        <label class="flex items-start gap-2 text-sm">
+                            <input type="checkbox" v-model="form.stock_control" class="mt-1 rounded"/>
+                            <span>
+                                <strong>Lleva control de stock (kardex)</strong>
+                                <div class="text-xs text-surface-500">Desactiva si es un servicio o un gasto sin inventario</div>
+                            </span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- FASE C4 · Historial de sync SIIGO del producto -->
+                <div v-if="!esNuevo && historial.length" class="card p-5 space-y-3">
+                    <h3 class="font-bold text-sm uppercase text-surface-600">Historial de sync SIIGO · últimos {{ historial.length }}</h3>
+                    <div class="max-h-60 overflow-y-auto">
+                        <table class="w-full text-xs">
+                            <thead class="text-left text-surface-500 uppercase">
+                                <tr>
+                                    <th class="py-1">Cuándo</th>
+                                    <th class="py-1">Acción</th>
+                                    <th class="py-1">Estado</th>
+                                    <th class="py-1">Mensaje</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="h in historial" :key="h.id" class="border-t border-surface-100">
+                                    <td class="py-1 text-surface-600">{{ h.hace }}</td>
+                                    <td class="py-1 font-mono">{{ h.accion }}</td>
+                                    <td class="py-1">
+                                        <span :class="h.estado === 'exitoso' ? 'text-emerald-700' : (h.estado === 'fallido' ? 'text-red-700' : 'text-amber-700')">
+                                            {{ h.estado }}
+                                        </span>
+                                    </td>
+                                    <td class="py-1 text-surface-500 truncate max-w-xs" :title="h.mensaje">{{ h.mensaje }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Campos adicionales -->
+                <div class="card p-5 space-y-4">
+                    <h3 class="font-bold text-sm uppercase text-surface-600">Campos adicionales SIIGO</h3>
+                    <div class="grid md:grid-cols-3 gap-4">
+                        <div>
+                            <label class="text-xs font-semibold text-surface-600">Modelo</label>
+                            <input v-model="form.modelo_siigo" type="text" maxlength="100" class="input w-full"
+                                   placeholder="Ej: Loiry, M-2024"/>
+                        </div>
+                        <div>
+                            <label class="text-xs font-semibold text-surface-600">Código de barras padre</label>
+                            <input v-model="form.barcode_padre" type="text" maxlength="100" class="input w-full"
+                                   placeholder="Si el producto no tiene variantes"/>
+                        </div>
+                        <!-- FASE F4.M6 · "Etiqueta de unidad" eliminada aquí · ya existe en la pestaña anterior (línea ~922). Dos inputs al mismo v-model confundían a Aracely ("¿cuál se guarda?"). -->
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- Modal de confirmación global · reemplaza confirm() nativo bloqueado en iframe. -->
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
+
+        <!-- PROD-7 · Modal Duplicar con alcance -->
+        <div v-if="modalClonar"
+             class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+             @click.self="modalClonar = null">
+            <div class="bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+                <div class="flex items-start gap-3 mb-4">
+                    <div class="p-2 bg-sky-50 rounded-lg">
+                        <Copy class="h-5 w-5 text-sky-600"/>
+                    </div>
+                    <div class="flex-1">
+                        <h3 class="font-semibold text-surface-800">Duplicar {{ producto.referencia }}</h3>
+                        <p class="text-sm text-surface-500 mt-0.5">Elige qué incluir en el clon. La ficha, impuestos, accesorios y sustitutos siempre se copian.</p>
+                    </div>
+                </div>
+
+                <div class="space-y-2.5 mb-5">
+                    <label class="flex items-start gap-2.5 p-3 rounded-lg border border-surface-200 hover:bg-surface-50 cursor-pointer">
+                        <input type="checkbox" v-model="modalClonar.incluirVariantes"
+                               class="mt-0.5 h-4 w-4 text-sky-600 rounded border-surface-300"/>
+                        <div class="flex-1">
+                            <div class="font-medium text-sm text-surface-800">Variantes</div>
+                            <div class="text-xs text-surface-500">Color, diseño, talla y stock mínimo (solo si el producto está en modo granular).</div>
+                        </div>
+                    </label>
+                    <label class="flex items-start gap-2.5 p-3 rounded-lg border border-surface-200 hover:bg-surface-50 cursor-pointer"
+                           :class="! modalClonar.incluirVariantes && 'opacity-50 pointer-events-none'">
+                        <input type="checkbox" v-model="modalClonar.incluirPrecios"
+                               :disabled="! modalClonar.incluirVariantes"
+                               class="mt-0.5 h-4 w-4 text-sky-600 rounded border-surface-300"/>
+                        <div class="flex-1">
+                            <div class="font-medium text-sm text-surface-800">Precios por lista</div>
+                            <div class="text-xs text-surface-500">Copia los precios de cada lista. Si vas a revisarlos manualmente, déjalo en blanco.</div>
+                        </div>
+                    </label>
+                </div>
+
+                <div class="flex gap-2 justify-end">
+                    <button @click="modalClonar = null"
+                            class="text-sm px-4 py-2 rounded-lg text-surface-600 hover:bg-surface-100">Cancelar</button>
+                    <button @click="confirmarClonar"
+                            class="text-sm px-4 py-2 rounded-lg bg-sky-600 text-white hover:bg-sky-700 inline-flex items-center gap-1.5">
+                        <Copy class="h-4 w-4"/> Duplicar
+                    </button>
                 </div>
             </div>
         </div>

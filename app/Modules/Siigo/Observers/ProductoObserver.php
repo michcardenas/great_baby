@@ -66,6 +66,14 @@ class ProductoObserver
         'factor_conversion',
         'unidad_compra_id',
         'reposicion_max_dias',
+        // FASE F1.C1 (CRÍTICO) · campos FASE H + Sprint SIIGO Paridad que
+        // antes NO disparaban push a SIIGO. El usuario reportaba "edito stock
+        // mínimo o retención y SIIGO nunca se entera" → esto lo soluciona.
+        'tipo_siigo', 'stock_control', 'tax_classification', 'tax_included',
+        'tax_consumption_value', 'modelo_siigo', 'barcode_padre', 'unit_label',
+        'visible_en_facturas', 'retencion_siigo_id', 'impuesto_cargo_dos_id',
+        'reference_fabrica', 'stock_minimo', 'coleccion_id',
+        'siigo_account_group_override',  // FASE F2.A4
     ];
 
     /**
@@ -128,6 +136,44 @@ class ProductoObserver
     {
         DB::afterCommit(function () use ($producto) {
             PushProductoASiigo::dispatchDebounced($producto->id, 'actualizar');
+        });
+    }
+
+    /**
+     * Hard-delete (`forceDelete`) en el ERP → DELETE real en SIIGO.
+     * Si SIIGO rechaza por `delete_not_allowed` (producto con movimientos),
+     * EliminarProductoEnSiigo cae automáticamente a soft-delete `active:false`.
+     */
+    public function forceDeleted(Producto $producto): void
+    {
+        $siigoIdPadre = $producto->siigo_id;
+        // PROD-5 · snapshot de los siigo_ids de las variantes ANTES de que
+        // el cascade de la FK las elimine. Sin esto, un producto en modo
+        // granular (desglose_stock=true · padre siigo_id=NULL · N variantes
+        // con siigo_id) dejaba las N variantes activas como zombies en
+        // SIIGO porque el Job recibía siigoId=NULL del padre y el recovery
+        // exigía ese id para hacer el PUT active:false.
+        $siigoIdsVariantes = $producto->variantes()
+            ->whereNotNull('siigo_id')
+            ->pluck('siigo_id')
+            ->all();
+
+        if (! $siigoIdPadre && empty($siigoIdsVariantes)) {
+            return;  // nunca estuvo en SIIGO, nada que borrar.
+        }
+
+        $productoId = $producto->id;
+        DB::afterCommit(function () use ($productoId, $siigoIdPadre, $siigoIdsVariantes) {
+            // Padre (si estaba en SIIGO como producto agregado).
+            if ($siigoIdPadre) {
+                PushProductoASiigo::dispatchManual($productoId, 'eliminar', $siigoIdPadre);
+            }
+            // 1 job de eliminar por cada variante que vivía en SIIGO como
+            // producto independiente · el Job hace GET + PUT(active:false)
+            // sin depender ya del modelo local (que se hard-deleteó).
+            foreach ($siigoIdsVariantes as $siigoId) {
+                PushProductoASiigo::dispatchManual($productoId, 'eliminar', $siigoId);
+            }
         });
     }
 }

@@ -6,6 +6,7 @@ use App\Modules\Dropi\Models\Producto;
 use App\Modules\Siigo\Actions\ActualizarProductoEnSiigo;
 use App\Modules\Siigo\Actions\CrearProductoEnSiigo;
 use App\Modules\Siigo\Actions\DesactivarProductoEnSiigo;
+use App\Modules\Siigo\Actions\EliminarProductoEnSiigo;
 use App\Modules\Siigo\Exceptions\SiigoRateLimitedException;
 use App\Modules\Siigo\Models\SiigoSyncLog;
 use Illuminate\Bus\Queueable;
@@ -67,7 +68,7 @@ class PushProductoASiigo implements ShouldQueue
      * entre dispatch y handle).
      */
     public bool $manual = false;
-    public ?int $siigoId = null;
+    public ?string $siigoId = null;
 
     public function __construct(
         public int $productoId,
@@ -165,7 +166,7 @@ class PushProductoASiigo implements ShouldQueue
      *
      * NO se usa desde el Observer · exclusivo para acciones humanas explícitas.
      */
-    public static function dispatchManual(int $productoId, string $accion, ?int $siigoId = null): void
+    public static function dispatchManual(int $productoId, string $accion, ?string $siigoId = null): void
     {
         $job = new static($productoId, $accion);
         $job->manual = true;
@@ -211,15 +212,37 @@ class PushProductoASiigo implements ShouldQueue
             return;
         }
 
-        $producto = Producto::find($this->productoId);
+        // withTrashed() · un soft-delete deja deleted_at != null; necesitamos
+        // la fila para armar el payload completo del PUT que desactiva en SIIGO.
+        $producto = Producto::withTrashed()->find($this->productoId);
         if (! $producto) {
             // C3 · si el producto local ya no existe (hard delete entre dispatch
             // y handle) pero traemos siigoId en el job, mandamos igual el
             // desactivar directo a SIIGO — no dejar productos vivos allá.
-            if ($this->siigoId && $this->accion === 'desactivar') {
+            if ($this->siigoId && in_array($this->accion, ['desactivar', 'eliminar'], true)) {
                 try {
-                    app(\App\Modules\Siigo\Clients\SiigoClient::class)
-                        ->request('PUT', "/v1/products/{$this->siigoId}", ['active' => false]);
+                    $client = app(\App\Modules\Siigo\Clients\SiigoClient::class);
+                    // SIIGO rechaza PUT con solo {active:false} · hace falta payload
+                    // completo. Hacemos GET primero y reciclamos los campos requeridos.
+                    $get = $client->request('GET', "/v1/products/{$this->siigoId}");
+                    if ($get->ok()) {
+                        $d = $get->json();
+                        $payload = [
+                            'code' => $d['code'],
+                            'name' => $d['name'],
+                            'account_group' => $d['account_group']['id'] ?? null,
+                            'type' => $d['type'] ?? 'Product',
+                            'stock_control' => $d['stock_control'] ?? true,
+                            'active' => false,
+                            'tax_classification' => $d['tax_classification'] ?? 'Taxed',
+                            'tax_included' => $d['tax_included'] ?? false,
+                            'taxes' => array_map(fn($t) => ['id' => $t['id']], $d['taxes'] ?? []),
+                            'prices' => $d['prices'] ?? [],
+                            'unit' => $d['unit']['code'] ?? '94',
+                            'unit_label' => $d['unit_label'] ?? 'unidad',
+                        ];
+                        $client->request('PUT', "/v1/products/{$this->siigoId}", $payload);
+                    }
                     SiigoSyncLog::create([
                         'recurso' => 'productos', 'estado' => 'exitoso',
                         'nuevos' => 0, 'actualizados' => 1, 'errores' => 0, 'duracion_ms' => 0,
@@ -267,6 +290,7 @@ class PushProductoASiigo implements ShouldQueue
                 'crear'       => CrearProductoEnSiigo::run($producto),
                 'actualizar'  => ActualizarProductoEnSiigo::run($producto),
                 'desactivar'  => DesactivarProductoEnSiigo::run($producto),
+                'eliminar'    => EliminarProductoEnSiigo::run($producto),
                 default       => throw new \InvalidArgumentException("Acción SIIGO inválida: {$efectiva}"),
             };
         } catch (SiigoRateLimitedException $e) {
@@ -302,5 +326,22 @@ class PushProductoASiigo implements ShouldQueue
             'accion' => $this->accion,
             'error' => $e->getMessage(),
         ]);
+
+        // FASE F1.C5 · "zombie inverso" · si la acción era `eliminar` o
+        // `desactivar` y el producto quedó soft-deleted en el ERP pero NUNCA
+        // llegamos a avisar a SIIGO, restauramos el producto para que Aracely
+        // pueda intentar manualmente (botón "Forzar re-sync") y no quede
+        // divergencia silenciosa (local=borrado, SIIGO=vivo).
+        if (in_array($this->accion, ['eliminar', 'desactivar'], true)) {
+            try {
+                $p = \App\Modules\Dropi\Models\Producto::onlyTrashed()->find($this->productoId);
+                if ($p) {
+                    $p->restore();
+                    Log::channel('siigo')->warning("Producto {$this->productoId} restaurado tras fallo de SIIGO · evita zombie inverso");
+                }
+            } catch (\Throwable $re) {
+                Log::channel('siigo')->error("Failed to auto-restore producto {$this->productoId}: " . $re->getMessage());
+            }
+        }
     }
 }

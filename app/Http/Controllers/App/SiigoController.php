@@ -5,6 +5,8 @@ namespace App\Http\Controllers\App;
 use App\Http\Controllers\Controller;
 use App\Modules\Dropi\Models\Producto;
 use App\Modules\Siigo\Jobs\PushProductoASiigo;
+use App\Modules\Siigo\Jobs\ReconciliarProductosDesdeSiigo;
+use Illuminate\Support\Facades\Cache;
 use App\Modules\Siigo\Models\SiigoConfig;
 use App\Modules\Siigo\Models\SiigoSyncLog;
 use Illuminate\Http\JsonResponse;
@@ -64,6 +66,7 @@ class SiigoController extends Controller implements HasMiddleware
             'fallidos_recientes' => $this->fallidosRecientes(),
             'logs' => $ultimosLogs->map(fn ($l) => $this->serializarLog($l))->all(),
             'puede_toggle' => (bool) auth()->user()?->esAracely(),
+            'reconciliar' => $this->estadoReconciliarVista(),
         ]);
     }
 
@@ -116,6 +119,251 @@ class SiigoController extends Controller implements HasMiddleware
         return back()->with('flash', [
             'type' => 'success',
             'message' => "Sync manual encolado · producto {$productoId} · {$accion}",
+        ]);
+    }
+
+    /**
+     * Sincronizar catálogos de SIIGO al ERP (taxes, account-groups, warehouses,
+     * price-lists, document-types, payment-types) + propagar siigo_id a las
+     * tablas locales (impuestos, categorias, listas_precios).
+     *
+     * Esto es la base para que los selectores del form de productos tengan
+     * opciones reales de SIIGO en vez de datos inventados localmente.
+     */
+    public function sincronizarCatalogos(): JsonResponse
+    {
+        try {
+            $svc = new \App\Modules\Siigo\Services\SiigoService(
+                new \App\Modules\Siigo\Clients\SiigoClient(SiigoConfig::current())
+            );
+            $r = $svc->sincronizarCatalogos();
+            return response()->json(['ok' => true, 'resumen' => $r]);
+        } catch (\Throwable $e) {
+            return response()->json(['ok' => false, 'mensaje' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Importar UN producto puntual desde SIIGO al ERP por su `code`.
+     * Útil para sandbox compartido (evita traer basura del tenant) y
+     * para cuando el usuario quiere traer un producto específico.
+     * Si ya existe en el ERP (match por siigo_id o referencia=code), lo actualiza.
+     */
+    public function importarPorCode(Request $r): JsonResponse
+    {
+        $code = trim((string) $r->input('code'));
+        if ($code === '') {
+            return response()->json(['ok' => false, 'mensaje' => 'Falta el code'], 422);
+        }
+        $client = new \App\Modules\Siigo\Clients\SiigoClient(SiigoConfig::current());
+        $resp = $client->request('GET', '/v1/products', ['code' => $code]);
+        if ($resp->failed()) {
+            return response()->json(['ok' => false, 'mensaje' => 'SIIGO HTTP '.$resp->status()], 502);
+        }
+        $items = $resp->json('results') ?? [];
+        if (empty($items)) {
+            return response()->json(['ok' => false, 'mensaje' => "SIIGO no tiene ningún producto con code={$code}"]);
+        }
+        $svc = new \App\Modules\Siigo\Services\SiigoService($client);
+        $metodo = (new \ReflectionClass($svc))->getMethod('guardarProducto');
+        $metodo->setAccessible(true);
+        $nuevos = 0; $actualizados = 0;
+        foreach ($items as $p) {
+            $existente = \App\Modules\Dropi\Models\Producto::where('siigo_id', $p['id'])
+                ->orWhere('referencia', $p['code'] ?? null)->first();
+            $creado = $metodo->invoke($svc, $p, $existente);
+            $creado ? $nuevos++ : $actualizados++;
+        }
+        return response()->json([
+            'ok' => true,
+            'resumen' => compact('nuevos', 'actualizados'),
+            'mensaje' => "+{$nuevos} nuevos · {$actualizados} actualizados · total {$this->totalErp()}",
+        ]);
+    }
+
+    private function totalErp(): int
+    {
+        return \App\Modules\Dropi\Models\Producto::count();
+    }
+
+    /**
+     * Reconciliación bajo demanda · dispara el pull completo SIIGO→ERP
+     * con detección de zombies. Devuelve resumen para toast en el panel.
+     */
+    /**
+     * B2/B3 · Despacha reconciliación INCREMENTAL (modo seguro) a la cola.
+     *
+     * Trae solo lo que cambió en SIIGO desde siigo_config.sync_productos_at
+     * (típicamente <30 seg). El pull completo con detección de zombies
+     * NO está expuesto en la UI · se corre con
+     *     php artisan siigo:reconciliar --full --confirmar
+     * para evitar accidentes como traer 20k productos del sandbox compartido.
+     */
+    public function reconciliar(): JsonResponse
+    {
+        $estado = Cache::get(ReconciliarProductosDesdeSiigo::CACHE_KEY);
+        if (($estado['estado'] ?? null) === 'corriendo') {
+            return response()->json([
+                'ok' => true,
+                'yaCorriendo' => true,
+                'mensaje' => 'Ya hay una sincronización en curso · espera a que termine.',
+                'inicio' => $estado['inicio'] ?? null,
+            ]);
+        }
+
+        ReconciliarProductosDesdeSiigo::dispatch(full: false)->onQueue('siigo');
+
+        $desde = SiigoConfig::current()->sync_productos_at;
+        Cache::put(ReconciliarProductosDesdeSiigo::CACHE_KEY, [
+            'estado' => 'corriendo',
+            'modo' => 'incremental',
+            'inicio' => now()->toIso8601String(),
+            'desde' => $desde?->toIso8601String(),
+            'resumen' => null,
+            'error' => null,
+        ], 3600);
+
+        return response()->json([
+            'ok' => true,
+            'encolado' => true,
+            'modo' => 'incremental',
+            'desde' => $desde?->toIso8601String(),
+            'mensaje' => $desde
+                ? "Trayendo cambios desde {$desde->diffForHumans()}…"
+                : 'Primera sincronización · trayendo últimos 7 días…',
+        ]);
+    }
+
+    /** Polling · consulta estado de la última reconciliación. */
+    /**
+     * FASE E · Semáforo ligero · consulta rápida para el header global.
+     * Retorna {color, label, pendientes, errores24h, push_auto}.
+     */
+    public function semaforo(): JsonResponse
+    {
+        $pendientes = 0;
+        try {
+            $pendientes = (int) \DB::table('jobs')
+                ->where('queue', config('siigo.queue', 'siigo'))
+                ->count();
+        } catch (\Throwable) {}
+
+        $errores24h = 0;
+        try {
+            $errores24h = (int) \App\Modules\Siigo\Models\SiigoSyncLog::query()
+                ->where('estado', 'fallido')
+                ->where('created_at', '>=', now()->subDay())
+                ->count();
+        } catch (\Throwable) {}
+
+        $pushAuto = SiigoConfig::pushAutoActivo();
+
+        [$color, $label] = match (true) {
+            ! $pushAuto             => ['amber', 'Push automático pausado'],
+            $errores24h > 0          => ['red',   "{$errores24h} errores 24h"],
+            $pendientes > 20         => ['amber', "{$pendientes} en cola"],
+            default                  => ['emerald','Al día'],
+        };
+
+        return response()->json([
+            'color' => $color,
+            'label' => $label,
+            'pendientes' => $pendientes,
+            'errores24h' => $errores24h,
+            'push_auto' => $pushAuto,
+        ]);
+    }
+
+    public function reconciliarEstado(): JsonResponse
+    {
+        $e = Cache::get(ReconciliarProductosDesdeSiigo::CACHE_KEY, [
+            'estado' => 'idle',
+            'resumen' => null,
+            'error' => null,
+        ]);
+        return response()->json($e);
+    }
+
+    /**
+     * A2 · Deshacer la última reconciliación · soft-delete de todos los
+     * productos SIIGO traídos en la ventana (inicio..fin) de la última
+     * corrida. Protege productos con movimientos, variantes o editados
+     * manualmente. Reutiliza el comando siigo:limpiar-sandbox.
+     */
+    public function deshacerUltimaReconciliacion(Request $req): JsonResponse
+    {
+        abort_unless($req->user()?->esAracely(), 403, 'Solo Aracely puede deshacer sincs.');
+
+        $estado = Cache::get(ReconciliarProductosDesdeSiigo::CACHE_KEY);
+        if (! $estado || ($estado['estado'] ?? null) !== 'completado'
+            || empty($estado['inicio']) || empty($estado['fin'])) {
+            return response()->json([
+                'ok' => false,
+                'mensaje' => 'No hay reconciliación completada en el cache para deshacer.',
+            ], 400);
+        }
+
+        $confirmar = (bool) $req->boolean('confirmar');
+
+        $exit = \Artisan::call('siigo:limpiar-sandbox', [
+            '--desde' => $estado['inicio'],
+            '--hasta' => $estado['fin'],
+            '--confirmar' => $confirmar,
+        ]);
+        $salida = \Artisan::output();
+
+        return response()->json([
+            'ok' => $exit === 0,
+            'confirmado' => $confirmar,
+            'ventana' => ['desde' => $estado['inicio'], 'fin' => $estado['fin']],
+            'salida' => $salida,
+        ]);
+    }
+
+    /**
+     * Visor en vivo · hace GET /v1/products/{uuid} contra SIIGO sandbox para que
+     * el usuario vea en el mismo preview lo que SIIGO tiene (verificación
+     * bidireccional del CRUD, sin salir del ERP ni usar Postman).
+     * Si el producto es granular, trae la 1ra variante que tenga siigo_id.
+     */
+    public function verificarProducto(Producto $producto): JsonResponse
+    {
+        $producto->loadMissing('variantes');
+        $siigoId = $producto->siigo_id;
+        $siigoCode = $producto->siigo_code;
+        $origen = 'producto';
+        if (! $siigoId) {
+            $v = $producto->variantes->firstWhere(fn ($x) => (bool) $x->siigo_id);
+            if ($v) { $siigoId = $v->siigo_id; $siigoCode = $v->siigo_code; $origen = "variante #{$v->id}"; }
+        }
+        if (! $siigoId) {
+            return response()->json([
+                'ok' => false,
+                'motivo' => 'Este producto no tiene siigo_id · nunca se sincronizó',
+                'producto' => ['id' => $producto->id, 'referencia' => $producto->referencia, 'nombre' => $producto->nombre],
+            ]);
+        }
+        $client = new \App\Modules\Siigo\Clients\SiigoClient(SiigoConfig::current());
+        $r = $client->request('GET', "/v1/products/{$siigoId}");
+        $en_variantes = $producto->variantes->map(fn ($v) => [
+            'id' => $v->id, 'siigo_id' => $v->siigo_id, 'siigo_code' => $v->siigo_code,
+            'color' => $v->color_nombre, 'talla' => $v->talla, 'sync_at' => $v->siigo_sync_at,
+        ])->values();
+        return response()->json([
+            'ok' => $r->ok(),
+            'http' => $r->status(),
+            'origen_consulta' => $origen,
+            'siigo_id_consultado' => $siigoId,
+            'siigo_code' => $siigoCode,
+            'respuesta_siigo' => $r->json(),
+            'producto_local' => [
+                'id' => $producto->id,
+                'referencia' => $producto->referencia,
+                'nombre' => $producto->nombre,
+                'siigo_id' => $producto->siigo_id,
+                'siigo_sync_at' => $producto->siigo_sync_at,
+                'variantes' => $en_variantes,
+            ],
         ]);
     }
 
@@ -197,6 +445,25 @@ class SiigoController extends Controller implements HasMiddleware
     }
 
     /** Últimos fallidos con datos para el botón reintentar. */
+    /**
+     * B5 · Snapshot del estado de la última reconciliación para la vista
+     * principal de /app/siigo. Lee el cache CACHE_KEY (dashboard de arriba
+     * no necesita ser live · basta con mostrar último estado).
+     */
+    private function estadoReconciliarVista(): array
+    {
+        $estado = Cache::get(ReconciliarProductosDesdeSiigo::CACHE_KEY) ?: ['estado' => 'idle'];
+        return [
+            'estado' => $estado['estado'] ?? 'idle',
+            'modo' => $estado['modo'] ?? null,
+            'inicio' => $estado['inicio'] ?? null,
+            'fin' => $estado['fin'] ?? null,
+            'resumen' => $estado['resumen'] ?? null,
+            'error' => $estado['error'] ?? null,
+            'hace' => isset($estado['fin']) ? \Carbon\Carbon::parse($estado['fin'])->diffForHumans() : null,
+        ];
+    }
+
     private function fallidosRecientes(): array
     {
         return SiigoSyncLog::where('estado', 'fallido')

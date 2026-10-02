@@ -11,7 +11,11 @@ class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        //
+        $this->app->bind(\App\Modules\Siigo\Clients\SiigoClient::class, function () {
+            return new \App\Modules\Siigo\Clients\SiigoClient(
+                \App\Modules\Siigo\Models\SiigoConfig::current()
+            );
+        });
     }
 
     public function boot(): void
@@ -28,6 +32,13 @@ class AppServiceProvider extends ServiceProvider
         \App\Modules\Cartera\Models\NotaDebito::observe(\App\Modules\Siigo\Observers\NotaDebitoObserver::class);
         // QA-FIX #2 · Sprint 4 · producto → SIIGO (D2 estaba pendiente en Dropi).
         \App\Modules\Dropi\Models\Producto::observe(\App\Modules\Siigo\Observers\ProductoObserver::class);
+        // Sprint SIIGO-LIVE · variante crear/editar/borrar también despacha
+        // push del padre. Sin esto, agregar variantes desde el form Vue
+        // nunca llegaba a SIIGO (el pivot no activa Observer del padre).
+        \App\Modules\Dropi\Models\ProductoVariante::observe(\App\Modules\Siigo\Observers\ProductoVarianteObserver::class);
+        // PROD-4 · precios por lista disparan push al padre · antes de esto
+        // el badge marcaba "sincronizado" aunque SIIGO tuviera valores viejos.
+        \App\Modules\Catalogo\Models\PrecioVariante::observe(\App\Modules\Siigo\Observers\PrecioVarianteObserver::class);
         // QA-FIX #7 · pago proveedor → SIIGO voucher egreso.
         \App\Modules\Cartera\Models\PagoProveedor::observe(\App\Modules\Siigo\Observers\PagoProveedorObserver::class);
 

@@ -39,7 +39,18 @@ class ProductosController extends Controller implements HasMiddleware
 
     public function index(Request $r): Response
     {
-        $q = Producto::query()->with(['marca:id,nombre', 'categoriaMaestra:id,nombre', 'linea:id,codigo,nombre']);
+        // El pull SIIGO → ERP solo se dispara MANUALMENTE con los botones
+        // "Sincronizar TODO" / "Traer uno por código" del listado. En prod
+        // además corre `php artisan siigo:sync-productos` por cron cada 15min.
+        // Antes había auto-sync al cargar la vista; se eliminó porque:
+        //   1. Bloqueaba la vista 10-30s esperando a SIIGO.
+        //   2. En sandbox compartido traía basura de otros clientes.
+        $autoSyncResultados = ['chequeados' => 0, 'actualizados' => 0, 'ts' => null];
+
+        $q = Producto::query()
+            ->with(['marca:id,nombre', 'categoriaMaestra:id,nombre', 'linea:id,codigo,nombre'])
+            // PROD-12 · contador de variantes activas para la columna del listado.
+            ->withCount(['variantes']);
 
         if ($busca = trim((string) $r->query('q', ''))) {
             $q->where(function ($qq) use ($busca) {
@@ -68,6 +79,22 @@ class ProductosController extends Controller implements HasMiddleware
             ]),
             'productos' => $q->orderByDesc('id')->paginate(30)->through(fn ($p) => $this->serializarBrief($p)),
             'lineas' => CatalogoLinea::where('activa', true)->orderBy('codigo')->get(['id', 'codigo', 'nombre']),
+            // Resultado del auto-sync (para mostrar en UI "última sync hace Xs")
+            'autoSync' => $autoSyncResultados,
+            // PROD-2 · últimas 5 cargas de Excel SIIGO para el modal "Carga masiva"
+            // · así Aracely ve el histórico sin salir a la Bandeja.
+            'ultimasImports' => \App\Models\ImportacionBandeja::where('tipo', 'productos-siigo')
+                ->orderByDesc('iniciada_at')
+                ->limit(5)
+                ->get()
+                ->map(fn ($i) => [
+                    'id' => $i->id,
+                    'archivo' => $i->archivo_nombre,
+                    'iniciada' => optional($i->iniciada_at)->format('Y-m-d H:i'),
+                    'exitosas' => (int) ($i->ok ?? 0),
+                    'fallidas' => (int) ($i->errores ?? 0),
+                    'estado' => $i->estado,
+                ])->all(),
         ]);
     }
 
@@ -86,6 +113,7 @@ class ProductosController extends Controller implements HasMiddleware
 
         return Inertia::render('Catalogo/ProductoShow', [
             'producto' => $this->serializarCompleto($producto),
+            'historial' => $this->historialProducto($producto),
             'catalogos' => $this->catalogosParaForm(),
         ]);
     }
@@ -100,8 +128,15 @@ class ProductosController extends Controller implements HasMiddleware
 
     public function guardar(Request $r, ?Producto $producto = null): RedirectResponse
     {
+        // La referencia debe ser única · incluye soft-deleted para evitar que un
+        // producto borrado bloquee silenciosamente la creación de otro con el
+        // mismo código. Permite edit sin colisión consigo mismo.
+        $referenciaRule = \Illuminate\Validation\Rule::unique('productos', 'referencia')
+            ->ignore($producto?->exists ? $producto->id : null)
+            ->withoutTrashed();
+
         $data = $r->validate([
-            'referencia' => ['required', 'string', 'max:100'],
+            'referencia' => ['required', 'string', 'max:100', $referenciaRule],
             'nombre' => ['required', 'string', 'max:200'],
             'descripcion' => ['nullable', 'string'],
             'descripcion_ampliada' => ['nullable', 'string'],
@@ -152,29 +187,146 @@ class ProductosController extends Controller implements HasMiddleware
             'accesorios.*.cantidad' => ['integer', 'min:1'],
             'sustitutos' => ['nullable', 'array'],
             'sustitutos.*' => ['integer', 'exists:productos,id'],
+            // Sprint Variantes · payload inline del form (crear/actualizar/eliminar).
+            'variantes' => ['nullable', 'array'],
+            // Fix IDOR · validator debe limitar los `variantes.*.id` a los que
+            // realmente pertenecen al producto en edición. Sin este `->where`,
+            // un payload malicioso con un id ajeno (pero existente) no
+            // actualizaba nada por `whereKey(id)`, pero el `whereNotIn($idsRecibidos)`
+            // SÍ marcaba todas las variantes legítimas como "a borrar".
+            'variantes.*.id' => ['nullable', 'integer',
+                \Illuminate\Validation\Rule::exists('producto_variantes', 'id')
+                    ->where(fn ($q) => $producto && $producto->exists ? $q->where('producto_id', $producto->id) : $q),
+            ],
+            'variantes.*.color_id' => ['nullable', 'integer', 'exists:colores,id'],
+            'variantes.*.diseno_id' => ['nullable', 'integer', 'exists:disenos,id'],
+            'variantes.*.talla_id' => ['nullable', 'integer', 'exists:tallas,id'],
+            'variantes.*.codigo_barras' => ['nullable', 'string', 'max:100'],
+            'variantes.*.stock_minimo' => ['nullable', 'integer', 'min:0'],
+            // ─── Sprint SIIGO Paridad · campos nuevos ─────────────────────
+            'tipo_siigo' => ['nullable', 'in:Product,Service,ConsumerGood'],
+            'stock_control' => ['boolean'],
+            'tax_classification' => ['nullable', 'in:Taxed,Exempt,Excluded'],
+            'tax_included' => ['boolean'],
+            'tax_consumption_value' => ['nullable', 'numeric', 'min:0'],
+            'modelo_siigo' => ['nullable', 'string', 'max:100'],
+            'barcode_padre' => ['nullable', 'string', 'max:100'],
+            'unit_label' => ['nullable', 'string', 'max:50'],
+            'impuestos_ids' => ['nullable', 'array'],
+            'impuestos_ids.*' => ['integer', 'exists:impuestos,id'],
+            // ─── FASE H · Paridad 1:1 form SIIGO ─────────────────────────
+            'visible_en_facturas' => ['boolean'],
+            'retencion_siigo_id' => ['nullable', 'integer', 'exists:impuestos,id'],
+            'impuesto_cargo_dos_id' => ['nullable', 'integer', 'exists:impuestos,id'],
+            'reference_fabrica' => ['nullable', 'string', 'max:60'],
+            'stock_minimo' => ['nullable', 'numeric', 'min:0'],
+            // FASE F2.A4 · override por producto del grupo SIIGO
+            'siigo_account_group_override' => ['nullable', 'integer', 'min:1'],
         ]);
 
         $accesorios = $data['accesorios'] ?? [];
         $sustitutos = $data['sustitutos'] ?? [];
-        unset($data['accesorios'], $data['sustitutos']);
+        $impuestosIds = $data['impuestos_ids'] ?? null;
+        $variantes = $data['variantes'] ?? null;  // null = no tocar, [] = borrar todas
+        unset($data['accesorios'], $data['sustitutos'], $data['impuestos_ids'], $data['variantes']);
 
-        if ($producto && $producto->exists) {
-            $producto->fill($data)->save();
-        } else {
-            $producto = Producto::create($data + ['activo' => true]);
-        }
+        // FASE F2.A1 (ALTO) · envolver save + syncs en transacción para evitar
+        // estados parciales si falla el 2º sync y que el Observer ya haya encolado.
+        \DB::transaction(function () use (&$producto, $data, $accesorios, $sustitutos, $impuestosIds, $variantes) {
+            if ($producto && $producto->exists) {
+                $producto->fill($data)->save();
+            } else {
+                $producto = Producto::create($data + ['activo' => true]);
+            }
 
-        // Sincronizar M:M accesorios y sustitutos.
-        $accesoriosSync = collect($accesorios)->mapWithKeys(fn ($a) => [$a['id'] => ['cantidad_default' => $a['cantidad'] ?? 1]])->all();
-        $producto->accesorios()->sync($accesoriosSync);
-        $producto->sustitutos()->sync($sustitutos);
+            $accesoriosSync = collect($accesorios)->mapWithKeys(fn ($a) => [$a['id'] => ['cantidad_default' => $a['cantidad'] ?? 1]])->all();
+            $producto->accesorios()->sync($accesoriosSync);
+            $producto->sustitutos()->sync($sustitutos);
 
-        return redirect()->route('app.catalogo.productos.show', $producto->id)
-            ->with('flash', ['type' => 'success', 'message' => "Producto {$producto->referencia} guardado."]);
+            // FASE F1.C2 (CRÍTICO) · sync() de pivot NO dispara updated() del Observer,
+            // así que los cambios en impuestos múltiples nunca llegaban a SIIGO.
+            // Comparamos ANTES de sync; si hubo cambio real, encolamos push manual.
+            if ($impuestosIds !== null) {
+                $antes = $producto->impuestos()->pluck('impuestos.id')->sort()->values()->all();
+                $despues = collect($impuestosIds)->sort()->values()->all();
+                $producto->impuestos()->sync($impuestosIds);
+                if ($antes !== $despues && $producto->siigo_id) {
+                    \App\Modules\Siigo\Jobs\PushProductoASiigo::dispatchDebounced(
+                        $producto->id, 'actualizar', $producto->siigo_id
+                    );
+                }
+            }
+
+            // Sprint Variantes · sync inline (crear nuevas, actualizar existentes,
+            // eliminar las que ya no vienen en el payload).
+            if ($variantes !== null) {
+                $idsRecibidos = collect($variantes)->pluck('id')->filter()->all();
+                // Borrar las que ya no están en el form.
+                $producto->variantes()
+                    ->when(!empty($idsRecibidos), fn ($q) => $q->whereNotIn('id', $idsRecibidos))
+                    ->when(empty($idsRecibidos), fn ($q) => $q)
+                    ->delete();
+                // Pre-cargo las maestras para hidratar los campos de texto que
+                // consume el hook ProductoVariante::saving() cuando genera el
+                // código de barras automático. Si solo pasamos los *_id (como
+                // hace el form Vue), el hook genera EAN=referencia-padre y las
+                // filas chocan en el UNIQUE del codigo_barras.
+                //
+                // FASE SIIGO-LIVE · también hidratamos los *_nombre porque el
+                // PayloadBuilder los usa para construir el nombre completo de
+                // la variante en SIIGO ("Producto - Rojo - Talla M"). Sin esto
+                // todas las variantes salían en SIIGO con el mismo nombre y
+                // Aracely no las podía distinguir en la lista.
+                $colorIds  = collect($variantes)->pluck('color_id')->filter();
+                $disenoIds = collect($variantes)->pluck('diseno_id')->filter();
+                $tallaIds  = collect($variantes)->pluck('talla_id')->filter();
+                $cacheColor  = \App\Modules\Catalogo\Models\Color::whereIn('id', $colorIds)->get(['id', 'codigo', 'nombre'])->keyBy('id');
+                $cacheDiseno = \App\Modules\Catalogo\Models\Diseno::whereIn('id', $disenoIds)->get(['id', 'codigo', 'nombre'])->keyBy('id');
+                $cacheTalla  = \App\Modules\Catalogo\Models\Talla::whereIn('id', $tallaIds)->get(['id', 'nombre'])->keyBy('id');
+                foreach ($variantes as $v) {
+                    $color  = isset($v['color_id'])  ? $cacheColor[$v['color_id']]   ?? null : null;
+                    $diseno = isset($v['diseno_id']) ? $cacheDiseno[$v['diseno_id']] ?? null : null;
+                    $talla  = isset($v['talla_id'])  ? $cacheTalla[$v['talla_id']]   ?? null : null;
+                    $payload = [
+                        'color_id' => $v['color_id'] ?? null,
+                        'diseno_id' => $v['diseno_id'] ?? null,
+                        'talla_id' => $v['talla_id'] ?? null,
+                        // Texto que lee generarCodigoBarras() si el EAN viene vacío.
+                        'color_codigo' => $color?->codigo,
+                        'color_nombre' => $color?->nombre,
+                        'diseno_codigo' => $diseno?->codigo,
+                        'diseno_nombre' => $diseno?->nombre,
+                        'talla' => $talla?->nombre,
+                        'codigo_barras' => $v['codigo_barras'] ?? null,
+                        // La columna stock_minimo en producto_variantes es NOT NULL
+                        // (default 0 en migración), así que normalizamos null → 0
+                        // para que el usuario pueda dejar el campo vacío en la UI.
+                        'stock_minimo' => $v['stock_minimo'] ?? 0,
+                    ];
+                    if (!empty($v['id'])) {
+                        $producto->variantes()->whereKey($v['id'])->update($payload);
+                    } else {
+                        $producto->variantes()->create($payload);
+                    }
+                }
+            }
+        });
+
+        $esCreacion = $r->method() === 'POST';
+        $msg = $esCreacion
+            ? "✓ Producto {$producto->referencia} creado. Enviando a SIIGO en segundo plano…"
+            : "✓ Producto {$producto->referencia} actualizado. Cambios enviándose a SIIGO en segundo plano…";
+
+        return redirect()->route('app.catalogo.productos')->with('success', $msg);
     }
 
-    public function eliminar(Producto $producto): RedirectResponse
+    public function eliminar(Request $r, Producto $producto): RedirectResponse
     {
+        // Simetría con `restaurar` (que es esRoot). Antes un Gerente podía
+        // borrar one-by-one y solo Gerencia podía revertir. Ahora requiere
+        // Aracely/Gerencia para ambos lados.
+        abort_unless(\App\Auth\Permisos::esRoot($r->user()), 403, 'Solo gerencia puede eliminar productos.');
+
         if ($producto->movimientos()->exists()) {
             return back()->with('flash', [
                 'type' => 'error',
@@ -185,6 +337,438 @@ class ProductosController extends Controller implements HasMiddleware
         $producto->delete();
         return redirect()->route('app.catalogo.productos')
             ->with('flash', ['type' => 'success', 'message' => "Producto {$ref} eliminado."]);
+    }
+
+    /**
+     * FASE D3 · Fuerza un push manual al SIIGO (bypasea kill-switch y debounce).
+     * Útil cuando el usuario ve diferencias en el diff y quiere reenviar YA.
+     */
+    public function forzarSync(Request $r, Producto $producto): JsonResponse
+    {
+        // FASE F3.A14 · solo roots (Aracely/Gerencia) pueden pushear manual.
+        // Antes cualquier usuario autenticado podía · un Vendedor podía
+        // flood-encolar jobs y gastar el rate limit SIIGO. Combinado con el
+        // throttle:20,1 de la ruta cierra el abuso.
+        abort_unless(\App\Auth\Permisos::esRoot($r->user()), 403, 'Solo gerencia puede forzar push a SIIGO.');
+
+        $accion = $producto->siigo_id ? 'actualizar' : 'crear';
+        \App\Modules\Siigo\Jobs\PushProductoASiigo::dispatchManual(
+            $producto->id, $accion, $producto->siigo_id,
+        );
+        \Log::channel('siigo')->info('push_siigo manual disparado', [
+            'user_id' => $r->user()->id,
+            'producto_id' => $producto->id,
+            'referencia' => $producto->referencia,
+            'siigo_id' => $producto->siigo_id,
+            'accion' => $accion,
+        ]);
+        return response()->json([
+            'ok' => true,
+            'mensaje' => "Push a SIIGO encolado · acción {$accion}.",
+        ]);
+    }
+
+    /**
+     * FASE C3 · Papelera · lista productos soft-deleted de los últimos 30 días.
+     */
+    public function papelera(): Response
+    {
+        $papelera = Producto::onlyTrashed()
+            ->where('deleted_at', '>=', now()->subDays(30))
+            ->orderByDesc('deleted_at')
+            ->limit(500)
+            ->get(['id', 'referencia', 'nombre', 'precio_proveedor', 'deleted_at', 'siigo_id']);
+
+        return Inertia::render('Catalogo/ProductosPapelera', [
+            'papelera' => $papelera->map(fn ($p) => [
+                'id' => $p->id,
+                'referencia' => $p->referencia,
+                'nombre' => $p->nombre,
+                'precio_proveedor' => (float) $p->precio_proveedor,
+                'deleted_at' => $p->deleted_at?->toIso8601String(),
+                'deleted_hace' => $p->deleted_at?->diffForHumans(),
+                'tenia_siigo' => (bool) $p->siigo_id,
+            ])->all(),
+            'total' => $papelera->count(),
+        ]);
+    }
+
+    /** FASE C3 · Restaura un producto de la papelera. */
+    public function restaurar(Request $r, int $id): RedirectResponse
+    {
+        // FASE F3.A14 · restaurar también está vedado a roles operativos;
+        // reactivar un producto re-dispara el push SIIGO y puede resucitar
+        // SKUs que ya fueron deliberadamente dados de baja.
+        abort_unless(\App\Auth\Permisos::esRoot($r->user()), 403, 'Solo gerencia puede restaurar productos.');
+
+        $p = Producto::onlyTrashed()->findOrFail($id);
+        $tenia_siigo = $p->siigo_id;
+        $deleted_hace = $p->deleted_at?->diffForHumans() ?? 'sin fecha';
+        $p->restore();
+
+        // FASE F3.A18 · log auditable del hard-delete-recover · si alguien
+        // restaura un producto que ya había sido borrado se queda registro
+        // de quién, cuándo, y cuánto tiempo estuvo fuera. Útil para forense
+        // cuando un SKU "vuelve a aparecer" en facturas.
+        \Log::channel('siigo')->notice('producto restaurado desde papelera', [
+            'user_id' => $r->user()->id,
+            'user_email' => $r->user()->email,
+            'producto_id' => $p->id,
+            'referencia' => $p->referencia,
+            'siigo_id' => $tenia_siigo,
+            'estuvo_fuera' => $deleted_hace,
+        ]);
+
+        return redirect()->route('app.catalogo.productos.papelera')
+            ->with('flash', ['type' => 'success', 'message' => "Producto {$p->referencia} restaurado."]);
+    }
+
+    /**
+     * FASE C1 · Clona un producto · copia todos los campos excepto referencia
+     * (sufijo -COPY-N) y siigo_id/siigo_code (el Observer lo encola para
+     * crearlo en SIIGO).
+     */
+    public function clonar(Request $r, Producto $producto): RedirectResponse
+    {
+        // Clonar duplica todos los campos financieros + encola push SIIGO.
+        // Un operativo podría inflar el catálogo y gastar el rate-limit.
+        abort_unless(\App\Auth\Permisos::esRoot($r->user()), 403, 'Solo gerencia puede duplicar productos.');
+
+        $base = $producto->referencia;
+        $n = 1;
+        do {
+            $nuevaRef = $base . '-COPY-' . $n;
+            $n++;
+        } while (Producto::where('referencia', $nuevaRef)->exists() && $n < 100);
+
+        $datos = $producto->toArray();
+        unset($datos['id'], $datos['siigo_id'], $datos['siigo_code'], $datos['siigo_sync_at'],
+            $datos['created_at'], $datos['updated_at'], $datos['deleted_at'], $datos['dropi_sku']);
+        $datos['referencia'] = $nuevaRef;
+        $datos['nombre'] = $producto->nombre . ' (copia)';
+
+        $nuevo = Producto::create($datos);
+
+        // Copiar impuestos múltiples.
+        if ($producto->impuestos()->exists()) {
+            $nuevo->impuestos()->sync($producto->impuestos()->pluck('impuestos.id'));
+        }
+        // FASE F2.A6 · copiar también accesorios y sustitutos (si no, un
+        // producto SET duplicado queda sin ninguno · facturación errónea).
+        if ($producto->accesorios()->exists()) {
+            $nuevo->accesorios()->sync(
+                $producto->accesorios()
+                    ->get()
+                    ->mapWithKeys(fn ($a) => [$a->id => ['cantidad_default' => $a->pivot->cantidad_default ?? 1]])
+                    ->all()
+            );
+        }
+        if ($producto->sustitutos()->exists()) {
+            $nuevo->sustitutos()->sync($producto->sustitutos()->pluck('productos.id')->all());
+        }
+
+        // PROD-7 · el usuario elige qué incluir en el clon. Default: variantes
+        // sí, precios por lista no (listas suelen revisarse en el clon).
+        $incluirVariantes = $r->boolean('incluir_variantes', true);
+        $incluirPrecios   = $r->boolean('incluir_precios', false);
+
+        // Fix clonar sin variantes · si el padre está en modo granular
+        // (desglose_stock=true) pero el clon queda sin variantes, el hook
+        // `ProductoVariante::saving` lanzaba DomainException al primer intento
+        // de agregar variante al clon. Copiamos la estructura (sin
+        // codigo_barras para que el hook los auto-genere con la ref nueva).
+        if ($incluirVariantes && $producto->desglose_stock && $producto->variantes()->exists()) {
+            foreach ($producto->variantes()->get() as $v) {
+                $nuevaVar = $nuevo->variantes()->create([
+                    'color_id' => $v->color_id,
+                    'color_codigo' => $v->color_codigo,
+                    'color_nombre' => $v->color_nombre,
+                    'diseno_id' => $v->diseno_id,
+                    'diseno_codigo' => $v->diseno_codigo,
+                    'diseno_nombre' => $v->diseno_nombre,
+                    'talla_id' => $v->talla_id,
+                    'talla' => $v->talla,
+                    'stock_minimo' => $v->stock_minimo ?? 0,
+                    // codigo_barras omitido · el hook regenera con la nueva
+                    // referencia del clon (TESTVAR-COPY-1-01-M, etc.).
+                ]);
+
+                // PROD-7 · copiar precios por lista si el usuario lo pidió.
+                if ($incluirPrecios) {
+                    $precios = \App\Modules\Catalogo\Models\PrecioVariante::where('variante_id', $v->id)->get();
+                    foreach ($precios as $pr) {
+                        \App\Modules\Catalogo\Models\PrecioVariante::create([
+                            'variante_id'   => $nuevaVar->id,
+                            'lista_id'      => $pr->lista_id,
+                            'precio'        => $pr->precio,
+                            'vigente_desde' => $pr->vigente_desde,
+                            'vigente_hasta' => $pr->vigente_hasta,
+                        ]);
+                    }
+                }
+            }
+        }
+
+        return redirect()->route('app.catalogo.productos.show', $nuevo->id)
+            ->with('flash', [
+                'type' => 'success',
+                'message' => "Producto duplicado como {$nuevaRef} · listo para editar.",
+            ]);
+    }
+
+    /**
+     * FASE C2 · Bulk edit · aplica el mismo cambio a un conjunto de productos.
+     * Campos permitidos: activo (bool), linea_id (int), descuento_pct (float · aplica al precio_proveedor).
+     */
+    public function bulkEdit(Request $r): JsonResponse
+    {
+        // FASE F3.A14 · bulk-edit toca hasta 500 productos de un golpe y
+        // potencialmente encola 500 pushes a SIIGO. Vedamos a operativos.
+        abort_unless(\App\Auth\Permisos::esRoot($r->user()), 403, 'Solo gerencia puede editar en lote.');
+
+        $datos = $r->validate([
+            'ids' => ['required', 'array', 'min:1', 'max:500'],
+            'ids.*' => ['integer', 'exists:productos,id'],
+            'accion' => ['required', 'in:activo,linea,descuento,eliminar'],
+            'activo' => ['nullable', 'boolean'],
+            'linea_id' => ['nullable', 'integer', 'exists:catalogo_lineas,id'],
+            'descuento_pct' => ['nullable', 'numeric', 'between:-100,100'],
+        ]);
+
+        $totalIds = count($datos['ids']);
+        $afectados = 0;
+
+        // FASE F2.A10 · si son >100 ítems, procesamos en chunks dentro de una
+        // transacción corta por chunk · evita timeout de PHP (max_execution_time=30s)
+        // y colas de 500 jobs disparados por el Observer en una sola petición.
+        foreach (array_chunk($datos['ids'], 100) as $chunk) {
+            \DB::transaction(function () use ($chunk, $datos, &$afectados) {
+                $productos = Producto::whereIn('id', $chunk)->get();
+                foreach ($productos as $p) {
+                    switch ($datos['accion']) {
+                        case 'activo':
+                            $p->activo = (bool) $datos['activo'];
+                            $p->save();
+                            break;
+                        case 'linea':
+                            $p->linea_id = $datos['linea_id'];
+                            $p->save();
+                            break;
+                        case 'descuento':
+                            $pct = (float) $datos['descuento_pct'];
+                            $p->precio_proveedor = round($p->precio_proveedor * (1 + $pct / 100), 2);
+                            $p->save();
+                            break;
+                        case 'eliminar':
+                            if (! $p->movimientos()->exists()) $p->delete();
+                            break;
+                    }
+                    $afectados++;
+                }
+            });
+        }
+
+        return response()->json([
+            'ok' => true,
+            'afectados' => $afectados,
+            'mensaje' => "{$afectados}/{$totalIds} productos actualizados · push a SIIGO encolado.",
+        ]);
+    }
+
+    /**
+     * FASE G1 · Exporta todos los productos activos al xlsx SIIGO (34 cols).
+     * Si pasan ?ids=1,2,3 solo exporta esos (bulk desde lista).
+     */
+    public function exportarExcelSiigo(Request $r)
+    {
+        // PROD-6 · exportar el catálogo completo expone precios/costos de
+        // TODAS las listas (hasta 12). Solo Gerencia descarga; un operativo
+        // o Vendedor podría abrir el xlsx y filtrar la base de precios.
+        abort_unless(\App\Auth\Permisos::esRoot($r->user()), 403, 'Solo gerencia puede exportar el catálogo SIIGO.');
+
+        $svc = new \App\Modules\Siigo\Services\ProductosExcelService();
+
+        $q = Producto::with(['marca', 'unidadMedida', 'impuesto', 'retencion', 'impuestoCargoDos']);
+        if ($ids = $r->query('ids')) {
+            // FASE F4.M8 · validar y recortar el array de ids · antes
+            // `?ids=a,b,c` metía strings al whereIn, y sin tope podía
+            // llegar un POST con 100k ids reventando la query.
+            $arr = collect(explode(',', $ids))
+                ->map(fn ($x) => (int) trim($x))
+                ->filter(fn ($x) => $x > 0)
+                ->take(5000)
+                ->values()
+                ->all();
+            $q->whereIn('id', $arr);
+        }
+        $productos = $q->orderBy('id')->get();
+
+        $tmp = $svc->generar($productos);
+        return response()->download($tmp, $svc->nombreArchivo(false))->deleteFileAfterSend();
+    }
+
+    /**
+     * FASE G5 · Descarga plantilla vacía (solo encabezados + Hoja2 Listas).
+     * Para que el cliente arme el Excel sin salir del ERP.
+     */
+    public function plantillaExcelSiigo()
+    {
+        $svc = new \App\Modules\Siigo\Services\ProductosExcelService();
+        $tmp = $svc->generar(null);
+        return response()->download($tmp, $svc->nombreArchivo(true))->deleteFileAfterSend();
+    }
+
+    /**
+     * FASE G2 · Importa productos desde xlsx SIIGO. Síncrono por simplicidad
+     * (el service corre en segundos para archivos razonables). Devuelve el
+     * xlsx de reporte con hojas "Procesados" y "Errores".
+     */
+    public function importarExcelSiigo(Request $r)
+    {
+        // Import masivo = N pushes SIIGO + mutación bulk de precios/costos.
+        // Mismo nivel que bulkEdit (ya restringido).
+        abort_unless(\App\Auth\Permisos::esRoot($r->user()), 403, 'Solo gerencia puede importar productos.');
+
+        $r->validate([
+            'archivo' => ['required', 'file', 'mimes:xlsx,xls', 'max:5120'],
+        ]);
+
+        $svc = new \App\Modules\Siigo\Services\ProductosImportService();
+        $resumen = $svc->importar($r->file('archivo')->getRealPath());
+
+        // Guardo el reporte temporal en el storage de la sesión para descarga posterior.
+        $reportePath = null;
+        if ($resumen['reporte_path']) {
+            $final = storage_path('app/public/siigo-reportes/' . basename($resumen['reporte_path']));
+            if (! is_dir(dirname($final))) mkdir(dirname($final), 0755, true);
+            copy($resumen['reporte_path'], $final);
+            @unlink($resumen['reporte_path']);
+            $reportePath = basename($final);
+        }
+
+        return response()->json([
+            'ok' => true,
+            'procesados' => $resumen['procesados'],
+            'nuevos' => $resumen['nuevos'],
+            'actualizados' => $resumen['actualizados'],
+            'errores' => $resumen['errores'],
+            'reporte_url' => $reportePath
+                ? route('app.catalogo.productos.importar-siigo.estado') . '?f=' . urlencode($reportePath)
+                : null,
+        ]);
+    }
+
+    /** GET con `?f=nombre.xlsx` descarga el reporte guardado. */
+    public function importarEstado(Request $r)
+    {
+        $nombre = $r->query('f');
+        if (! $nombre) return response()->json(['ok' => true]);
+        $path = storage_path('app/public/siigo-reportes/' . basename($nombre));
+        abort_unless(file_exists($path), 404);
+        return response()->download($path, "reporte-import-siigo-{$nombre}");
+    }
+
+    /**
+     * FASE H6 · Sube una imagen al producto (hasta 5 slots).
+     * Formato aceptado: PNG/JPG · tamaño max 1 MB (regla SIIGO).
+     */
+    public function subirImagen(Request $r, Producto $producto): JsonResponse
+    {
+        $datos = $r->validate([
+            'imagen' => ['required', 'file', 'mimes:png,jpg,jpeg', 'max:1024'],
+            'orden' => ['nullable', 'integer', 'min:0', 'max:4'],
+        ]);
+
+        // FASE F4.M2 · lock para evitar race de 2 uploads simultáneos pasando
+        // el chequeo >=5 y dejando 6-7 imágenes.
+        $img = \Cache::lock("prod:{$producto->id}:img-upload", 10)->block(5, function () use ($producto, $datos) {
+            if ($producto->imagenes()->count() >= 5) {
+                abort(response()->json([
+                    'ok' => false,
+                    'message' => 'Límite alcanzado: 5 imágenes por producto (regla SIIGO).',
+                ], 422));
+            }
+
+            $file = $datos['imagen'];
+            $path = $file->store("productos/{$producto->id}", 'public');
+
+            return $producto->imagenes()->create([
+                'path' => $path,
+                'nombre_original' => $file->getClientOriginalName(),
+                'tamano_bytes' => $file->getSize(),
+                'mime' => $file->getMimeType(),
+                'orden' => $datos['orden'] ?? $producto->imagenes()->count(),
+            ]);
+        });
+
+        return response()->json([
+            'ok' => true,
+            'imagen' => [
+                'id' => $img->id,
+                'url' => $img->url(),
+                'orden' => $img->orden,
+            ],
+        ]);
+    }
+
+    /** FASE H6 · Elimina una imagen (storage + registro). */
+    public function eliminarImagen(Producto $producto, \App\Modules\Dropi\Models\ProductoImagen $imagen): JsonResponse
+    {
+        abort_unless($imagen->producto_id === $producto->id, 403);
+
+        // Fix doble borrado · el hook `ProductoImagen::deleted` (fase F4.M4)
+        // ya borra el archivo físico del disco. Antes aquí había un delete
+        // manual + hook = dos intentos; si el primero fallaba por disco
+        // transitorio dejaba el registro BD en estado inconsistente.
+        $imagen->delete();
+
+        return response()->json(['ok' => true]);
+    }
+
+    /**
+     * Verifica si una referencia ya existe · usado por el form en vivo (blur).
+     * Devuelve el nombre del producto conflictivo para que el usuario sepa cuál es.
+     */
+    public function verificarReferencia(Request $r): JsonResponse
+    {
+        $ref = trim((string) $r->query('ref', ''));
+        $exceptoId = $r->integer('except');
+        if ($ref === '') return response()->json(['existe' => false]);
+
+        // FASE F2.A7 · withTrashed() porque el UNIQUE del guardar() también
+        // ignora soft-deleted; sin esto, AJAX decía "libre" y el POST explotaba.
+        $q = Producto::withTrashed()->where('referencia', $ref);
+        if ($exceptoId) $q->where('id', '!=', $exceptoId);
+        $otro = $q->first(['id', 'referencia', 'nombre', 'deleted_at']);
+
+        return response()->json([
+            'existe' => (bool) $otro,
+            'id' => $otro?->id,
+            'nombre' => $otro?->nombre,
+            'eliminado' => $otro && $otro->deleted_at,
+        ]);
+    }
+
+    /**
+     * Sugiere la siguiente referencia disponible siguiendo el patrón del
+     * código del producto más reciente. Si no hay patrón reconocible, propone
+     * `GB-NNNN`.
+     */
+    public function sugerirReferencia(): JsonResponse
+    {
+        // Toma el último producto creado y propone +1 si tiene patrón "PREFIJO-N".
+        $ultimo = Producto::latest('id')->first(['referencia']);
+        $sugerencia = 'GB-'.str_pad((string) (Producto::count() + 1), 4, '0', STR_PAD_LEFT);
+        if ($ultimo && preg_match('/^(.*?)(\d+)$/', $ultimo->referencia, $m)) {
+            $siguiente = $m[1] . str_pad((string) ((int) $m[2] + 1), strlen($m[2]), '0', STR_PAD_LEFT);
+            // Si por casualidad ya existe, se incrementa hasta encontrar libre.
+            while (Producto::withTrashed()->where('referencia', $siguiente)->exists()) {
+                $siguiente = $m[1] . str_pad((string) ((int) $m[2] + 1), strlen($m[2]), '0', STR_PAD_LEFT);
+                $m[2] = (int) $m[2] + 1;
+            }
+            $sugerencia = $siguiente;
+        }
+        return response()->json(['referencia' => $sugerencia]);
     }
 
     /** Búsqueda AJAX para el selector M:M de accesorios/sustitutos. */
@@ -248,7 +832,38 @@ class ProductosController extends Controller implements HasMiddleware
             'siigo_id' => $p->siigo_id,
             'siigo_code' => $p->siigo_code,
             'proteger_precio' => (bool) $p->proteger_precio,
+            // PROD-8 · el front decide si muestra "—" en vez de $0 cuando el
+            // producto corre en modo granular (el precio real vive en variantes).
+            'desglose_stock' => (bool) $p->desglose_stock,
+            // PROD-12 · contador de variantes (withCount(['variantes'])).
+            'variantes_count' => (int) ($p->variantes_count ?? 0),
         ];
+    }
+
+    /**
+     * FASE C4 · Últimos 50 eventos de sync SIIGO del producto.
+     * Lee siigo_sync_log y filtra por detalle.producto_id.
+     */
+    private function historialProducto(Producto $p): array
+    {
+        try {
+            $rows = \App\Modules\Siigo\Models\SiigoSyncLog::query()
+                ->whereJsonContains('detalle->producto_id', $p->id)
+                ->orderByDesc('id')
+                ->limit(50)
+                ->get(['id', 'recurso', 'estado', 'mensaje', 'detalle', 'created_at']);
+        } catch (\Throwable) {
+            return [];
+        }
+
+        return $rows->map(fn ($l) => [
+            'id' => $l->id,
+            'estado' => $l->estado,
+            'accion' => $l->detalle['accion'] ?? '—',
+            'mensaje' => $l->mensaje,
+            'cuando' => $l->created_at?->toIso8601String(),
+            'hace' => $l->created_at?->diffForHumans(),
+        ])->all();
     }
 
     private function serializarCompleto(Producto $p): array
@@ -295,12 +910,50 @@ class ProductosController extends Controller implements HasMiddleware
             'centro_costo' => $p->centro_costo,
             'notas_contables' => $p->notas_contables,
             'variantes_count' => $p->variantes->count(),
+            // Sprint Variantes · pasar las filas al form para edición inline.
+            // Cada variante en SIIGO viaja como producto independiente.
+            'variantes' => $p->variantes->map(fn ($v) => [
+                'id' => $v->id,
+                'color_id' => $v->color_id,
+                'diseno_id' => $v->diseno_id,
+                'talla_id' => $v->talla_id,
+                'codigo_barras' => $v->codigo_barras,
+                'stock_minimo' => $v->stock_minimo !== null ? (int) $v->stock_minimo : null,
+                // Para el panel "Verificación en vivo" pestaña 6 SIIGO.
+                // ProductoVariante no tiene cast datetime en siigo_sync_at,
+                // así que lo normalizamos aquí con \Carbon.
+                'siigo_id' => $v->siigo_id,
+                'siigo_sync_at' => $v->siigo_sync_at ? \Carbon\Carbon::parse($v->siigo_sync_at)->toIso8601String() : null,
+            ])->all(),
             'accesorios' => $p->accesorios->map(fn ($a) => [
                 'id' => $a->id, 'referencia' => $a->referencia, 'nombre' => $a->nombre,
                 'cantidad' => $a->pivot->cantidad_default,
             ])->all(),
             'sustitutos' => $p->sustitutos->map(fn ($s) => [
                 'id' => $s->id, 'referencia' => $s->referencia, 'nombre' => $s->nombre,
+            ])->all(),
+            // ─── SIIGO Paridad · campos nuevos ─────────────────────
+            'tipo_siigo' => $p->tipo_siigo ?: 'Product',
+            'stock_control' => (bool) ($p->stock_control ?? true),
+            'tax_classification' => $p->tax_classification ?: 'Taxed',
+            'tax_included' => (bool) ($p->tax_included ?? false),
+            'tax_consumption_value' => $p->tax_consumption_value !== null ? (float) $p->tax_consumption_value : null,
+            'modelo_siigo' => $p->modelo_siigo,
+            'barcode_padre' => $p->barcode_padre,
+            'unit_label' => $p->unit_label ?: 'Unidad',
+            'impuestos_ids' => $p->impuestos()->pluck('impuestos.id')->all(),
+            // ─── FASE H · Paridad 1:1 form SIIGO ─────────────────────
+            'visible_en_facturas' => (bool) ($p->visible_en_facturas ?? true),
+            'retencion_siigo_id' => $p->retencion_siigo_id,
+            'impuesto_cargo_dos_id' => $p->impuesto_cargo_dos_id,
+            'reference_fabrica' => $p->reference_fabrica,
+            'stock_minimo' => $p->stock_minimo !== null ? (float) $p->stock_minimo : null,
+            'siigo_account_group_override' => $p->siigo_account_group_override,
+            'imagenes' => $p->imagenes->map(fn ($img) => [
+                'id' => $img->id,
+                'url' => $img->url(),
+                'nombre_original' => $img->nombre_original,
+                'orden' => $img->orden,
             ])->all(),
         ]);
     }
@@ -317,16 +970,69 @@ class ProductosController extends Controller implements HasMiddleware
         $clases = CatalogoClase::where('activa', true)->orderBy('codigo')
             ->get(['id', 'codigo', 'nombre', 'subgrupo_id']);
 
+        // Catálogos SIIGO · opciones reales que vienen del tenant SIIGO.
+        // Si están vacíos, el usuario debe correr "Sincronizar catálogos" en
+        // el panel SIIGO. En producción se corren con cron cada 24h.
+        $siigoAccountGroups = \App\Modules\Siigo\Models\SiigoCatalogo::where('tipo', 'account-groups')
+            ->orderBy('nombre')
+            ->get(['codigo', 'nombre'])
+            ->map(fn ($c) => ['id' => (int) $c->codigo, 'nombre' => $c->nombre])
+            ->values();
+        $siigoTaxes = \App\Modules\Siigo\Models\SiigoCatalogo::where('tipo', 'taxes')
+            ->orderBy('nombre')
+            ->get(['codigo', 'nombre', 'payload'])
+            ->map(fn ($c) => [
+                'id' => (int) $c->codigo,
+                'nombre' => $c->nombre,
+                'porcentaje' => $c->payload['percentage'] ?? ($c->payload['rate'] ?? null),
+                'tipo' => $c->payload['type'] ?? 'IVA',
+            ])->values();
+        $siigoWarehouses = \App\Modules\Siigo\Models\SiigoCatalogo::where('tipo', 'warehouses')
+            ->orderBy('nombre')
+            ->get(['codigo', 'nombre'])
+            ->map(fn ($c) => ['id' => (int) $c->codigo, 'nombre' => $c->nombre])
+            ->values();
+        $siigoPriceLists = \App\Modules\Siigo\Models\SiigoCatalogo::where('tipo', 'price-lists')
+            ->orderBy('nombre')
+            ->get(['codigo', 'nombre'])
+            ->map(fn ($c) => ['id' => (int) $c->codigo, 'nombre' => $c->nombre])
+            ->values();
+
         return [
             'marcas' => \App\Modules\Catalogo\Models\Marca::orderBy('nombre')->get(['id', 'nombre']),
-            'categorias' => \App\Modules\Catalogo\Models\Categoria::orderBy('nombre')->get(['id', 'nombre']),
+            'categorias' => \App\Modules\Catalogo\Models\Categoria::orderBy('nombre')
+                ->get(['id', 'nombre', 'siigo_account_group_id']),
             'colecciones' => \App\Modules\Catalogo\Models\Coleccion::orderBy('nombre')->get(['id', 'nombre']),
-            'unidades' => \App\Modules\Catalogo\Models\UnidadMedida::orderBy('codigo')->get(['id', 'codigo', 'nombre']),
-            'impuestos' => \App\Modules\Catalogo\Models\Impuesto::orderBy('nombre')->get(['id', 'nombre', 'porcentaje']),
+            // Sprint Variantes · dimensiones para la pestaña "Variantes".
+            'colores' => \App\Modules\Catalogo\Models\Color::orderBy('nombre')->get(['id', 'codigo', 'nombre']),
+            'disenos' => \App\Modules\Catalogo\Models\Diseno::orderBy('nombre')->get(['id', 'codigo', 'nombre']),
+            'tallas' => \App\Modules\Catalogo\Models\Talla::orderBy('nombre')->get(['id', 'nombre']),
+            'unidades' => \App\Modules\Catalogo\Models\UnidadMedida::orderBy('codigo')
+                ->get(['id', 'codigo', 'nombre', 'codigo_unece']),
+            'impuestos' => \App\Modules\Catalogo\Models\Impuesto::orderBy('nombre')
+                ->get(['id', 'nombre', 'porcentaje', 'siigo_id']),
             'lineas' => CatalogoLinea::where('activa', true)->orderBy('codigo')->get(['id', 'codigo', 'nombre']),
             'grupos' => $grupos,
             'subgrupos' => $subgrupos,
             'clases' => $clases,
+            // Catálogos SIIGO para los nuevos selectores
+            'siigo' => [
+                'account_groups' => $siigoAccountGroups,
+                'taxes' => $siigoTaxes,
+                'warehouses' => $siigoWarehouses,
+                'price_lists' => $siigoPriceLists,
+                'types' => [
+                    ['id' => 'Product', 'nombre' => 'Producto (bien tangible, con stock)'],
+                    ['id' => 'Service', 'nombre' => 'Servicio (sin stock)'],
+                    ['id' => 'ConsumerGood', 'nombre' => 'Bien de consumo'],
+                ],
+                'tax_classifications' => [
+                    ['id' => 'Taxed', 'nombre' => 'Gravado (con IVA)'],
+                    ['id' => 'Exempt', 'nombre' => 'Exento'],
+                    ['id' => 'Excluded', 'nombre' => 'Excluido'],
+                ],
+                'sync_at' => optional(\App\Modules\Siigo\Models\SiigoConfig::current()->sync_catalogos_at)->toIso8601String(),
+            ],
         ];
     }
 }

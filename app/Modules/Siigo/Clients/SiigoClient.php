@@ -34,6 +34,13 @@ class SiigoClient
 
     public function authenticate(): string
     {
+        // Modo FAKE · para demo/pruebas sin credenciales SIIGO reales.
+        // Activar con SIIGO_DRIVER=fake en .env. Devuelve un token dummy
+        // vigente 24h y todos los request() responden con IDs simulados.
+        if (config('siigo.driver', 'real') === 'fake') {
+            return 'fake_token_greatbaby_' . now()->format('Ymd');
+        }
+
         if ($this->tokenEsVigente()) {
             return (string) $this->config->token_cache;
         }
@@ -75,6 +82,12 @@ class SiigoClient
      */
     public function request(string $method, string $path, array $payload = [], int $intento = 1): Response
     {
+        // Modo FAKE · responde OK simulando SIIGO sin tocar la API real.
+        // Perfecto para demos con el cliente antes de tener credenciales.
+        if (config('siigo.driver', 'real') === 'fake') {
+            return $this->fakeResponse(strtoupper($method), $path, $payload);
+        }
+
         $token = $this->authenticate();
         $method = strtoupper($method);
         $url = rtrim(self::BASE_URL, '/').'/'.ltrim($path, '/');
@@ -115,6 +128,65 @@ class SiigoClient
         }
 
         return $response;
+    }
+
+    /**
+     * Simula respuestas SIIGO para modo demo/pruebas sin credenciales reales.
+     * Devuelve IDs falsos pero consistentes (mismo path → mismo id) para que
+     * la UI marque las entidades como "sincronizadas" y podamos ver el flujo
+     * completo end-to-end.
+     */
+    private function fakeResponse(string $method, string $path, array $payload = []): Response
+    {
+        Log::channel('single')->info('[SIIGO FAKE] '.$method.' '.$path, ['payload_keys' => array_keys($payload)]);
+
+        // GETs de descubrimiento (document-types, payment-types, warehouses, accounts…)
+        if ($method === 'GET') {
+            $fixtures = [
+                '/v1/document-types' => [
+                    ['id' => 24446, 'code' => 'FV', 'name' => 'Factura de Venta', 'type' => 'FV'],
+                    ['id' => 27524, 'code' => 'NC', 'name' => 'Nota Crédito', 'type' => 'NC'],
+                    ['id' => 27525, 'code' => 'ND', 'name' => 'Nota Débito', 'type' => 'ND'],
+                    ['id' => 27600, 'code' => 'FC', 'name' => 'Factura de Compra', 'type' => 'FC'],
+                    ['id' => 27700, 'code' => 'RC', 'name' => 'Recibo de Caja', 'type' => 'RC'],
+                    ['id' => 27800, 'code' => 'CE', 'name' => 'Comprobante Egreso', 'type' => 'CE'],
+                ],
+                '/v1/payment-types' => [
+                    ['id' => 5636, 'name' => 'Efectivo', 'type' => 'DebtPayment'],
+                    ['id' => 5637, 'name' => 'Transferencia', 'type' => 'DebtPayment'],
+                    ['id' => 5638, 'name' => 'Consignación', 'type' => 'DebtPayment'],
+                ],
+                '/v1/warehouses' => [
+                    ['id' => 'wh-01', 'name' => 'Bodega Principal', 'active' => true],
+                    ['id' => 'wh-02', 'name' => 'Punto de Venta', 'active' => true],
+                ],
+                '/v1/taxes' => [
+                    ['id' => 13156, 'name' => 'IVA 19%', 'type' => 'IVA', 'percentage' => 19],
+                    ['id' => 13157, 'name' => 'IVA 0%', 'type' => 'IVA', 'percentage' => 0],
+                ],
+            ];
+            foreach ($fixtures as $prefix => $data) {
+                if (str_starts_with($path, $prefix)) {
+                    return new Response(new \GuzzleHttp\Psr7\Response(200, ['Content-Type' => 'application/json'], json_encode($data)));
+                }
+            }
+            return new Response(new \GuzzleHttp\Psr7\Response(200, ['Content-Type' => 'application/json'], json_encode([])));
+        }
+
+        // POST/PUT/PATCH → simula creación exitosa con id derivado del path + timestamp.
+        $fakeId = 'fake-' . substr(md5($path . microtime(true)), 0, 12);
+        $body = [
+            'id' => $fakeId,
+            'metadata' => [
+                'created' => now()->toIso8601String(),
+                'last_updated' => now()->toIso8601String(),
+            ],
+        ];
+        // Para NC/ND/FV que devuelven CUFE.
+        if (str_contains($path, '/invoices') || str_contains($path, '/credit-notes') || str_contains($path, '/debit-notes')) {
+            $body['stamp'] = ['cufe' => 'FAKE-' . strtoupper(substr(md5(microtime(true)), 0, 40))];
+        }
+        return new Response(new \GuzzleHttp\Psr7\Response(200, ['Content-Type' => 'application/json'], json_encode($body)));
     }
 
     private function cliente(string $token): PendingRequest

@@ -129,9 +129,8 @@ class DesactivarProductoEnSiigo
 
     private function esGranular(Producto $p): bool
     {
-        return is_null($p->desglose_stock)
-            ? (bool) config('siigo.desglose_default', false)
-            : (bool) $p->desglose_stock;
+        // RAÍZ · modo decidido por tener variantes, no por una config.
+        return $p->variantes->isNotEmpty();
     }
 
     /** B2-A3 · idem que en Actualizar · SIIGO code `update_not_allowed`. */

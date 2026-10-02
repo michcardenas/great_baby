@@ -71,6 +71,17 @@ return [
             'replace_placeholders' => true,
         ],
 
+        // Canal dedicado para integración SIIGO · separar de laravel.log
+        // facilita triage y evita que un error de SIIGO ensucie el log
+        // principal. Retención 30 días.
+        'siigo' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/siigo.log'),
+            'level' => env('LOG_LEVEL_SIIGO', 'debug'),
+            'days' => 30,
+            'replace_placeholders' => true,
+        ],
+
         'single' => [
             'driver' => 'single',
             'path' => storage_path('logs/laravel.log'),

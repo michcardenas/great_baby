@@ -14,6 +14,7 @@ const props = defineProps({
     fallidos_recientes: { type: Array, required: true },
     logs: { type: Array, required: true },
     puede_toggle: { type: Boolean, default: false },
+    reconciliar: { type: Object, default: () => ({ estado: 'idle' }) },
 });
 
 // F8 · toggle kill-switch (solo Aracely).
@@ -227,6 +228,26 @@ const claseEstadoLog = (l) => {
                         </div>
                     </dl>
                 </div>
+            </div>
+
+            <!-- B5 · Última reconciliación (job incremental/full) -->
+            <div v-if="reconciliar.estado !== 'idle'" class="card p-5">
+                <div class="text-xs uppercase tracking-widest font-bold mb-3 flex items-center gap-2"
+                     :class="reconciliar.estado === 'fallido' ? 'text-red-600' : (reconciliar.estado === 'corriendo' ? 'text-amber-600' : 'text-emerald-600')">
+                    <RefreshCw class="h-4 w-4" :class="reconciliar.estado === 'corriendo' && 'animate-spin'"/>
+                    Última reconciliación · modo {{ reconciliar.modo || '—' }} · estado {{ reconciliar.estado }}
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+                    <div><div class="text-xs text-surface-500">Nuevos</div><div class="font-bold">{{ reconciliar.resumen?.nuevos ?? '—' }}</div></div>
+                    <div><div class="text-xs text-surface-500">Actualizados</div><div class="font-bold">{{ reconciliar.resumen?.actualizados ?? '—' }}</div></div>
+                    <div><div class="text-xs text-surface-500">Linkeados</div><div class="font-bold">{{ reconciliar.resumen?.linkeados ?? '—' }}</div></div>
+                    <div><div class="text-xs text-surface-500">Errores</div><div class="font-bold text-amber-700">{{ reconciliar.resumen?.errores ?? '—' }}</div></div>
+                    <div><div class="text-xs text-surface-500">Hace</div><div class="font-bold">{{ reconciliar.hace || '—' }}</div></div>
+                </div>
+                <p v-if="reconciliar.resumen?.desde" class="mt-2 text-xs text-surface-500">
+                    Desde: <code class="text-xs">{{ reconciliar.resumen.desde }}</code>
+                </p>
+                <p v-if="reconciliar.error" class="mt-2 text-xs text-red-600">{{ reconciliar.error }}</p>
             </div>
 
             <!-- Últimos fallidos con botón reintentar -->

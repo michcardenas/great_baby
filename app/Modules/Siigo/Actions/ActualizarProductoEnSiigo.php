@@ -52,9 +52,8 @@ class ActualizarProductoEnSiigo
 
     private function esGranular(Producto $p): bool
     {
-        return is_null($p->desglose_stock)
-            ? (bool) config('siigo.desglose_default', false)
-            : (bool) $p->desglose_stock;
+        // RAÍZ · modo decidido por tener variantes, no por una config.
+        return $p->variantes()->exists();
     }
 
     private function actualizarAgregado(Producto $p): array

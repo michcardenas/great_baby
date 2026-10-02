@@ -3,12 +3,15 @@ import { ref, reactive } from 'vue';
 import { Head, router } from '@inertiajs/vue3';
 import { Tag, Plus, Edit2, Trash2 } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
 
 const props = defineProps({ marcas: Array, categorias: Array, colores: Array });
 const tab = ref('marcas');
 const modal = ref(null);
 const form = reactive({});
 const procesando = ref(false);
+// PROD-11 · reemplazo de confirm() nativo (bloqueado en iframes y con UX pobre).
+const modalConfirm = ref(null);
 
 const abrir = (tipo, item = null) => {
     modal.value = tipo;
@@ -29,8 +32,16 @@ const guardar = () => {
     });
 };
 const eliminar = (tipo, id) => {
-    if (!confirm('Eliminar?')) return;
-    router.delete(`/app/catalogo/${tipo}/${id}`, { preserveScroll: true });
+    modalConfirm.value = {
+        titulo: '¿Eliminar registro?',
+        mensaje: 'La acción no se puede deshacer.',
+        color: 'red',
+        textoConfirmar: 'Eliminar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            router.delete(`/app/catalogo/${tipo}/${id}`, { preserveScroll: true });
+        },
+    };
 };
 </script>
 
@@ -137,5 +148,6 @@ const eliminar = (tipo, id) => {
                 </div>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

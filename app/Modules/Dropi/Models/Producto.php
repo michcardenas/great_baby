@@ -41,6 +41,14 @@ class Producto extends Model implements AuditableContract, HasMedia
         'descripcion_ampliada', 'ficha_tecnica',
         'proteger_precio', 'maneja_lotes', 'maneja_seriales', 'es_estadistico',
         'valor_gasto_venta_niif', 'valor_neto_realizable_niif',
+        // Sprint SIIGO Paridad · campos nuevos que viajan al payload SIIGO
+        'tipo_siigo', 'stock_control', 'tax_classification', 'tax_included',
+        'tax_consumption_value', 'modelo_siigo', 'barcode_padre', 'unit_label',
+        // FASE H · Paridad 1:1 con el form oficial de SIIGO
+        'visible_en_facturas', 'retencion_siigo_id', 'impuesto_cargo_dos_id',
+        'reference_fabrica', 'stock_minimo',
+        // FASE F2.A4 · override por producto del grupo SIIGO (si vacío → categoría)
+        'siigo_account_group_override',
     ];
 
     protected $casts = [
@@ -66,9 +74,43 @@ class Producto extends Model implements AuditableContract, HasMedia
         'maneja_lotes' => 'boolean',
         'maneja_seriales' => 'boolean',
         'es_estadistico' => 'boolean',
+        // Sprint SIIGO Paridad
+        'stock_control' => 'boolean',
+        'tax_included' => 'boolean',
+        'tax_consumption_value' => 'decimal:2',
+        // FASE H · Paridad SIIGO form
+        'visible_en_facturas' => 'boolean',
+        'stock_minimo' => 'decimal:4',
     ];
 
     public function variantes(): HasMany { return $this->hasMany(ProductoVariante::class); }
+
+    /** FASE H · Imágenes del producto (hasta 5 slots · PNG/JPG · 1 MB c/u). */
+    public function imagenes(): HasMany
+    {
+        return $this->hasMany(ProductoImagen::class)->orderBy('orden');
+    }
+
+    /** FASE H · Impuesto cargo dos (secundario) · relación directa. */
+    public function impuestoCargoDos()
+    {
+        return $this->belongsTo(\App\Modules\Catalogo\Models\Impuesto::class, 'impuesto_cargo_dos_id');
+    }
+
+    /** FASE H · Retención aplicable (filtra impuestos tipo retención). */
+    public function retencion()
+    {
+        return $this->belongsTo(\App\Modules\Catalogo\Models\Impuesto::class, 'retencion_siigo_id');
+    }
+
+    /** Impuestos múltiples (SIIGO acepta N por producto). */
+    public function impuestos(): \Illuminate\Database\Eloquent\Relations\BelongsToMany
+    {
+        return $this->belongsToMany(
+            \App\Modules\Catalogo\Models\Impuesto::class,
+            'producto_impuestos', 'producto_id', 'impuesto_id'
+        )->withTimestamps();
+    }
 
     // Sprint 4 · G.1 · Maestras SIIGO Kardex Referencias.
     public function linea() { return $this->belongsTo(\App\Modules\Catalogo\Models\CatalogoLinea::class, 'linea_id'); }

@@ -12,6 +12,7 @@ import {
 import CommandPalette from '@/Components/CommandPalette.vue';
 import CopilotoChat from '@/Components/CopilotoChat.vue';
 import NotificacionesBell from '@/Components/NotificacionesBell.vue';
+import SemaforoSiigo from '@/Components/SemaforoSiigo.vue';
 
 const page = usePage();
 const user = computed(() => page.props.auth?.user);
@@ -279,6 +280,8 @@ const toggleGroup = (key) => { openGroups.value[key] = !openGroups.value[key]; }
                 </div>
 
                 <div class="flex items-center gap-2">
+                    <!-- FASE E · Semáforo SIIGO (polling 30s) -->
+                    <SemaforoSiigo/>
                     <!-- MEJORAS-B · Bell real-time con polling 20s + sonido -->
                     <NotificacionesBell/>
                     <div class="flex items-center gap-2 pl-2 border-l border-surface-200 dark:border-surface-800">

@@ -3,13 +3,14 @@
 namespace App\Modules\Siigo\Services;
 
 use App\Models\Contacto;
-use App\Modules\Cartera\Enums\CategoriaUbicacion;
+use App\Modules\Dropi\Enums\CategoriaUbicacion;
 use App\Modules\Dropi\Models\InventarioUbicacion;
 use App\Modules\Dropi\Models\Producto;
 use App\Modules\Siigo\Clients\SiigoClient;
 use App\Modules\Siigo\Models\SiigoCatalogo;
 use App\Modules\Siigo\Models\SiigoConfig;
 use App\Modules\Siigo\Models\SiigoSyncLog;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -59,11 +60,86 @@ class SiigoService
         // Mapear warehouses → inventario_ubicaciones
         $this->mapearWarehouses();
 
+        // Propagar los siigo_id a las tablas locales (impuestos, categorias,
+        // listas_precios) para que los selectores del form y el PayloadBuilder
+        // tengan matching directo sin depender de nombres/porcentajes.
+        $resumen['propagados'] = $this->propagarSiigoIdsALocales();
+
         SiigoConfig::current()->forceFill(['sync_catalogos_at' => now()])->save();
 
-        $this->log('catalogos', 'exitoso', array_sum($resumen), 0, 0, $inicio, 'Catálogos SIIGO sincronizados', $resumen);
+        // Limpiar caches de PayloadBuilder para que los nuevos matchings apliquen de inmediato.
+        Cache::forget('siigo:catalog:account-groups');
+        Cache::forget('siigo:catalog:taxes-normalized');
+
+        $this->log('catalogos', 'exitoso', array_sum(array_diff_key($resumen, ['propagados' => 0])), 0, 0, $inicio, 'Catálogos SIIGO sincronizados', $resumen);
 
         return $resumen;
+    }
+
+    /**
+     * Propaga los `siigo_id` que SIIGO expone a las tablas locales del ERP
+     * (impuestos, categorias, listas_precios). Al tener el id directo, el
+     * PayloadBuilder deja de depender de matching por nombre/%.
+     *
+     * Matching:
+     *   - taxes: por porcentaje (tolerancia 0.01).
+     *   - account-groups: por nombre case-insensitive, trim.
+     *   - price-lists: por nombre case-insensitive.
+     *
+     * @return array{taxes:int, account_groups:int, price_lists:int}
+     */
+    private function propagarSiigoIdsALocales(): array
+    {
+        $out = ['taxes' => 0, 'account_groups' => 0, 'price_lists' => 0];
+
+        // ━━ TAXES ━━ impuestos.siigo_id ↔ SIIGO tax.id (match por %).
+        if (\Schema::hasColumn('impuestos', 'siigo_id')) {
+            $siigoTaxes = SiigoCatalogo::where('tipo', 'taxes')->get(['codigo', 'payload']);
+            foreach (\DB::table('impuestos')->whereNotNull('porcentaje')->get(['id', 'porcentaje']) as $local) {
+                $target = (float) $local->porcentaje;
+                foreach ($siigoTaxes as $st) {
+                    $payload = $st->payload ?? [];
+                    $pct = isset($payload['percentage']) ? (float) $payload['percentage']
+                        : (isset($payload['rate']) ? (float) $payload['rate'] : null);
+                    if ($pct !== null && abs($pct - $target) < 0.01) {
+                        \DB::table('impuestos')->where('id', $local->id)
+                            ->update(['siigo_id' => (int) $st->codigo]);
+                        $out['taxes']++;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // ━━ ACCOUNT-GROUPS ━━ categorias.siigo_account_group_id ↔ SIIGO account_group.id (match por nombre).
+        if (\Schema::hasTable('categorias') && \Schema::hasColumn('categorias', 'siigo_account_group_id')) {
+            $siigoAg = SiigoCatalogo::where('tipo', 'account-groups')->get(['codigo', 'nombre']);
+            $mapa = $siigoAg->mapWithKeys(fn ($c) => [mb_strtolower(trim($c->nombre)) => (int) $c->codigo]);
+            foreach (\DB::table('categorias')->get(['id', 'nombre']) as $local) {
+                $key = mb_strtolower(trim((string) $local->nombre));
+                if (isset($mapa[$key])) {
+                    \DB::table('categorias')->where('id', $local->id)
+                        ->update(['siigo_account_group_id' => $mapa[$key]]);
+                    $out['account_groups']++;
+                }
+            }
+        }
+
+        // ━━ PRICE-LISTS ━━ listas_precios.siigo_id ↔ SIIGO price-list.id (match por nombre).
+        if (\Schema::hasTable('listas_precios') && \Schema::hasColumn('listas_precios', 'siigo_id')) {
+            $siigoPl = SiigoCatalogo::where('tipo', 'price-lists')->get(['codigo', 'nombre']);
+            $mapa = $siigoPl->mapWithKeys(fn ($c) => [mb_strtolower(trim($c->nombre)) => (int) $c->codigo]);
+            foreach (\DB::table('listas_precios')->get(['id', 'nombre']) as $local) {
+                $key = mb_strtolower(trim((string) $local->nombre));
+                if (isset($mapa[$key])) {
+                    \DB::table('listas_precios')->where('id', $local->id)
+                        ->update(['siigo_id' => $mapa[$key]]);
+                    $out['price_lists']++;
+                }
+            }
+        }
+
+        return $out;
     }
 
     /**
@@ -72,12 +148,14 @@ class SiigoService
      * Si el producto tiene variantes internas del catálogo GB, se preservan (no borra variantes locales).
      *
      * @param  int          $paginaInicial
-     * @param  int          $tamPagina
+     * @param  int          $tamPagina  SIIGO cap es 25 para /v1/products · pedir
+     *                                   más devuelve 25 y hace que `count===tam` sea
+     *                                   false y el cursor marque completo tras 1 pág.
      * @param  string|null  $updatedStart  Filtro incremental yyyy-MM-dd — si viene,
      *                                     solo pide productos actualizados desde esa fecha
      *                                     (respeta rate limit para sync cada 15 min).
      */
-    public function sincronizarProductos(int $paginaInicial = 1, int $tamPagina = 100, ?string $updatedStart = null): array
+    public function sincronizarProductos(int $paginaInicial = 1, int $tamPagina = 25, ?string $updatedStart = null): array
     {
         $inicio = microtime(true);
         $nuevos = 0; $actualizados = 0; $errores = 0;
@@ -160,6 +238,102 @@ class SiigoService
         return $r;
     }
 
+    /**
+     * Reconciliación completa de productos: PULL SIIGO → ERP + detección de zombies.
+     *
+     * Cubre las 4 acciones SIIGO→ERP del CRUD bidireccional:
+     *   1. CREAR  · productos nuevos en SIIGO que el ERP no tenía → se crean localmente.
+     *   2. EDITAR · productos ya linkeados que cambiaron en SIIGO → se actualizan localmente.
+     *   3. LINKEAR · productos locales sin siigo_id pero con `referencia = code SIIGO` → se linkean.
+     *   4. ELIMINAR · productos locales con siigo_id que SIIGO ya no tiene → soft delete ERP.
+     *
+     * Pensado para correr cada 5 min como red de seguridad (cron) + bajo demanda
+     * desde el botón "Reconciliar ahora" del panel. Soft delete siempre; nunca
+     * hard delete por auto-sync para preservar histórico contable.
+     *
+     * @return array{nuevos:int, actualizados:int, linkeados:int, zombies:int, errores:int, total:int}
+     */
+    public function reconciliarProductos(int $tamPagina = 25): array
+    {
+        $inicio = microtime(true);
+        $nuevos = 0; $actualizados = 0; $linkeados = 0; $errores = 0;
+        $siigoIdsVistos = [];
+        $pagina = 1;
+        $linkeadosAntes = Producto::whereNull('siigo_id')->count();
+
+        do {
+            try {
+                $response = $this->client->request('GET', '/v1/products', [
+                    'page' => $pagina, 'page_size' => $tamPagina,
+                ]);
+                if ($response->failed()) { $errores++; break; }
+
+                $data = $response->json();
+                $items = $data['results'] ?? [];
+                if (empty($items)) break;
+
+                $pageIds = array_column($items, 'id');
+                $siigoIdsVistos = array_merge($siigoIdsVistos, $pageIds);
+
+                $existentes = Producto::whereIn('siigo_id', $pageIds)
+                    ->get()->keyBy('siigo_id');
+
+                foreach ($items as $p) {
+                    try {
+                        $creado = $this->guardarProducto($p, $existentes[$p['id']] ?? null);
+                        $creado ? $nuevos++ : $actualizados++;
+                    } catch (\Throwable $e) {
+                        $errores++;
+                        Log::channel('siigo')->error('reconciliar · guardarProducto', [
+                            'code' => $p['code'] ?? '?', 'err' => $e->getMessage(),
+                        ]);
+                    }
+                }
+
+                $pagina++;
+            } catch (\Throwable $e) {
+                $errores++;
+                Log::channel('siigo')->error('reconciliar · pagina', ['err' => $e->getMessage()]);
+                break;
+            }
+        } while (count($items) === $tamPagina && $pagina < 500);
+
+        // Zombies · productos locales con siigo_id que SIIGO ya no tiene.
+        // Solo marcamos si descargamos al menos 1 página sin errores (sino, un
+        // error de red hace soft-delete masivo accidentalmente).
+        $zombies = 0;
+        if ($errores === 0 && ! empty($siigoIdsVistos)) {
+            $huerfanos = Producto::whereNotNull('siigo_id')
+                ->where('activo', true)
+                ->whereNotIn('siigo_id', $siigoIdsVistos)
+                ->get();
+            foreach ($huerfanos as $z) {
+                Producto::withoutEvents(function () use ($z) {
+                    $z->forceFill([
+                        'activo' => false,
+                        'siigo_sync_at' => now(),
+                    ])->save();
+                    $z->delete();  // soft delete · preserva histórico
+                });
+                $zombies++;
+            }
+        }
+
+        // Linkeados = diferencia de productos sin siigo_id antes vs ahora.
+        $linkeadosDespues = Producto::whereNull('siigo_id')->count();
+        $linkeados = max(0, $linkeadosAntes - $linkeadosDespues - $nuevos);
+
+        $r = compact('nuevos', 'actualizados', 'linkeados', 'zombies', 'errores')
+            + ['total' => count($siigoIdsVistos)];
+
+        $this->log('productos', $errores === 0 ? 'exitoso' : 'parcial',
+            $nuevos, $actualizados + $linkeados + $zombies, $errores, $inicio,
+            "Reconciliar: +{$nuevos} nuevos · {$actualizados} actualizados · {$linkeados} linkeados · {$zombies} marcados eliminados · {$errores} errores",
+            $r);
+
+        return $r;
+    }
+
     /** Sincroniza clientes/terceros desde SIIGO */
     public function sincronizarClientes(int $paginaInicial = 1, int $tamPagina = 100): array
     {
@@ -231,16 +405,32 @@ class SiigoService
     {
         $catalogos = SiigoCatalogo::where('tipo', 'warehouses')->get();
         foreach ($catalogos as $c) {
-            InventarioUbicacion::updateOrCreate(
-                ['siigo_id' => $c->codigo],
-                [
-                    'codigo' => 'SIIGO-' . $c->codigo,
+            try {
+                $siigoCode = 'SIIGO-' . $c->codigo;
+                // Si ya existe una ubicación con ese código (de un sync previo sin siigo_id),
+                // solo le fijamos el siigo_id en vez de crear duplicada.
+                $existente = InventarioUbicacion::where('codigo', $siigoCode)
+                    ->orWhere('siigo_id', $c->codigo)->first();
+                if ($existente) {
+                    $existente->forceFill([
+                        'siigo_id' => $c->codigo,
+                        'nombre' => $c->nombre,
+                    ])->save();
+                    continue;
+                }
+                InventarioUbicacion::create([
+                    'siigo_id' => $c->codigo,
+                    'codigo' => $siigoCode,
                     'nombre' => $c->nombre,
                     'categoria' => CategoriaUbicacion::Venta->value,
                     'disponible_para_venta' => true,
                     'activa' => true,
-                ]
-            );
+                ]);
+            } catch (\Throwable $e) {
+                Log::channel('siigo')->warning('mapearWarehouses skip', [
+                    'siigo_id' => $c->codigo, 'nombre' => $c->nombre, 'err' => $e->getMessage(),
+                ]);
+            }
         }
     }
 
@@ -264,6 +454,39 @@ class SiigoService
         return Producto::withoutEvents(function () use ($p, $existente): bool {
             // B3-P3 · si el caller lo pre-cargó (batch), lo reutilizamos.
             $existente = $existente ?? Producto::where('siigo_id', $p['id'])->first();
+
+            // Normalizar la referencia que usaremos localmente · si SIIGO no mandó
+            // `reference` (viene '' o null), usamos code; si tampoco hay code,
+            // fabricamos una con el UUID de SIIGO. Esto evita duplicate entry
+            // en el UNIQUE constraint productos.referencia cuando varios productos
+            // del sandbox vienen con reference en blanco.
+            $refSiigo = isset($p['reference']) && trim((string) $p['reference']) !== ''
+                ? trim((string) $p['reference']) : null;
+            $referenciaFinal = $refSiigo
+                ?? ($p['code'] ?? null)
+                ?? ('SIIGO-' . substr((string) ($p['id'] ?? ''), 0, 8));
+
+            // Anti-duplicados RAÍZ · buscamos por CUALQUIER identificador que
+            // SIIGO manda (reference, code) contra productos locales sin siigo_id.
+            // Si uno coincide, LINKEAMOS en vez de insertar un duplicado.
+            if (! $existente) {
+                $candidatos = array_values(array_unique(array_filter([
+                    $refSiigo,
+                    $p['code'] ?? null,
+                    $referenciaFinal,
+                ], fn ($v) => is_string($v) && $v !== '')));
+
+                foreach ($candidatos as $cand) {
+                    $existente = Producto::whereNull('siigo_id')
+                        ->where('referencia', $cand)
+                        ->first();
+                    if ($existente) {
+                        $existente->forceFill(['siigo_id' => $p['id']])->save();
+                        break;
+                    }
+                }
+            }
+
             $creado = ! $existente;
 
             if ($existente) {
@@ -278,23 +501,42 @@ class SiigoService
                     return false;
                 }
 
-                // Merge selectivo · SOLO campos que SIIGO controla.
-                $existente->fill([
+                // Merge selectivo · campos que SIIGO controla y usamos localmente.
+                // forceFill porque siigo_code/sync_at están fuera del $fillable.
+                $precioSiigo = (float) ($p['prices'][0]['price_list'][0]['value'] ?? 0);
+                $existente->forceFill([
                     'siigo_code' => $p['code'] ?? $existente->siigo_code,
                     'nombre' => $p['name'] ?? $existente->nombre,
                     'descripcion' => $p['description'] ?? $existente->descripcion,
                     'categoria' => $p['account_group']['name'] ?? $existente->categoria,
                     'activo' => (bool) ($p['active'] ?? $existente->activo),
+                    // Precio solo si SIIGO devolvió uno válido (>0) · evita blanquear
+                    // precios locales cuando el producto en SIIGO no tiene lista.
+                    'precio_proveedor' => $precioSiigo > 0 ? $precioSiigo : $existente->precio_proveedor,
                     'siigo_sync_at' => now(),
                 ])->save();
                 return false;
             }
 
             // CREATE · primer sync, poblamos todo.
-            Producto::create([
+            // Última verificación anti-colisión · si la referenciaFinal YA existe
+            // en la BD (ej. otro producto SIIGO ya la ocupó, o un local sin siigo_id
+            // que el fallback no vio por race), buscamos una libre con sufijo.
+            $refIntento = $referenciaFinal;
+            $sufijo = 1;
+            while (Producto::where('referencia', $refIntento)->exists()) {
+                $refIntento = $referenciaFinal . '-' . substr((string) ($p['id'] ?? ''), 0, 6) . ($sufijo > 1 ? "-{$sufijo}" : '');
+                $sufijo++;
+                if ($sufijo > 5) {
+                    $refIntento = 'SIIGO-' . substr((string) ($p['id'] ?? ''), 0, 12);
+                    break;
+                }
+            }
+
+            (new Producto())->forceFill([
                 'siigo_id' => $p['id'],
                 'siigo_code' => $p['code'] ?? null,
-                'referencia' => $p['reference'] ?? $p['code'] ?? $p['id'],
+                'referencia' => $refIntento,
                 'nombre' => $p['name'] ?? 'Producto sin nombre',
                 'descripcion' => $p['description'] ?? null,
                 'categoria' => $p['account_group']['name'] ?? null,
@@ -303,7 +545,7 @@ class SiigoService
                 'requiere_talla' => false,
                 'es_set' => false,
                 'siigo_sync_at' => now(),
-            ]);
+            ])->save();
             return true;
         });
     }

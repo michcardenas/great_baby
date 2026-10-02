@@ -39,8 +39,7 @@ class CrearProductoEnSiigo
 
     public function handle(Producto $producto): array
     {
-        // B3-P1 · eager load `variantes.preciosVigentes` evita N+1 en granular
-        // (antes 2 queries por variante · con 20 var × 500 prod = 20k queries).
+        // B3-P1 · eager load `variantes.preciosVigentes` evita N+1 en granular.
         $producto->loadMissing([
             'variantes.preciosVigentes',
             'marca',
@@ -49,8 +48,14 @@ class CrearProductoEnSiigo
             'unidadMedida',
         ]);
 
-        $modo = $this->esGranular($producto);
-        return $modo
+        // RAÍZ · el modo (agregado vs granular) lo DECIDE el sistema según si
+        // el producto tiene variantes, no una config que el usuario entiende.
+        //   - Tiene variantes → se crean como N productos SIIGO independientes.
+        //   - No tiene        → se crea 1 producto SIIGO con el padre.
+        // El campo `desglose_stock` queda como preferencia interna del kardex
+        // local pero NO decide qué pasa en SIIGO.
+        $tieneVariantes = $producto->variantes->isNotEmpty();
+        return $tieneVariantes
             ? $this->crearGranular($producto)
             : $this->crearAgregado($producto);
     }

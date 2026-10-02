@@ -11,6 +11,11 @@ return [
     | falla — el ERP local sigue funcionando aunque Siigo API caiga.
     */
 
+    // Driver:
+    //   'real' → habla con https://api.siigo.com/ (requiere credenciales válidas)
+    //   'fake' → simula respuestas OK para demos/pruebas sin credenciales
+    'driver' => env('SIIGO_DRIVER', 'real'),
+
     // Kill-switch global del push automático. Si false, el Observer NO encola.
     // Manual (botón "Sincronizar con Siigo" en Filament) siempre funciona.
     'push_auto' => (bool) env('FEATURE_SIIGO_PUSH_AUTO', false),
