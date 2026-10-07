@@ -3,7 +3,7 @@ import { ref, onMounted, onUnmounted, computed } from 'vue';
 import { Head, Link, router, usePage } from '@inertiajs/vue3';
 import {
     Package, Plus, Search, Eye, Pencil, Trash2, Cloud, CloudOff, Lock, CloudDownload, RefreshCw,
-    Download, Upload, FileText, FileSpreadsheet, Inbox,
+    Download, Upload, FileText, FileSpreadsheet, Inbox, AlertTriangle,
 } from 'lucide-vue-next';
 import axios from 'axios';
 import AppLayout from '@/Layouts/AppLayout.vue';
@@ -148,6 +148,32 @@ const abrirBulkEliminar = () => abrirBulkModal({
     color: 'red',
     onConfirmar: () => enviarBulk('eliminar'),
 });
+// PROD-13 · bulk push a SIIGO. Encola 1 job PushProductoASiigo por producto:
+// 'crear' si el producto no tiene siigo_id, 'actualizar' si ya lo tiene.
+// Inactivos y productos sin referencia se saltan automáticamente.
+const abrirBulkPushSiigo = () => abrirBulkModal({
+    titulo: `Enviar ${seleccionados.value.length} productos a SIIGO`,
+    mensaje: 'Se encolará cada producto en la cola SIIGO (crear o actualizar según corresponda). Los inactivos o sin referencia se saltan. El proceso corre en segundo plano · podés seguir trabajando.',
+    color: 'sky',
+    onConfirmar: () => enviarBulkPushSiigo(),
+});
+const enviarBulkPushSiigo = async () => {
+    bulkCargando.value = true;
+    try {
+        const { data } = await axios.post('/app/catalogo/productos-bulk-push-siigo', {
+            ids: seleccionados.value,
+        });
+        showFlash({ type: 'success', message: data.mensaje });
+        seleccionados.value = [];
+        cerrarBulkModal();
+        // No necesitamos reload inmediato · los siigo_sync_at se actualizan a
+        // medida que la cola procesa; el usuario puede revisar el semáforo.
+    } catch (e) {
+        showFlash({ type: 'error', message: 'Error: ' + (e.response?.data?.message || e.message) });
+    } finally {
+        bulkCargando.value = false;
+    }
+};
 
 const abrirBulkModal = (cfg) => { modalBulk.value = cfg; };
 const cerrarBulkModal = () => { modalBulk.value = null; };
@@ -324,12 +350,22 @@ const confirmarImportarExcel = async () => {
     }
 };
 
+// PROD-16 · Política de conflicto · reconciliar sobre-escribe campos locales
+// con lo que SIIGO tenga. Antes de disparar el job pedimos confirmación
+// explícita y recordamos que para ver qué va a cambiar hay un reporte global.
+const modalReconciliar = ref(false);
+const abrirConfirmarReconciliar = () => {
+    if (sincronizandoTodo.value) return;
+    modalReconciliar.value = true;
+};
+
 // B4 · Botón "Traer mis cambios de SIIGO"
 //   Modo INCREMENTAL · solo trae los productos que cambiaron en SIIGO desde
 //   la última sync (updated_start). Típicamente <30 seg. El full pull vive
 //   detrás de `php artisan siigo:reconciliar --full --confirmar` para evitar
 //   accidentes con el sandbox compartido.
 const sincronizarTodo = async () => {
+    modalReconciliar.value = false;
     sincronizandoTodo.value = true;
     resumenSync.value = null;
     try {
@@ -400,7 +436,7 @@ onUnmounted(() => { if (typeof stopNav === 'function') stopNav(); });
                     <!-- Grupo SIIGO · sincronización bidireccional -->
                     <div class="flex items-center gap-0.5 rounded-lg border border-emerald-200 bg-emerald-50/40 p-0.5"
                          title="Traer datos desde SIIGO al ERP">
-                        <button type="button" @click="sincronizarTodo" :disabled="sincronizandoTodo"
+                        <button type="button" @click="abrirConfirmarReconciliar" :disabled="sincronizandoTodo"
                                 class="text-sm inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-emerald-700 hover:bg-emerald-100 disabled:opacity-50">
                             <RefreshCw :class="['h-4 w-4', sincronizandoTodo && 'animate-spin']"/>
                             <span class="hidden md:inline">{{ sincronizandoTodo ? 'Trayendo…' : 'Traer de SIIGO' }}</span>
@@ -690,6 +726,11 @@ onUnmounted(() => { if (typeof stopNav === 'function') stopNav(); });
                             class="text-xs px-2 py-1 rounded border border-violet-500 text-violet-700 hover:bg-violet-50 disabled:opacity-50">
                         Ajustar precio %
                     </button>
+                    <!-- PROD-13 · bulk push a SIIGO (solo si hay al menos uno para pushear) -->
+                    <button @click="abrirBulkPushSiigo" :disabled="bulkCargando"
+                            class="text-xs px-2 py-1 rounded border border-sky-500 text-sky-700 hover:bg-sky-50 disabled:opacity-50 inline-flex items-center gap-1">
+                        <Cloud class="h-3.5 w-3.5"/> Enviar a SIIGO ({{ seleccionados.length }})
+                    </button>
                     <button @click="abrirBulkEliminar" :disabled="bulkCargando"
                             class="text-xs px-2 py-1 rounded border border-red-500 text-red-700 hover:bg-red-50 disabled:opacity-50">
                         🗑 Eliminar ({{ seleccionados.length }})
@@ -743,6 +784,7 @@ onUnmounted(() => { if (typeof stopNav === 'function') stopNav(); });
                             <th class="text-right p-2">Precio prov.</th>
                             <th class="text-center p-2" title="Nº de variantes activas">Var.</th>
                             <th class="text-center p-2">SIIGO</th>
+                            <th class="text-left p-2 w-28" title="Última foto enviada a SIIGO">Última sync</th>
                             <th class="text-center p-2">Activo</th>
                             <th class="text-right p-2 w-24">Acciones</th>
                         </tr>
@@ -779,6 +821,10 @@ onUnmounted(() => { if (typeof stopNav === 'function') stopNav(); });
                                 <Cloud v-if="p.siigo_id" class="h-4 w-4 inline text-emerald-600" :title="`SIIGO: ${p.siigo_code}`"/>
                                 <CloudOff v-else class="h-4 w-4 inline text-amber-600" title="Pendiente sync"/>
                             </td>
+                            <!-- PROD-17 · Última sync a SIIGO · texto relativo con fecha completa en tooltip. -->
+                            <td class="p-2 text-xs text-surface-500" :title="p.siigo_sync_iso || 'Nunca sincronizado'">
+                                {{ p.siigo_sync_at || '—' }}
+                            </td>
                             <td class="p-2 text-center">
                                 <span :class="p.activo ? 'text-emerald-600' : 'text-red-500'" class="text-lg">●</span>
                             </td>
@@ -792,7 +838,7 @@ onUnmounted(() => { if (typeof stopNav === 'function') stopNav(); });
                             </td>
                         </tr>
                         <tr v-if="!productos.data.length">
-                            <td colspan="9" class="p-8 text-center text-surface-500 text-sm">
+                            <td colspan="10" class="p-8 text-center text-surface-500 text-sm">
                                 Sin productos con esos filtros.
                             </td>
                         </tr>
@@ -842,6 +888,49 @@ onUnmounted(() => { if (typeof stopNav === 'function') stopNav(); });
                     <button type="button" @click="confirmarImportar" :disabled="importandoDeSiigo || !codeImport.trim()"
                             class="px-4 py-2 text-sm rounded-lg bg-sky-600 text-white hover:bg-sky-700 disabled:opacity-50">
                         {{ importandoDeSiigo ? 'Importando…' : 'Importar ahora' }}
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- PROD-16 · Modal de confirmación "Traer de SIIGO" · explicita que
+             nombre/precio/activo/marca se sobreescriben desde SIIGO. -->
+        <div v-if="modalReconciliar"
+             class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+             @click.self="modalReconciliar = false">
+            <div class="bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
+                <div class="flex items-start gap-3 mb-4">
+                    <div class="p-2 bg-amber-50 rounded-lg">
+                        <RefreshCw class="h-5 w-5 text-amber-600"/>
+                    </div>
+                    <div class="flex-1">
+                        <h3 class="font-semibold text-surface-800">Traer cambios de SIIGO</h3>
+                        <p class="text-sm text-surface-500 mt-0.5">Modo incremental · solo trae lo cambiado desde la última sync.</p>
+                    </div>
+                </div>
+
+                <div class="space-y-3 mb-5">
+                    <div class="p-3 rounded-lg bg-amber-50/70 border border-amber-200 text-sm text-amber-800">
+                        <strong>Importante:</strong> esta acción <strong>sobreescribe</strong> en el ERP el nombre, precio,
+                        marca y estado activo de los productos cuyo SIIGO cambió recientemente. Si editaste algo manualmente,
+                        verificá primero contra qué estás por sincronizar.
+                    </div>
+                    <Link href="/app/siigo/discrepancias"
+                          class="flex items-start gap-2.5 p-3 rounded-lg border border-surface-200 hover:bg-surface-50">
+                        <AlertTriangle class="h-4 w-4 text-amber-600 mt-0.5 shrink-0"/>
+                        <div>
+                            <div class="font-medium text-sm text-surface-800">Ver primero el reporte de discrepancias →</div>
+                            <div class="text-xs text-surface-500">Comparar ERP vs SIIGO campo por campo antes de aplicar.</div>
+                        </div>
+                    </Link>
+                </div>
+
+                <div class="flex gap-2 justify-end">
+                    <button @click="modalReconciliar = false"
+                            class="text-sm px-4 py-2 rounded-lg text-surface-600 hover:bg-surface-100">Cancelar</button>
+                    <button @click="sincronizarTodo"
+                            class="text-sm px-4 py-2 rounded-lg bg-amber-600 text-white hover:bg-amber-700 inline-flex items-center gap-1.5">
+                        <RefreshCw class="h-4 w-4"/> Entiendo, traer ahora
                     </button>
                 </div>
             </div>

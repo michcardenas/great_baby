@@ -161,7 +161,8 @@ it('cierra toma física con diferencias y genera asientos', function () {
         ->and((float) $toma->valor_ajuste)->toBe(-30000.0);
 
     // Kardex debe reflejar el ajuste
-    expect(InventarioMovimiento::where('tipo', 'ajuste_toma')
+    // BUG-INV · tipo unificado con la whitelist del InventarioMovimientoObserver.
+    expect(InventarioMovimiento::where('tipo', 'ajuste_toma_fisica')
         ->where('variante_id', $this->variante->id)->sum('cantidad'))->toBe(-10);
 
     // Asientos contables: 5195 debe 30k + 1435 haber 30k

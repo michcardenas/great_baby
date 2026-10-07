@@ -133,7 +133,11 @@ class CerrarTomaFisica
                     'variante_id' => $it->variante_id,     // NULL si item agregado
                     'producto_id' => $it->producto_id,     // ambos modos lo tienen
                     'ubicacion_id' => $toma->ubicacion_id,
-                    'tipo' => 'ajuste_toma',
+                    // BUG-INV · unificado con la whitelist del InventarioMovimientoObserver
+                    // (antes `ajuste_toma` jamás disparaba push a SIIGO; combinado con que
+                    // CerrarTomaFisica igual escribe MovimientoContable local, dejaba la
+                    // contabilidad doble divergente — SIIGO sin el ajuste pero el ERP sí).
+                    'tipo' => 'ajuste_toma_fisica',
                     'cantidad' => $diff,
                     'referencia_tipo' => TomaFisica::class,
                     'referencia_id' => $toma->id,

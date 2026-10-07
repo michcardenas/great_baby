@@ -97,15 +97,32 @@ const reenviarSiigo = () => {
                             <th class="text-right p-2">Costo unit</th>
                             <th class="text-right p-2">Subtotal</th>
                             <th class="text-left p-2">Lote</th>
+                            <th class="text-left p-2">Destino</th>
+                            <th class="text-left p-2">Motivo</th>
                             <th class="text-left p-2">Obs</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y">
-                        <tr v-for="it in recepcion.items" :key="it.id">
+                        <tr v-for="it in recepcion.items" :key="it.id"
+                            :class="it.clasificacion && it.clasificacion !== 'apto' ? 'bg-amber-50/40 dark:bg-amber-950/20' : ''">
                             <td class="p-2 text-right">{{ it.cantidad_recibida }}</td>
                             <td class="p-2 text-right">{{ money(it.costo_unit) }}</td>
                             <td class="p-2 text-right font-bold">{{ money(it.subtotal) }}</td>
                             <td class="p-2 text-xs">{{ it.lote || '—' }}</td>
+                            <td class="p-2">
+                                <!-- LOG-J8 · chip del destino -->
+                                <span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold uppercase"
+                                      :class="{
+                                        'bg-emerald-100 text-emerald-800': (it.clasificacion || 'apto') === 'apto',
+                                        'bg-red-100 text-red-800': it.clasificacion === 'averia',
+                                        'bg-amber-100 text-amber-800': it.clasificacion === 'cuarentena',
+                                        'bg-blue-100 text-blue-800': it.clasificacion === 'revision',
+                                        'bg-surface-200 text-surface-700': it.clasificacion === 'faltante',
+                                      }">
+                                    {{ { apto:'✓ Apto', averia:'⚠ Avería', cuarentena:'⏳ Cuarent.', revision:'🔍 Revisión', faltante:'✕ Faltante' }[it.clasificacion || 'apto'] }}
+                                </span>
+                            </td>
+                            <td class="p-2 text-xs">{{ it.motivo_clasificacion || '—' }}</td>
                             <td class="p-2 text-xs">{{ it.observaciones || '—' }}</td>
                         </tr>
                     </tbody>

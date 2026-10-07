@@ -1,0 +1,203 @@
+{
+    "info": {
+        "name": "GreatBaby · SIIGO Sandbox",
+        "description": "TEST-S10 · Colección para QA manual del sandbox de SIIGO. Importa junto con `GreatBaby_SIIGO_Sandbox.postman_environment.json`. Flujo recomendado:\n\n1. **Autenticar** — guarda el `access_token` en la env automáticamente.\n2. **Products** — crear/leer/actualizar producto.\n3. **Customers** — crear/leer cliente.\n4. **Invoices** — crear FV simple.\n5. **Credit notes** — crear NC contra la FV anterior.\n6. **Journals** — crear asiento manual.\n\nUsa el environment `sandbox` para no tocar producción.",
+        "_postman_id": "gb-siigo-sandbox-2026",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "variable": [
+        {"key": "base_url", "value": "https://api.siigo.com", "type": "string"},
+        {"key": "auth_url", "value": "https://api.siigo.com/auth", "type": "string"}
+    ],
+    "item": [
+        {
+            "name": "0 · Auth",
+            "item": [
+                {
+                    "name": "POST /auth",
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test('status 200', () => pm.response.to.have.status(200));",
+                                    "const json = pm.response.json();",
+                                    "if (json.access_token) { pm.environment.set('access_token', json.access_token); }",
+                                    "pm.test('token presente', () => pm.expect(pm.environment.get('access_token')).to.be.ok);"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ],
+                    "request": {
+                        "method": "POST",
+                        "header": [{"key": "Content-Type", "value": "application/json"}],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"username\": \"{{siigo_user}}\",\n  \"access_key\": \"{{siigo_access_key}}\"\n}"
+                        },
+                        "url": {"raw": "{{auth_url}}", "host": ["{{auth_url}}"]}
+                    }
+                }
+            ]
+        },
+        {
+            "name": "1 · Products",
+            "item": [
+                {
+                    "name": "GET /v1/products?page_size=5",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {"key": "Authorization", "value": "Bearer {{access_token}}"},
+                            {"key": "Partner-Id", "value": "{{partner_id}}"}
+                        ],
+                        "url": {"raw": "{{base_url}}/v1/products?page_size=5", "host": ["{{base_url}}"], "path": ["v1", "products"], "query": [{"key": "page_size", "value": "5"}]}
+                    }
+                },
+                {
+                    "name": "POST /v1/products",
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "if (pm.response.code === 201 || pm.response.code === 200) {",
+                                    "  pm.environment.set('last_product_id', pm.response.json().id);",
+                                    "}"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ],
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {"key": "Authorization", "value": "Bearer {{access_token}}"},
+                            {"key": "Content-Type", "value": "application/json"},
+                            {"key": "Partner-Id", "value": "{{partner_id}}"}
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"code\": \"GB-QA-{{$timestamp}}\",\n  \"name\": \"Producto QA GB Postman\",\n  \"account_group\": 1,\n  \"type\": \"Product\",\n  \"stock_control\": true,\n  \"active\": true,\n  \"tax_classification\": \"Taxed\",\n  \"tax_included\": false,\n  \"tax_consumption_value\": 0,\n  \"unit\": \"94\",\n  \"unit_label\": \"unit\",\n  \"reference\": \"GB-QA-REF\",\n  \"description\": \"Smoke test desde Postman\",\n  \"prices\": [{\n    \"currency_code\": \"COP\",\n    \"price_list\": [{\"position\": 1, \"value\": 10000}]\n  }]\n}"
+                        },
+                        "url": {"raw": "{{base_url}}/v1/products", "host": ["{{base_url}}"], "path": ["v1", "products"]}
+                    }
+                },
+                {
+                    "name": "GET /v1/products/{id}",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {"key": "Authorization", "value": "Bearer {{access_token}}"},
+                            {"key": "Partner-Id", "value": "{{partner_id}}"}
+                        ],
+                        "url": {"raw": "{{base_url}}/v1/products/{{last_product_id}}", "host": ["{{base_url}}"], "path": ["v1", "products", "{{last_product_id}}"]}
+                    }
+                }
+            ]
+        },
+        {
+            "name": "2 · Customers",
+            "item": [
+                {
+                    "name": "GET /v1/customers?page_size=5",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {"key": "Authorization", "value": "Bearer {{access_token}}"},
+                            {"key": "Partner-Id", "value": "{{partner_id}}"}
+                        ],
+                        "url": {"raw": "{{base_url}}/v1/customers?page_size=5", "host": ["{{base_url}}"], "path": ["v1", "customers"], "query": [{"key": "page_size", "value": "5"}]}
+                    }
+                }
+            ]
+        },
+        {
+            "name": "3 · Document Types",
+            "item": [
+                {
+                    "name": "GET /v1/document-types?type=FV",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {"key": "Authorization", "value": "Bearer {{access_token}}"},
+                            {"key": "Partner-Id", "value": "{{partner_id}}"}
+                        ],
+                        "url": {"raw": "{{base_url}}/v1/document-types?type=FV", "host": ["{{base_url}}"], "path": ["v1", "document-types"], "query": [{"key": "type", "value": "FV"}]}
+                    }
+                },
+                {
+                    "name": "GET /v1/document-types?type=NC",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {"key": "Authorization", "value": "Bearer {{access_token}}"},
+                            {"key": "Partner-Id", "value": "{{partner_id}}"}
+                        ],
+                        "url": {"raw": "{{base_url}}/v1/document-types?type=NC", "host": ["{{base_url}}"], "path": ["v1", "document-types"]}
+                    }
+                }
+            ]
+        },
+        {
+            "name": "4 · Taxes & Warehouses",
+            "item": [
+                {
+                    "name": "GET /v1/taxes",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {"key": "Authorization", "value": "Bearer {{access_token}}"},
+                            {"key": "Partner-Id", "value": "{{partner_id}}"}
+                        ],
+                        "url": {"raw": "{{base_url}}/v1/taxes", "host": ["{{base_url}}"], "path": ["v1", "taxes"]}
+                    }
+                },
+                {
+                    "name": "GET /v1/warehouses",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {"key": "Authorization", "value": "Bearer {{access_token}}"},
+                            {"key": "Partner-Id", "value": "{{partner_id}}"}
+                        ],
+                        "url": {"raw": "{{base_url}}/v1/warehouses", "host": ["{{base_url}}"], "path": ["v1", "warehouses"]}
+                    }
+                }
+            ]
+        },
+        {
+            "name": "5 · Invoices",
+            "item": [
+                {
+                    "name": "GET /v1/invoices?page_size=5",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {"key": "Authorization", "value": "Bearer {{access_token}}"},
+                            {"key": "Partner-Id", "value": "{{partner_id}}"}
+                        ],
+                        "url": {"raw": "{{base_url}}/v1/invoices?page_size=5", "host": ["{{base_url}}"], "path": ["v1", "invoices"]}
+                    }
+                }
+            ]
+        },
+        {
+            "name": "6 · Journals (asientos)",
+            "item": [
+                {
+                    "name": "GET /v1/journals?page_size=5",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {"key": "Authorization", "value": "Bearer {{access_token}}"},
+                            {"key": "Partner-Id", "value": "{{partner_id}}"}
+                        ],
+                        "url": {"raw": "{{base_url}}/v1/journals?page_size=5", "host": ["{{base_url}}"], "path": ["v1", "journals"]}
+                    }
+                }
+            ]
+        }
+    ]
+}

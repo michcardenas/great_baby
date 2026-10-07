@@ -1,10 +1,14 @@
 <script setup>
 import { ref, reactive, computed } from 'vue';
 import { Head, Link, router } from '@inertiajs/vue3';
-import { ArrowLeftRight, ArrowLeft, Plus, Trash2, Send, PackageCheck, Ban, Search } from 'lucide-vue-next';
+import { ArrowLeftRight, ArrowLeft, Plus, Trash2, Send, PackageCheck, Ban, Search, Upload } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import ImportMasivoModal from '@/Components/ImportMasivoModal.vue';
 import { useEscClose } from '@/composables/useEscClose';
 import { useFecha } from '@/composables/useFecha';
+
+const importMasivoAbierto = ref(false);
+const importMasivoOk = () => { importMasivoAbierto.value = false; router.reload({ only: ['traslado'] }); };
 
 const props = defineProps({ traslado: { type: Object, required: true } });
 const { fechaCorta } = useFecha();
@@ -162,7 +166,23 @@ const anular = () => {
 
             <!-- Agregar ítem (solo Borrador) -->
             <div v-if="puedeEditar" class="card p-4">
-                <h3 class="text-lg font-bold mb-3">Agregar producto</h3>
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-lg font-bold">Agregar producto</h3>
+                    <button @click="importMasivoAbierto = true"
+                            class="text-xs inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-emerald-500 text-emerald-700 hover:bg-emerald-50"
+                            title="Cargar lista completa de ítems desde Excel">
+                        <Upload class="h-3.5 w-3.5"/> Importar Excel masivo
+                    </button>
+                </div>
+                <ImportMasivoModal
+                    :abierto="importMasivoAbierto"
+                    :endpoint="`/app/inventario/traslados/${traslado.id}/importar`"
+                    tipo="traslado"
+                    titulo="Importar items del traslado"
+                    ayuda="Columna A: SKU/código de barras · Columna B: cantidad solicitada · Columna C: notas (opcional)."
+                    @cerrar="importMasivoAbierto = false"
+                    @ok="importMasivoOk"
+                />
                 <div class="grid gap-3 md:grid-cols-[2fr,1fr,1fr,auto]">
                     <div class="relative">
                         <label class="text-xs font-semibold">Buscar producto o SKU</label>

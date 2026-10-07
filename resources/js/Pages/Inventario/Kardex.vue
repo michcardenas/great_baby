@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import { Head, Link, router } from '@inertiajs/vue3';
 import { History, Search, ExternalLink, Cloud, CloudOff } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import BuscadorInventario from '@/Components/BuscadorInventario.vue';
 import { useMoney } from '@/composables/useMoney';
 
 const props = defineProps({
@@ -45,14 +46,20 @@ const tipoColor = (t, cantidad) => {
     <Head title="Kardex por variante · SIIGO"/>
     <AppLayout>
         <div class="max-w-7xl mx-auto space-y-4">
-            <div>
-                <h1 class="text-2xl font-bold flex items-center gap-2">
-                    <History class="h-6 w-6 text-brand-600"/>
-                    Kardex por variante · Formato SIIGO
-                </h1>
-                <p class="text-sm text-surface-500 mt-1">
-                    Costo promedio ponderado · valorización de stock · documento origen · sync SIIGO por asiento.
-                </p>
+            <div class="flex items-start justify-between gap-4 flex-wrap">
+                <div>
+                    <h1 class="text-2xl font-bold flex items-center gap-2">
+                        <History class="h-6 w-6 text-brand-600"/>
+                        Kardex por variante · Formato SIIGO
+                    </h1>
+                    <p class="text-sm text-surface-500 mt-1">
+                        Costo promedio ponderado · valorización de stock · documento origen · sync SIIGO por asiento.
+                    </p>
+                </div>
+                <!-- INV-B1 · buscador global · atajo "/" -->
+                <div class="w-full md:w-96">
+                    <BuscadorInventario placeholder="Saltar a otro SKU / producto / bodega… ( / )"/>
+                </div>
             </div>
 
             <div class="card p-4">

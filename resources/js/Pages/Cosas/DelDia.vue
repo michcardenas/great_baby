@@ -1,5 +1,6 @@
 <script setup>
-import { Head, Link } from '@inertiajs/vue3';
+import { computed } from 'vue';
+import { Head, Link, usePage } from '@inertiajs/vue3';
 import { Sunrise, Package, ShieldCheck, AlertCircle, UserX, Ghost, Boxes, Wallet } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 
@@ -14,8 +15,22 @@ const props = defineProps({
     wallet: Object,
 });
 
+// LOG · El AdminBodega entra a Cosas del día pero NO maneja Dropi · así que
+//   ocultamos la card de wallet Dropi + la de mercancía fantasma, que son
+//   problemas financieros de Aracely/Gerencia. Él se queda con los pendientes
+//   que SÍ puede resolver (pedidos lentos, garantías, críticos).
+const page = usePage();
+const puedeVerDropi = computed(() => !!page.props.auth?.user?.es_aracely);
+
 const money = (n) => '$' + Number(n || 0).toLocaleString('es-CO', { maximumFractionDigits: 0 });
-const totalItems = props.pedidosB2BLentos.length + props.garantiasSinDecidir.length + props.facturasVencidas.length + props.clientesDormidos.length + props.fantasma.length + props.criticos.length + (props.wallet.sin_cobro > 0 ? 1 : 0);
+const totalItems = computed(() =>
+    props.pedidosB2BLentos.length
+    + props.garantiasSinDecidir.length
+    + props.facturasVencidas.length
+    + props.clientesDormidos.length
+    + props.criticos.length
+    + (puedeVerDropi.value ? props.fantasma.length + (props.wallet.sin_cobro > 0 ? 1 : 0) : 0)
+);
 </script>
 
 <template>
@@ -136,8 +151,8 @@ const totalItems = props.pedidosB2BLentos.length + props.garantiasSinDecidir.len
                     </div>
                 </div>
 
-                <!-- Wallet Dropi -->
-                <div v-if="wallet.sin_cobro > 0" class="card p-4 border-l-4 border-brand-500">
+                <!-- Wallet Dropi · solo super admin/gerencia -->
+                <div v-if="puedeVerDropi && wallet.sin_cobro > 0" class="card p-4 border-l-4 border-brand-500">
                     <div class="flex items-center gap-2 mb-3">
                         <Wallet class="h-5 w-5 text-brand-600"/>
                         <div class="font-bold">Dinero Dropi sin cobrar</div>
@@ -148,8 +163,8 @@ const totalItems = props.pedidosB2BLentos.length + props.garantiasSinDecidir.len
                     </Link>
                 </div>
 
-                <!-- Mercancía fantasma -->
-                <div v-if="fantasma.length" class="card p-4 border-l-4 border-pink-500">
+                <!-- Mercancía fantasma Dropi · solo super admin/gerencia -->
+                <div v-if="puedeVerDropi && fantasma.length" class="card p-4 border-l-4 border-pink-500">
                     <div class="flex items-center gap-2 mb-3">
                         <Ghost class="h-5 w-5 text-pink-600"/>
                         <div class="font-bold">Mercancía fantasma Dropi ({{ fantasma.length }})</div>

@@ -520,6 +520,67 @@ class ProductosController extends Controller implements HasMiddleware
      * FASE C2 · Bulk edit · aplica el mismo cambio a un conjunto de productos.
      * Campos permitidos: activo (bool), linea_id (int), descuento_pct (float · aplica al precio_proveedor).
      */
+    /**
+     * PROD-13 · Bulk push a SIIGO · encola un job PushProductoASiigo por cada
+     * id recibido. Para cada producto decide:
+     *   - 'crear'      si no tiene siigo_id (producto nuevo en SIIGO).
+     *   - 'actualizar' si ya tiene siigo_id (sync de cambios locales).
+     * No procesa productos inactivos (serían rechazados por SIIGO) ni
+     * productos sin referencia (código requerido). Devuelve conteos para
+     * mostrar un flash preciso: "N encolados · M saltados".
+     */
+    public function bulkPushSiigo(Request $r): JsonResponse
+    {
+        // Mismo guard que forzarSync individual · solo Gerencia encola push
+        // masivo (puede saturar el rate limit SIIGO si lo abre a operativos).
+        abort_unless(\App\Auth\Permisos::esRoot($r->user()), 403, 'Solo gerencia puede enviar productos a SIIGO.');
+
+        $datos = $r->validate([
+            'ids'   => ['required', 'array', 'min:1', 'max:500'],
+            'ids.*' => ['integer', 'exists:productos,id'],
+        ]);
+
+        $productos = Producto::whereIn('id', $datos['ids'])
+            ->select('id', 'referencia', 'activo', 'siigo_id')
+            ->get();
+
+        $encolados = 0;
+        $saltadosInactivos = 0;
+        $saltadosSinRef = 0;
+        foreach ($productos as $p) {
+            if (! $p->activo) { $saltadosInactivos++; continue; }
+            if (! trim((string) $p->referencia)) { $saltadosSinRef++; continue; }
+
+            $accion = $p->siigo_id ? 'actualizar' : 'crear';
+            \App\Modules\Siigo\Jobs\PushProductoASiigo::dispatchManual(
+                $p->id, $accion, $p->siigo_id,
+            );
+            $encolados++;
+        }
+
+        \Log::channel('siigo')->info('bulk_push_siigo', [
+            'user_id'            => $r->user()->id,
+            'solicitados'        => count($datos['ids']),
+            'encolados'          => $encolados,
+            'saltados_inactivos' => $saltadosInactivos,
+            'saltados_sin_ref'   => $saltadosSinRef,
+        ]);
+
+        $msg = "{$encolados} productos encolados para SIIGO.";
+        if ($saltadosInactivos || $saltadosSinRef) {
+            $pedazos = [];
+            if ($saltadosInactivos) $pedazos[] = "{$saltadosInactivos} inactivos";
+            if ($saltadosSinRef)    $pedazos[] = "{$saltadosSinRef} sin referencia";
+            $msg .= ' Saltados: ' . implode(', ', $pedazos) . '.';
+        }
+        return response()->json([
+            'ok'        => true,
+            'mensaje'   => $msg,
+            'encolados' => $encolados,
+            'saltados'  => $saltadosInactivos + $saltadosSinRef,
+        ]);
+    }
+
     public function bulkEdit(Request $r): JsonResponse
     {
         // FASE F3.A14 · bulk-edit toca hasta 500 productos de un golpe y
@@ -837,6 +898,11 @@ class ProductosController extends Controller implements HasMiddleware
             'desglose_stock' => (bool) $p->desglose_stock,
             // PROD-12 · contador de variantes (withCount(['variantes'])).
             'variantes_count' => (int) ($p->variantes_count ?? 0),
+            // PROD-17 · última foto SIIGO para la columna "Última sync" del listado.
+            // siigo_sync_at viene como string del Model (no está casteado como datetime)
+            // → parseamos manualmente para evitar "diffForHumans on string".
+            'siigo_sync_at' => $p->siigo_sync_at ? \Carbon\Carbon::parse($p->siigo_sync_at)->diffForHumans() : null,
+            'siigo_sync_iso' => $p->siigo_sync_at ? \Carbon\Carbon::parse($p->siigo_sync_at)->toIso8601String() : null,
         ];
     }
 

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\App;
 
 use App\Http\Controllers\Controller;
 use App\Modules\Cartera\Models\MovimientoContable;
+use App\Modules\Contabilidad\Models\AsientoManual;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controllers\HasMiddleware;
 use Illuminate\Routing\Controllers\Middleware;
@@ -28,6 +29,58 @@ class ContabilidadExtrasController extends Controller implements HasMiddleware
             abort_unless($r->user()?->esContable(), 403);
             return $next($r);
         })];
+    }
+
+    /**
+     * CONT-C8 · Export CSV de un reporte contable. Gate esRoot (Aracely/Gerencia)
+     *   porque descarga el libro contable completo del rango. El Contador puede
+     *   ver los reportes en pantalla pero NO exfiltrar.
+     *
+     *   Params: reporte=mayor|balance|libro_diario (default: mayor)
+     *           desde/hasta (defaults: mes actual)
+     */
+    public function exportarCsv(Request $request): \Symfony\Component\HttpFoundation\StreamedResponse
+    {
+        abort_unless($request->user()?->esRoot(), 403,
+            'Solo Aracely/Gerencia puede exportar reportes contables.');
+        $data = $request->validate([
+            'reporte' => ['nullable', 'in:mayor,balance,libro_diario'],
+            'desde' => ['nullable', 'date'],
+            'hasta' => ['nullable', 'date', 'after_or_equal:desde'],
+        ]);
+        $reporte = $data['reporte'] ?? 'mayor';
+        $desde = $data['desde'] ?? now('America/Bogota')->startOfMonth()->toDateString();
+        $hasta = $data['hasta'] ?? now('America/Bogota')->toDateString();
+
+        \Illuminate\Support\Facades\Log::channel(config('logging.channels.audit') ? 'audit' : 'stack')
+            ->info('contabilidad.export.csv', [
+                'user_id' => $request->user()?->id,
+                'reporte' => $reporte,
+                'rango' => [$desde, $hasta],
+            ]);
+
+        $filename = "contabilidad-{$reporte}-{$desde}-{$hasta}.csv";
+        return response()->streamDownload(function () use ($reporte, $desde, $hasta) {
+            $out = fopen('php://output', 'w');
+            fputcsv($out, ['Fecha', 'Cuenta', 'Debe', 'Haber', 'Descripcion', 'Origen', 'OrigenID']);
+            MovimientoContable::query()
+                ->whereBetween('fecha', [$desde, $hasta])
+                ->orderBy('fecha')->orderBy('id')
+                ->chunk(500, function ($rows) use ($out) {
+                    foreach ($rows as $m) {
+                        fputcsv($out, [
+                            $m->fecha?->toDateString(),
+                            $m->cuenta_puc,
+                            number_format((float) $m->debe, 2, '.', ''),
+                            number_format((float) $m->haber, 2, '.', ''),
+                            mb_substr((string) $m->descripcion, 0, 200),
+                            class_basename((string) $m->origen_type),
+                            $m->origen_id,
+                        ]);
+                    }
+                });
+            fclose($out);
+        }, $filename, ['Content-Type' => 'text/csv; charset=UTF-8']);
     }
 
     public function panel(Request $request): Response
@@ -85,6 +138,12 @@ class ContabilidadExtrasController extends Controller implements HasMiddleware
             ->selectRaw('origen_type, COUNT(DISTINCT origen_id) as docs, SUM(CASE WHEN deleted_at IS NULL THEN COALESCE(debe,0) ELSE 0 END) as volumen')
             ->groupBy('origen_type')->orderByDesc('volumen')->get();
 
+        // CONT-C6 · Semáforo SIIGO del panel.
+        $siigoAprobados = AsientoManual::where('estado', 'aprobado')->count();
+        $siigoEnSiigo = AsientoManual::where('estado', 'aprobado')->whereNotNull('siigo_journal_id')->count();
+        $siigoPct = $siigoAprobados > 0 ? round(($siigoEnSiigo / $siigoAprobados) * 100, 1) : 100;
+        $siigoSemaforo = $siigoPct >= 95 ? 'verde' : ($siigoPct >= 80 ? 'amarillo' : 'rojo');
+
         return Inertia::render('Contabilidad/Panel', [
             'periodo' => ['desde' => $desde, 'hasta' => $hasta, 'incluir_anulados' => $incluirAnulados],
             'kpis' => [
@@ -93,6 +152,10 @@ class ContabilidadExtrasController extends Controller implements HasMiddleware
                 'balance' => round($totalDebe - $totalHaber, 2),
                 'unbalanced' => abs($totalDebe - $totalHaber) > 0.01,
                 'movimientos' => (int) $kpiRow->n,
+                'siigo_aprobados' => $siigoAprobados,
+                'siigo_en_siigo' => $siigoEnSiigo,
+                'siigo_pct' => $siigoPct,
+                'siigo_semaforo' => $siigoSemaforo,
             ],
             'topCuentas' => $topCuentas->map(fn ($r) => [
                 'cuenta' => $r->cuenta_puc,
@@ -207,21 +270,32 @@ class ContabilidadExtrasController extends Controller implements HasMiddleware
 
     public function reportes(): Response
     {
-        // Sprint 3 · F.4 · agregar metadata SIIGO por reporte (cuentas PUC que usa,
-        // exportable Excel, formato compatible SIIGO). Todos los reportes listos
-        // usan `movimientos_contables` con cuenta_puc + PUC Great Baby oficial.
+        // Cada reporte declara de qué tabla sale y con qué columna se sabe si
+        // ese documento llegó a SIIGO. Antes todos traían `siigo_ok => true`
+        // escrito a mano: la etiqueta salía verde aunque no se hubiera enviado
+        // ni un documento, que es justo lo que hay que poder detectar.
+        $cob = fn (string $tabla, string $col, ?callable $filtro = null) => $this->cobertura($tabla, $col, $filtro);
+
+        $deMovimientos = $cob('movimientos_contables', 'siigo_journal_id');
+        $deFacturas = $cob('facturas_venta', 'siigo_id', fn ($q) => $q->where('es_electronica', true));
+
         return Inertia::render('Contabilidad/Reportes', [
             'reportes' => [
-                ['nombre' => 'Balance de comprobación', 'desc' => 'Sumas y saldos por cuenta PUC', 'href' => '/app/contabilidad', 'listo' => true, 'familia' => 'Estados', 'siigo_ok' => true, 'export' => 'Excel'],
-                ['nombre' => 'Panel contable',          'desc' => 'KPIs, top cuentas y por origen', 'href' => '/app/contabilidad/panel', 'listo' => true, 'familia' => 'Estados', 'siigo_ok' => true, 'export' => null],
-                ['nombre' => 'Libro diario',            'desc' => 'Todos los asientos cronológicos del mes', 'href' => '/app/cartera/movimientos', 'listo' => true, 'familia' => 'Auxiliares', 'siigo_ok' => true, 'export' => 'Excel'],
-                ['nombre' => 'Movimientos por cuenta',  'desc' => 'Filtra por prefijo PUC (ej. 1305 clientes)', 'href' => '/app/cartera/movimientos?cuenta=1305', 'listo' => true, 'familia' => 'Auxiliares', 'siigo_ok' => true, 'export' => 'Excel'],
-                ['nombre' => 'Facturas emitidas',       'desc' => 'Ventas del periodo', 'href' => '/app/facturas', 'listo' => true, 'familia' => 'Auxiliares', 'siigo_ok' => true, 'export' => 'PDF+Excel'],
-                ['nombre' => 'Pagos recibidos',         'desc' => 'Ingresos del periodo', 'href' => '/app/pagos', 'listo' => true, 'familia' => 'Auxiliares', 'siigo_ok' => true, 'export' => 'Excel'],
-                ['nombre' => 'Compras del periodo',     'desc' => 'OCs recibidas', 'href' => '/app/compras/reporte', 'listo' => true, 'familia' => 'Auxiliares', 'siigo_ok' => true, 'export' => 'Excel'],
-                ['nombre' => 'Retenciones (RETEFTE + RETEIVA + RETEICA)', 'desc' => 'Base para declaración DIAN · cuentas 2365/2367/2368', 'href' => '/app/cartera/movimientos?cuentas=2365,2367,2368', 'listo' => true, 'familia' => 'Impuestos', 'siigo_ok' => true, 'export' => 'Excel'],
-                ['nombre' => 'Balance general',         'desc' => 'Activo/Pasivo/Patrimonio (por familia PUC)', 'href' => null, 'listo' => false, 'familia' => 'Estados', 'siigo_ok' => false, 'export' => null],
-                ['nombre' => 'Estado de resultados',    'desc' => 'Ingresos vs egresos con margen', 'href' => null, 'listo' => false, 'familia' => 'Estados', 'siigo_ok' => false, 'export' => null],
+                ['nombre' => 'Balance de comprobación', 'desc' => 'Sumas y saldos por cuenta PUC', 'href' => '/app/contabilidad', 'listo' => true, 'familia' => 'Estados', 'siigo' => $deMovimientos, 'export' => 'Excel'],
+                ['nombre' => 'Panel contable',          'desc' => 'KPIs, top cuentas y por origen', 'href' => '/app/contabilidad/panel', 'listo' => true, 'familia' => 'Estados', 'siigo' => $deMovimientos, 'export' => null],
+                ['nombre' => 'Libro diario',            'desc' => 'Todos los asientos cronológicos del mes', 'href' => '/app/cartera/movimientos', 'listo' => true, 'familia' => 'Auxiliares', 'siigo' => $deMovimientos, 'export' => 'Excel'],
+                ['nombre' => 'Movimientos por cuenta',  'desc' => 'Filtra por prefijo PUC (ej. 1305 clientes)', 'href' => '/app/cartera/movimientos?cuenta=1305', 'listo' => true, 'familia' => 'Auxiliares', 'siigo' => $deMovimientos, 'export' => 'Excel'],
+                ['nombre' => 'Facturas emitidas',       'desc' => 'Ventas del periodo', 'href' => '/app/facturas', 'listo' => true, 'familia' => 'Auxiliares', 'siigo' => $deFacturas, 'export' => 'PDF+Excel'],
+                ['nombre' => 'Pagos recibidos',         'desc' => 'Ingresos del periodo', 'href' => '/app/pagos', 'listo' => true, 'familia' => 'Auxiliares', 'siigo' => $cob('pagos_venta', 'siigo_id'), 'export' => 'Excel'],
+                ['nombre' => 'Compras del periodo',     'desc' => 'OCs recibidas', 'href' => '/app/compras/reporte', 'listo' => true, 'familia' => 'Auxiliares', 'siigo' => $cob('compras_recepciones', 'siigo_id'), 'export' => 'Excel'],
+                ['nombre' => 'Retenciones (RETEFTE + RETEIVA + RETEICA)', 'desc' => 'Base para declaración DIAN · cuentas 2365/2367/2368', 'href' => '/app/cartera/movimientos?cuentas=2365,2367,2368', 'listo' => true, 'familia' => 'Impuestos', 'siigo' => $deMovimientos, 'export' => 'Excel'],
+                ['nombre' => 'Balance general',         'desc' => 'Activo/Pasivo/Patrimonio (por familia PUC)', 'href' => null, 'listo' => false, 'familia' => 'Estados', 'siigo' => null, 'export' => null],
+                ['nombre' => 'Estado de resultados',    'desc' => 'Ingresos vs egresos con margen', 'href' => null, 'listo' => false, 'familia' => 'Estados', 'siigo' => null, 'export' => null],
+            ],
+            // Reportes que NO salen del ERP: los genera la contabilidad de SIIGO.
+            'reportes_siigo' => [
+                ['nombre' => 'Balance de prueba (oficial SIIGO)', 'desc' => 'Excel generado por SIIGO con el balance real del año', 'accion' => '/app/contabilidad/siigo/balance-prueba'],
+                ['nombre' => 'Cuentas por pagar (SIIGO)', 'desc' => 'Saldos vigentes con proveedores según SIIGO', 'accion' => '/app/contabilidad/siigo/cuentas-por-pagar'],
             ],
             // Sprint 3 · F.4 · info de sync SIIGO al hub.
             'siigo_estado' => [
@@ -230,6 +304,111 @@ class ContabilidadExtrasController extends Controller implements HasMiddleware
                 'ultima_sync_productos' => optional(\App\Modules\Siigo\Models\SiigoConfig::query()->first()?->sync_productos_at)->diffForHumans(),
             ],
         ]);
+    }
+
+    /**
+     * Balance de prueba oficial · lo genera SIIGO y devuelve un Excel.
+     * No lo construye el ERP: es la contabilidad real contra la que comparar.
+     */
+    public function siigoBalancePrueba(Request $r, \App\Modules\Siigo\Services\SiigoReportesService $svc)
+    {
+        $datos = $r->validate([
+            'anio' => ['nullable', 'integer', 'min:2000', 'max:2100'],
+            'mes_inicio' => ['nullable', 'integer', 'min:1', 'max:13'],
+            'mes_fin' => ['nullable', 'integer', 'min:1', 'max:13'],
+        ]);
+
+        try {
+            $rep = $svc->balanceDePrueba(
+                (int) ($datos['anio'] ?? now('America/Bogota')->year),
+                (int) ($datos['mes_inicio'] ?? 1),
+                (int) ($datos['mes_fin'] ?? 13),
+            );
+        } catch (\Throwable $e) {
+            return back()->with('error', 'SIIGO no pudo generar el balance: '.$e->getMessage());
+        }
+
+        return back()->with('success', 'Balance generado en SIIGO.')
+            ->with('siigo_reporte_url', $rep['url']);
+    }
+
+    /**
+     * Conciliación real de facturas ERP ↔ SIIGO.
+     * A diferencia de "pendientes de SIIGO" (que mira sólo el ERP), ésta le
+     * pregunta a SIIGO y detecta importes distintos y facturas emitidas por
+     * fuera del sistema.
+     */
+    public function conciliacionFacturas(Request $r, \App\Modules\Siigo\Services\ConciliadorFacturasSiigo $svc): Response
+    {
+        $datos = $r->validate([
+            'desde' => ['nullable', 'date'],
+            'hasta' => ['nullable', 'date', 'after_or_equal:desde'],
+        ]);
+
+        $desde = isset($datos['desde'])
+            ? \Illuminate\Support\Carbon::parse($datos['desde'])
+            : now('America/Bogota')->subDays(30);
+        $hasta = isset($datos['hasta'])
+            ? \Illuminate\Support\Carbon::parse($datos['hasta'])
+            : now('America/Bogota');
+
+        try {
+            $res = $svc->conciliar($desde, $hasta);
+            $error = null;
+        } catch (\Throwable $e) {
+            $res = null;
+            $error = $e->getMessage();
+        }
+
+        return Inertia::render('Contabilidad/ConciliacionSiigo', [
+            'resultado' => $res,
+            'error' => $error,
+            'filtros' => ['desde' => $desde->toDateString(), 'hasta' => $hasta->toDateString()],
+        ]);
+    }
+
+    /** Cuentas por pagar vigentes según SIIGO (no según el ERP). */
+    public function siigoCuentasPorPagar(\App\Modules\Siigo\Services\SiigoReportesService $svc): Response
+    {
+        try {
+            $filas = $svc->cuentasPorPagar();
+            $error = null;
+        } catch (\Throwable $e) {
+            $filas = [];
+            $error = $e->getMessage();
+        }
+
+        return Inertia::render('Contabilidad/CuentasPorPagarSiigo', [
+            'filas' => $filas,
+            'total' => array_sum(array_column($filas, 'saldo')),
+            'error' => $error,
+        ]);
+    }
+
+    /**
+     * Cuántos documentos de la fuente del reporte llegaron realmente a SIIGO.
+     *
+     * Devuelve `['total' => n, 'en_siigo' => n, 'pendientes' => n, 'pct' => 0-100]`
+     * para que la pantalla muestre un dato medido en vez de un semáforo fijo.
+     * Sin filas todavía, `pct` es null: "no hay nada que comparar" no es lo
+     * mismo que "todo sincronizado".
+     *
+     * @param  ?callable(\Illuminate\Database\Query\Builder): mixed  $filtro
+     * @return array{total:int, en_siigo:int, pendientes:int, pct:?int}
+     */
+    private function cobertura(string $tabla, string $columna, ?callable $filtro = null): array
+    {
+        $base = fn () => tap(\DB::table($tabla), fn ($q) => $filtro && $filtro($q));
+
+        $total = (clone $base())->count();
+        $enSiigo = (clone $base())->whereNotNull($columna)->where($columna, '!=', '')->count();
+
+        return [
+            'total' => $total,
+            'en_siigo' => $enSiigo,
+            'pendientes' => max(0, $total - $enSiigo),
+            'pct' => $total > 0 ? (int) round($enSiigo * 100 / $total) : null,
+        ];
     }
 
     /**

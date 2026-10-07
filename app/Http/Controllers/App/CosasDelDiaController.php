@@ -28,7 +28,9 @@ class CosasDelDiaController extends Controller implements HasMiddleware
     public static function middleware(): array
     {
         return [new Middleware(function (Request $r, \Closure $next) {
-            abort_unless($r->user()?->esAracely(), 403);
+            // LOG · "Cosas del día" también le sirve al AdminBodega para
+            //   arrancar la mañana con lo urgente (retenidos, novedades).
+            abort_unless($r->user()?->esEquipoBodega(), 403);
             return $next($r);
         })];
     }

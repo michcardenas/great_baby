@@ -25,6 +25,36 @@ const filtrar = () => {
 
 const modal = ref(false);
 const proc = ref(false);
+
+// COMP-B5 · acciones por fila. Usamos fetch directo porque los endpoints
+// confirmar/anular/reenviar devuelven back() con flash, igual que Inertia espera.
+const trabajando = ref(null);
+const postConCsrf = (url) => fetch(url, {
+    method: 'POST',
+    headers: {
+        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Accept': 'application/json',
+    },
+    credentials: 'same-origin',
+});
+const confirmar = async (p) => {
+    if (!window.confirm(`Confirmar pago #${p.id} por $${p.monto_neto.toLocaleString()} y enviarlo a SIIGO?`)) return;
+    trabajando.value = p.id;
+    try { await postConCsrf(`/app/cartera/pagos-proveedor/${p.id}/confirmar`); }
+    finally { trabajando.value = null; setTimeout(() => router.reload({ preserveScroll: true }), 400); }
+};
+const anular = async (p) => {
+    if (!window.confirm(`Anular pago #${p.id}? No podrás volver atrás.`)) return;
+    trabajando.value = p.id;
+    try { await postConCsrf(`/app/cartera/pagos-proveedor/${p.id}/anular`); }
+    finally { trabajando.value = null; setTimeout(() => router.reload({ preserveScroll: true }), 400); }
+};
+const reenviar = async (p) => {
+    trabajando.value = p.id;
+    try { await postConCsrf(`/app/cartera/pagos-proveedor/${p.id}/reenviar-siigo`); }
+    finally { trabajando.value = null; setTimeout(() => router.reload({ preserveScroll: true }), 400); }
+};
 const form = reactive({
     fecha: new Date().toISOString().slice(0, 10),
     contacto_id: null,
@@ -153,6 +183,18 @@ const guardar = () => {
                 <div class="card p-4"><div class="text-xs uppercase text-surface-500">Retenido mes</div><div class="text-2xl font-bold mt-1 text-amber-600">{{ money(kpis.retenido_mes) }}</div></div>
                 <div class="card p-4" :class="kpis.sin_siigo > 0 ? 'ring-2 ring-amber-500' : ''"><div class="text-xs uppercase text-surface-500">Sin SIIGO</div><div class="text-2xl font-bold mt-1" :class="kpis.sin_siigo > 0 ? 'text-amber-600' : 'text-surface-400'">{{ kpis.sin_siigo }}</div></div>
             </div>
+            <!-- COMP-B5 · banner cuando hay pagos pendientes de confirmar antes de ir a SIIGO -->
+            <div v-if="kpis.pendientes_confirmar > 0" class="card p-4 border-l-4 border-indigo-500 bg-indigo-50/50">
+                <div class="flex items-start gap-3">
+                    <div class="text-indigo-600 text-xl">⏳</div>
+                    <div class="flex-1 text-sm">
+                        <div class="font-bold text-indigo-800">{{ kpis.pendientes_confirmar }} pago(s) esperando confirmación</div>
+                        <div class="text-xs text-surface-600 mt-1">
+                            Un pago no llega a SIIGO hasta que lo confirmes aquí. Revisa el NIT del proveedor, el monto y la cuenta antes de aprobar.
+                        </div>
+                    </div>
+                </div>
+            </div>
 
             <div class="card p-3">
                 <div class="relative">
@@ -172,7 +214,9 @@ const guardar = () => {
                             <th class="text-right p-2">Retenciones</th>
                             <th class="text-right p-2 bg-brand-50">Neto</th>
                             <th class="text-left p-2">Método</th>
+                            <th class="text-left p-2">Estado</th>
                             <th class="text-left p-2">Detalle ret.</th>
+                            <th class="text-left p-2">Acciones</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y">
@@ -184,14 +228,47 @@ const guardar = () => {
                             <td class="p-2 text-right font-mono text-amber-600">-{{ money(p.monto_retenciones) }}</td>
                             <td class="p-2 text-right font-mono font-bold text-brand-700 bg-brand-50">{{ money(p.monto_neto) }}</td>
                             <td class="p-2 text-xs capitalize">{{ p.metodo }}</td>
+                            <td class="p-2">
+                                <!-- COMP-B5 · chip de estado -->
+                                <span v-if="p.estado === 'pendiente'" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-indigo-100 text-indigo-800">
+                                    ⏳ Pendiente
+                                </span>
+                                <span v-else-if="p.estado === 'anulado'" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-red-100 text-red-800">
+                                    ✕ Anulado
+                                </span>
+                                <span v-else-if="p.siigo_voucher_id" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-emerald-100 text-emerald-800" :title="`Voucher ${p.siigo_voucher_id}`">
+                                    ✓ En SIIGO
+                                </span>
+                                <span v-else class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-amber-100 text-amber-800">
+                                    ⟳ Confirmado · encolado
+                                </span>
+                            </td>
                             <td class="p-2 text-[10px]">
                                 <span v-for="r in p.retenciones" :key="r.tipo" class="inline-block mr-1 px-1.5 py-0.5 rounded bg-surface-200"
                                       :title="`PUC ${r.cuenta_puc}`">
                                     {{ r.tipo }} {{ r.tarifa_pct }}%: {{ money(r.valor) }}
                                 </span>
                             </td>
+                            <td class="p-2 whitespace-nowrap">
+                                <!-- COMP-B5 · botones solo visibles cuando aún no está confirmado -->
+                                <template v-if="p.estado === 'pendiente'">
+                                    <button @click="confirmar(p)" :disabled="trabajando === p.id"
+                                            class="px-2 py-1 text-[11px] rounded bg-emerald-600 text-white font-bold hover:bg-emerald-700 disabled:opacity-50">
+                                        {{ trabajando === p.id ? '…' : '✓ Confirmar y enviar a SIIGO' }}
+                                    </button>
+                                    <button @click="anular(p)" :disabled="trabajando === p.id"
+                                            class="ml-1 px-2 py-1 text-[11px] rounded bg-red-100 text-red-700 hover:bg-red-200 disabled:opacity-50">
+                                        Anular
+                                    </button>
+                                </template>
+                                <button v-else-if="!p.siigo_voucher_id && p.estado === 'confirmado'" @click="reenviar(p)"
+                                        class="px-2 py-1 text-[11px] rounded bg-amber-100 text-amber-700 hover:bg-amber-200">
+                                    Reenviar
+                                </button>
+                                <span v-else class="text-[10px] text-surface-400">—</span>
+                            </td>
                         </tr>
-                        <tr v-if="!pagos.data.length"><td colspan="8" class="p-6 text-center text-surface-500 text-sm">Sin pagos.</td></tr>
+                        <tr v-if="!pagos.data.length"><td colspan="10" class="p-6 text-center text-surface-500 text-sm">Sin pagos.</td></tr>
                     </tbody>
                 </table>
             </div>

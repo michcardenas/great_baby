@@ -151,6 +151,8 @@ class FacturaVenta extends Model implements AuditableContract
         'emitida_at' => 'datetime',
         'emitiendo_at' => 'datetime',
         'es_electronica' => 'boolean',
+        'facturado_send_dian' => 'boolean',
+        'facturado_send_mail' => 'boolean',
         'siigo_response' => 'array',
         'subtotal' => 'decimal:2',
         'descuento' => 'decimal:2',
@@ -162,6 +164,16 @@ class FacturaVenta extends Model implements AuditableContract
     public function contacto(): BelongsTo
     {
         return $this->belongsTo(Contacto::class);
+    }
+
+    /**
+     * UBIC-5 · Ubicación desde donde se despachó la factura. Permite al
+     * SiigoEmisionService resolver qué resolución DIAN usar (via
+     * ubicacion.siigo_resolution_id) y qué cuentas PUC aplicar.
+     */
+    public function ubicacion(): BelongsTo
+    {
+        return $this->belongsTo(\App\Modules\Dropi\Models\InventarioUbicacion::class, 'ubicacion_id');
     }
 
     public function vendedor(): BelongsTo

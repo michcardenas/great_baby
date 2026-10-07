@@ -102,8 +102,12 @@ class PlanCuentasController extends Controller implements HasMiddleware
         ]);
     }
 
-    public function eliminar(PlanCuenta $planCuenta): RedirectResponse
+    public function eliminar(Request $r, PlanCuenta $planCuenta): RedirectResponse
     {
+        // A3 FIX · eliminar PUC es destructivo · solo Aracely/Gerencia (esRoot).
+        //   Un Contador puede crear/editar cuentas, no borrarlas.
+        abort_unless($r->user()?->esRoot(), 403,
+            'Solo Aracely/Gerencia puede eliminar cuentas del PUC.');
         // Guard: no eliminar cuentas con hijos.
         if ($planCuenta->hijos()->exists()) {
             return back()->with('flash', [
@@ -121,6 +125,10 @@ class PlanCuentasController extends Controller implements HasMiddleware
 
     public function importar(Request $r, ImportadorPlanCuentas $importador): RedirectResponse
     {
+        // A3 FIX · importar PUC reemplaza masivo · solo Aracely/Gerencia (esRoot).
+        //   Mismo criterio que CONT-C8 (export CSV): acción crítica de alto impacto.
+        abort_unless($r->user()?->esRoot(), 403,
+            'Solo Aracely/Gerencia puede importar/reemplazar el PUC.');
         $r->validate([
             'archivo' => ['required', 'file', 'max:5120', 'mimes:xlsx,csv,txt'],
         ]);

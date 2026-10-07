@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Portal;
 
 use App\Http\Controllers\Controller;
+use App\Modules\Cartera\Actions\ConsultarCredito;
 use App\Modules\Catalogo\Models\PrecioVariante;
 use App\Modules\Dropi\Models\ProductoVariante;
 use App\Modules\Portal\Models\PedidoCliente;
@@ -87,14 +88,45 @@ class PortalCarritoController extends Controller implements HasMiddleware
                 ->keyBy('id')
             : collect();
 
-        $pedido = DB::transaction(function () use ($data, $cliente, $listaId, $precios, $variantes, $productosAgg) {
+        // LOG-J2 · Enganche cartera · aquí decidimos el estado inicial.
+        //   Antes: todo pedido pasaba a 'enviado' y gerencia tenía que leer la
+        //   cartera del cliente a mano para decidir si lo aprobaba. Ahora el
+        //   semáforo decide: si hay mora crítica (>90 días), facturas vencidas
+        //   o cupo excedido, el pedido queda 'retenido' con el motivo visible,
+        //   y gerencia lo libera o rechaza en su bandeja (LOG-J3).
+        //   Umbrales editables via settings para que la cartera los calibre.
+        $credito = ConsultarCredito::run($cliente->id);
+        $totalEstimado = collect($data['items'])->sum(fn ($i) =>
+            (int) $i['cantidad'] * (float) ($precios[$i['variante_id'] ?? 0] ?? 0));
+        $motivos = [];
+        if ($credito['tiene_mora_critica']) {
+            $motivos[] = "mora crítica ({$credito['dias_mora_max']} días)";
+        }
+        if ($credito['facturas_vencidas'] > 0) {
+            $motivos[] = "{$credito['facturas_vencidas']} factura(s) vencida(s)";
+        }
+        $cupo = (float) ($credito['cupo'] ?? 0);
+        if ($cupo > 0 && ($credito['saldo_cartera'] + $totalEstimado) > $cupo) {
+            $excedido = round(($credito['saldo_cartera'] + $totalEstimado) - $cupo, 2);
+            $motivos[] = 'cupo excedido en $' . number_format($excedido, 0);
+        }
+        $retenido = ! empty($motivos);
+
+        $pedido = DB::transaction(function () use ($data, $cliente, $listaId, $precios, $variantes, $productosAgg, $retenido, $motivos) {
             $numero = $this->siguienteNumero();
+
+            // LOG-J4 · ruteo automático · si hay regla para la ciudad del
+            //   cliente, el pedido nace apuntando a esa bodega origen y la
+            //   Cola Jorge lo filtra para la sede correcta.
+            $ubicOrigen = \App\Modules\Portal\Models\ReglaRuteoCiudad::resolver($cliente->ciudad);
 
             $ped = PedidoCliente::create([
                 'numero' => $numero,
                 'contacto_id' => $cliente->id,
                 'lista_precios_id' => $listaId,
-                'estado' => 'enviado',
+                'ubicacion_origen_id' => $ubicOrigen,
+                'estado' => $retenido ? 'retenido' : 'enviado',
+                'motivo_retencion' => $retenido ? implode(' · ', $motivos) : null,
                 'notas_cliente' => $data['notas'] ?? null,
                 'enviado_at' => now(),
                 'subtotal' => 0, 'iva' => 0, 'total' => 0,
@@ -191,8 +223,25 @@ class PortalCarritoController extends Controller implements HasMiddleware
         // QA-D Bloque3: invalidar KPIs del cliente (dashboard portal).
         \Illuminate\Support\Facades\Cache::forget("portal.kpis.{$cliente->id}");
 
+        // LOG-J3 · Si el semáforo retuvo el pedido, Gerencia necesita saberlo
+        //   para liberarlo o rechazarlo. Un broadcast (user_id=null) hace
+        //   sonar la bell a todos los admins — es lo mismo que ya hacemos
+        //   para timbrado rechazado y recepciones huérfanas.
+        if ($pedido->estado === 'retenido') {
+            \App\Models\NotificacionErp::crear([
+                'tipo' => 'pedido_retenido_cartera',
+                'titulo' => "Pedido {$pedido->numero} RETENIDO · requiere Gerencia",
+                'mensaje' => $pedido->motivo_retencion ?: 'El semáforo de cartera lo bloqueó.',
+                'color' => 'warning',
+                'icono' => 'heroicon-o-pause-circle',
+                'url' => "/app/pedidos-b2b/{$pedido->id}",
+            ]);
+        }
+
         return redirect()->route('portal.pedidos.show', $pedido->id)
-            ->with('success', 'Pedido ' . $pedido->numero . ' enviado. Nuestro equipo lo revisará y facturará.');
+            ->with('success', $pedido->estado === 'retenido'
+                ? 'Pedido ' . $pedido->numero . ' registrado. Está retenido por cartera; gerencia lo revisará.'
+                : 'Pedido ' . $pedido->numero . ' enviado. Nuestro equipo lo revisará y facturará.');
     }
 
     /**

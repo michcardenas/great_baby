@@ -5,7 +5,13 @@ import { Truck, Save, ArrowLeft, AlertTriangle } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import { useMoney } from '@/composables/useMoney';
 
-const props = defineProps({ oc: { type: Object, default: null } });
+const props = defineProps({
+    oc: { type: Object, default: null },
+    // Órdenes por recibir, para elegir una sin salir de esta pantalla.
+    ocs_pendientes: { type: Array, default: () => [] },
+});
+
+const ocsPendientes = computed(() => props.ocs_pendientes ?? []);
 
 const { money } = useMoney();
 
@@ -22,6 +28,10 @@ const form = reactive({
         cantidad_recibida: i.cantidad_pendiente,
         precio_unit: i.precio_unit,
         lote: '',
+        // LOG-J8 · clasificación por línea · default apto para no romper el flujo
+        //   actual, pero el logístico puede cambiarlo al descargar.
+        clasificacion: 'apto',
+        motivo_clasificacion: '',
     })) ?? [],
 });
 const procesando = ref(false);
@@ -52,6 +62,8 @@ const guardar = () => {
             orden_item_id: i.orden_item_id,
             cantidad_recibida: i.cantidad_recibida,
             lote: i.lote || null,
+            clasificacion: i.clasificacion || 'apto',
+            motivo_clasificacion: i.motivo_clasificacion || null,
         })),
     }, {
         preserveScroll: true,
@@ -77,8 +89,48 @@ const guardar = () => {
                 <div v-for="(msg, k) in $page.props.errors" :key="k">{{ msg }}</div>
             </div>
 
-            <div v-if="!oc" class="card p-6 text-center text-surface-500">
-                Necesitas seleccionar una OC. Ve a <Link href="/app/compras" class="text-brand-600 hover:underline">Compras</Link> y presiona "Recibir" en la OC aprobada.
+            <!-- Sin OC elegida: se listan acá las que están por llegar. Antes
+                 esto mandaba a /app/compras, que para quien recibe la mercancía
+                 responde 403. -->
+            <div v-if="!oc" class="card overflow-hidden">
+                <div class="px-4 py-3 border-b border-surface-200 dark:border-surface-800">
+                    <h3 class="font-semibold">Elegí la orden que estás recibiendo</h3>
+                    <p class="text-xs text-surface-500 mt-0.5">
+                        Órdenes aprobadas o recibidas a medias, de la más reciente a la más vieja.
+                    </p>
+                </div>
+
+                <div v-if="!ocsPendientes.length" class="p-8 text-center text-surface-500">
+                    No hay órdenes de compra pendientes por recibir.
+                </div>
+
+                <table v-else class="w-full text-sm">
+                    <thead class="text-xs uppercase text-surface-500 bg-surface-50 dark:bg-surface-900 border-b">
+                        <tr>
+                            <th class="p-3 text-left">Orden</th>
+                            <th class="p-3 text-left">Proveedor</th>
+                            <th class="p-3 text-left">Estado</th>
+                            <th class="p-3 text-left">Se esperaba</th>
+                            <th class="p-3 text-right">Total</th>
+                            <th class="p-3 text-right">Acción</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-surface-100 dark:divide-surface-800">
+                        <tr v-for="o in ocsPendientes" :key="o.id" class="hover:bg-brand-50/40 dark:hover:bg-brand-950/20">
+                            <td class="p-3 font-mono text-xs font-bold">{{ o.numero }}</td>
+                            <td class="p-3">{{ o.proveedor || '—' }}</td>
+                            <td class="p-3 text-xs">{{ o.estado }}</td>
+                            <td class="p-3 text-xs">{{ o.fecha_esperada || '—' }}</td>
+                            <td class="p-3 text-right">{{ money(o.total) }}</td>
+                            <td class="p-3 text-right">
+                                <Link :href="`/app/compras/recepcion/nueva?oc=${o.id}`"
+                                      class="inline-flex items-center px-3 py-2 min-h-11 bg-brand-600 hover:bg-brand-700 text-white rounded text-xs font-bold">
+                                    Recibir esta →
+                                </Link>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
 
             <div v-else class="space-y-4">
@@ -106,10 +158,14 @@ const guardar = () => {
                                     <th class="text-right p-2">A recibir</th>
                                     <th class="text-right p-2">Subtotal línea</th>
                                     <th class="text-left p-2">Lote</th>
+                                    <!-- LOG-J8 · destino por línea · cierra el descuadre que mencionó Don Jorge -->
+                                    <th class="text-left p-2">Destino</th>
+                                    <th class="text-left p-2">Motivo</th>
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-surface-100 dark:divide-surface-800">
-                                <tr v-for="(it, i) in form.items" :key="i">
+                                <tr v-for="(it, i) in form.items" :key="i"
+                                    :class="it.clasificacion !== 'apto' ? 'bg-amber-50/40 dark:bg-amber-950/20' : ''">
                                     <td class="p-2" :title="it.descripcion">{{ it.descripcion }}</td>
                                     <td class="p-2 text-right font-mono">{{ it.cantidad_pendiente }}</td>
                                     <td class="p-2">
@@ -121,13 +177,28 @@ const guardar = () => {
                                     </td>
                                     <td class="p-2 text-right font-mono text-xs">{{ money((it.cantidad_recibida || 0) * (it.precio_unit || 0)) }}</td>
                                     <td class="p-2"><input v-model="it.lote" class="input w-full text-sm" placeholder="Opcional" maxlength="80"/></td>
+                                    <td class="p-2">
+                                        <select v-model="it.clasificacion" class="input text-xs w-full">
+                                            <option value="apto">✓ Apto venta</option>
+                                            <option value="averia">⚠ Avería</option>
+                                            <option value="cuarentena">⏳ Cuarentena</option>
+                                            <option value="revision">🔍 Revisión</option>
+                                            <option value="faltante">✕ Faltante</option>
+                                        </select>
+                                    </td>
+                                    <td class="p-2">
+                                        <input v-model="it.motivo_clasificacion"
+                                               :placeholder="it.clasificacion === 'apto' ? '—' : 'Describí la novedad'"
+                                               :required="it.clasificacion !== 'apto'"
+                                               class="input w-full text-xs" maxlength="180"/>
+                                    </td>
                                 </tr>
                             </tbody>
                             <tfoot class="border-t-2 border-surface-300 dark:border-surface-700 font-bold">
                                 <tr>
                                     <td colspan="3" class="p-2 text-right">Total recepción</td>
                                     <td class="p-2 text-right font-mono">{{ money(totalRecepcion) }}</td>
-                                    <td></td>
+                                    <td colspan="3"></td>
                                 </tr>
                             </tfoot>
                         </table>

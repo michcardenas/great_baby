@@ -151,13 +151,18 @@ class AsientosManualesController extends Controller implements HasMiddleware
         // salvo rol Aracely/Gerencia. Excepción configurable por setting para
         // operación pequeña donde la contadora hace ambas.
         $u = $r->user();
-        $esGerencia = $u && ($u->hasRole('Aracely') || $u->hasRole('Gerencia') || $u->hasRole('Gerente'));
+        // A1 FIX #11 · reusar helper en vez de reimplementar hasRole a mano.
+        //   esRoot() = Aracely+Gerencia; agregamos Gerente para preservar el
+        //   comportamiento original (3 roles aprobaban antes).
+        $esGerencia = $u && ($u->esRoot() || $u->hasRole('Gerente'));
         $permitirAuto = (bool) (function_exists('setting') ? setting('contabilidad.permitir_auto_aprobar_asiento', true) : true);
         if ($asientoManual->user_id === $u->id && ! $esGerencia && ! $permitirAuto) {
             abort(403, 'Segregación de funciones: quien crea un asiento no puede aprobarlo. Solicita aprobación a Gerencia.');
         }
         $asientoManual->update(['estado' => 'aprobado']);
-        PushAsientoManualASiigo::dispatch($asientoManual->id);
+        // A2 FIX · B2 CRÍTICO · afterCommit evita job huérfano si una
+        //   transacción externa rollbackea después del update.
+        \DB::afterCommit(fn () => PushAsientoManualASiigo::dispatch($asientoManual->id));
         return back()->with('flash', ['type' => 'success', 'message' => "Asiento #{$asientoManual->id} aprobado · encolado a SIIGO."]);
     }
 

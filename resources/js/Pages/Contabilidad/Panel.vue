@@ -96,6 +96,28 @@ const signoBalance = computed(() => {
                 <div class="card p-4"><div class="text-xs uppercase text-surface-500">Movimientos</div><div class="text-3xl font-bold mt-1">{{ (kpis.movimientos ?? 0).toLocaleString('es-CO') }}</div></div>
             </div>
 
+            <!-- CONT-C6 · Semáforo SIIGO: estado de sincronización contable. -->
+            <Link href="/app/contabilidad/discrepancias-siigo"
+                  class="card p-4 flex items-center gap-4 flex-wrap hover:ring-2 hover:ring-brand-400 transition">
+                <div class="flex items-center gap-3">
+                    <div :class="[
+                            'w-5 h-5 rounded-full ring-4 ring-opacity-30 ring-current',
+                            { verde: 'bg-emerald-500', amarillo: 'bg-amber-500', rojo: 'bg-red-500' }[kpis.siigo_semaforo] || 'bg-surface-400'
+                         ]"></div>
+                    <div>
+                        <div class="text-xs uppercase font-bold text-brand-600">Semáforo SIIGO</div>
+                        <div class="text-sm text-surface-500">{{ kpis.siigo_en_siigo }} / {{ kpis.siigo_aprobados }} asientos sincronizados</div>
+                    </div>
+                </div>
+                <div class="ml-auto flex items-center gap-4">
+                    <div class="text-right">
+                        <div class="text-[10px] uppercase text-surface-500">% en SIIGO</div>
+                        <div class="text-2xl font-black">{{ kpis.siigo_pct }}%</div>
+                    </div>
+                    <div class="text-brand-600 text-xs font-semibold">Ver discrepancias →</div>
+                </div>
+            </Link>
+
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4" :class="cargando ? 'opacity-60 pointer-events-none transition-opacity' : ''">
                 <div class="card p-4">
                     <div class="text-xs uppercase font-bold text-brand-600 mb-2">Top 10 cuentas movidas</div>

@@ -34,7 +34,11 @@ class ComprasGestionController extends Controller implements HasMiddleware
     {
         return [
             new Middleware(function (Request $r, \Closure $next) {
-                abort_unless($r->user()?->esAracely(), 403);
+                // LOG · AdminBodega entra para RECIBIR mercancía y gestionar
+                //   devoluciones a proveedor desde el menú Bodega. Las OC y
+                //   el reporte de compras siguen siendo de Aracely/Contador
+                //   (ellos NO aparecen en el menú del AdminBodega).
+                abort_unless($r->user()?->esEquipoBodega(), 403);
                 return $next($r);
             }),
         ];
@@ -44,6 +48,22 @@ class ComprasGestionController extends Controller implements HasMiddleware
     public function ocShow(int $orden): Response
     {
         $o = OrdenCompra::with(['proveedor:id,nombre_completo,razon_social', 'items'])->findOrFail($orden);
+
+        // COMP-B6 · Semáforo SIIGO de la OC = agregación del estado SIIGO de sus
+        // recepciones. Verde (todas con siigo_id), amarillo (al menos una pendiente),
+        // rojo (ninguna sincronizada), gris (sin recepciones todavía).
+        $recepciones = \App\Modules\Compras\Models\RecepcionCompra::where('orden_id', $o->id)
+            ->where('estado', 'confirmada')
+            ->get(['id', 'numero', 'estado', 'siigo_id', 'siigo_number', 'siigo_sync_at', 'fecha_recepcion']);
+        $totRec = $recepciones->count();
+        $sincronizadas = $recepciones->whereNotNull('siigo_id')->count();
+        $siigoEstado = match (true) {
+            $totRec === 0 => 'sin_recepciones',
+            $sincronizadas === $totRec => 'ok',
+            $sincronizadas === 0 => 'pendiente',
+            default => 'parcial',
+        };
+
         return Inertia::render('Compras/OC/Show', [
             'orden' => [
                 'id' => $o->id,
@@ -68,6 +88,20 @@ class ComprasGestionController extends Controller implements HasMiddleware
                     'descuento_pct' => (float) $i->descuento_pct,
                     'subtotal' => (float) $i->subtotal, 'total' => (float) $i->total,
                 ])->all(),
+                'siigo' => [
+                    'estado' => $siigoEstado,
+                    'total' => $totRec,
+                    'sincronizadas' => $sincronizadas,
+                    'pendientes' => $totRec - $sincronizadas,
+                    'recepciones' => $recepciones->map(fn ($r) => [
+                        'id' => $r->id,
+                        'numero' => $r->numero,
+                        'fecha' => $r->fecha_recepcion?->toDateString(),
+                        'siigo_id' => $r->siigo_id,
+                        'siigo_number' => $r->siigo_number,
+                        'siigo_sync_at' => $r->siigo_sync_at?->toIso8601String(),
+                    ])->all(),
+                ],
             ],
         ]);
     }
@@ -75,9 +109,14 @@ class ComprasGestionController extends Controller implements HasMiddleware
     public function ocForm(): Response
     {
         return Inertia::render('Compras/OC/Nueva', [
+            // COMP-B10 · incluir numero_documento para búsqueda por NIT en el autocomplete.
             'proveedores' => \App\Models\Contacto::where('es_proveedor', true)->where('activo', true)
-                ->orderBy('nombre_completo')->limit(200)->get(['id', 'nombre_completo', 'razon_social'])
-                ->map(fn ($c) => ['id' => $c->id, 'nombre' => $c->razon_social ?: $c->nombre_completo]),
+                ->orderBy('nombre_completo')->limit(500)->get(['id', 'nombre_completo', 'razon_social', 'numero_documento'])
+                ->map(fn ($c) => [
+                    'id' => $c->id,
+                    'nombre' => $c->razon_social ?: $c->nombre_completo,
+                    'numero_documento' => $c->numero_documento,
+                ]),
             // Re-audit M2 UX-A4 · bodegas destino para elección explícita en OC.
             'bodegas' => \App\Modules\Dropi\Models\InventarioUbicacion::orderBy('nombre')->get(['id', 'nombre'])
                 ->map(fn ($b) => ['id' => $b->id, 'nombre' => $b->nombre]),
@@ -220,6 +259,9 @@ class ComprasGestionController extends Controller implements HasMiddleware
                     'subtotal' => (float) $i->subtotal,
                     'lote' => $i->lote,
                     'observaciones' => $i->observaciones,
+                    // LOG-J8 · destino al descargar (apto/averia/cuarentena/revision/faltante) + motivo.
+                    'clasificacion' => $i->clasificacion ?? 'apto',
+                    'motivo_clasificacion' => $i->motivo_clasificacion,
                 ])->all(),
             ],
         ]);
@@ -251,7 +293,28 @@ class ComprasGestionController extends Controller implements HasMiddleware
     {
         $ocId = (int) $request->input('oc', 0);
         $oc = $ocId ? OrdenCompra::with(['items', 'proveedor:id,nombre_completo,razon_social'])->find($ocId) : null;
+
+        // Sin OC elegida, la pantalla mandaba a /app/compras a buscarla — y esa
+        // pantalla exige perfil contable, así que quien recibe la mercancía
+        // chocaba contra un 403 justo en su tarea principal. Le damos acá mismo
+        // las órdenes que puede recibir.
+        $ocsPendientes = $oc ? [] : OrdenCompra::query()
+            ->whereIn('estado', ['aprobada', 'parcial'])
+            ->with('proveedor:id,nombre_completo,razon_social')
+            ->orderByDesc('id')
+            ->limit(25)
+            ->get()
+            ->map(fn (OrdenCompra $o) => [
+                'id' => $o->id,
+                'numero' => $o->numero,
+                'proveedor' => $o->proveedor?->razon_social ?: $o->proveedor?->nombre_completo,
+                'estado' => is_object($o->estado) ? $o->estado->value : $o->estado,
+                'fecha_esperada' => optional($o->fecha_esperada)->format('Y-m-d'),
+                'total' => (float) $o->total,
+            ])->all();
+
         return Inertia::render('Compras/Recepcion/Nueva', [
+            'ocs_pendientes' => $ocsPendientes,
             'oc' => $oc ? [
                 'id' => $oc->id, 'numero' => $oc->numero,
                 'proveedor' => $oc->proveedor?->razon_social ?: $oc->proveedor?->nombre_completo,
@@ -295,6 +358,10 @@ class ComprasGestionController extends Controller implements HasMiddleware
             'items.*.orden_item_id' => ['required', 'integer', 'exists:compras_orden_items,id'],
             'items.*.cantidad_recibida' => ['required', 'numeric', 'min:0.001'],
             'items.*.lote' => ['nullable', 'string', 'max:80'],
+            // LOG-J8 · cada línea declara su destino (apto/averia/cuarentena/revision/faltante).
+            // Default: apto (comportamiento retro-compatible con el flujo anterior).
+            'items.*.clasificacion' => ['nullable', 'string', 'in:apto,averia,cuarentena,revision,faltante'],
+            'items.*.motivo_clasificacion' => ['nullable', 'string', 'max:180'],
         ]);
 
         $orden = OrdenCompra::with('items')->findOrFail($data['orden_id']);
@@ -306,18 +373,29 @@ class ComprasGestionController extends Controller implements HasMiddleware
             abort_unless(in_array((int) $it['orden_item_id'], $itemsOc, true), 422, 'Item de recepción no pertenece a esta OC.');
         }
 
-        // Dedupe: si vienen 2 líneas con mismo orden_item_id, fusionamos qty.
+        // Dedupe: si vienen 2 líneas con mismo orden_item_id + MISMA clasificación
+        // fusionamos qty. Si varían clasificaciones, se mantienen como líneas
+        // separadas (la misma OC puede repartir el mismo SKU entre apto/avería/
+        // cuarentena cuando sólo parte del lote llegó en condiciones).
         $itemsFusionados = [];
         foreach ($data['items'] as $it) {
-            $key = (int) $it['orden_item_id'];
+            $clas = $it['clasificacion'] ?? 'apto';
+            $key = (int) $it['orden_item_id'] . ':' . $clas;
             if (isset($itemsFusionados[$key])) {
                 $itemsFusionados[$key]['cantidad_recibida'] += (float) $it['cantidad_recibida'];
-                // conservar lote no-vacío si aparece
                 $itemsFusionados[$key]['lote'] = $itemsFusionados[$key]['lote'] ?: ($it['lote'] ?? null);
+                // motivos: concatenamos para no perder contexto cuando el usuario
+                // ingresó dos novedades del mismo producto.
+                if (! empty($it['motivo_clasificacion']) && $itemsFusionados[$key]['motivo_clasificacion'] !== $it['motivo_clasificacion']) {
+                    $itemsFusionados[$key]['motivo_clasificacion'] = trim(($itemsFusionados[$key]['motivo_clasificacion'] ?? '').' · '.$it['motivo_clasificacion']);
+                }
             } else {
                 $itemsFusionados[$key] = [
+                    'orden_item_id' => (int) $it['orden_item_id'],
                     'cantidad_recibida' => (float) $it['cantidad_recibida'],
                     'lote' => $it['lote'] ?? null,
+                    'clasificacion' => $clas,
+                    'motivo_clasificacion' => $it['motivo_clasificacion'] ?? null,
                 ];
             }
         }
@@ -336,19 +414,22 @@ class ComprasGestionController extends Controller implements HasMiddleware
                 // Clave real del $fillable (antes 'creado_por' se descartaba).
                 'recibido_por' => auth()->id(),
             ]);
-            foreach ($itemsFusionados as $ocItemId => $it) {
-                $ocItem = $orden->items->firstWhere('id', $ocItemId);
+            foreach ($itemsFusionados as $it) {
+                $ocItem = $orden->items->firstWhere('id', $it['orden_item_id']);
                 $costoUnit = (float) $ocItem->precio_unit;
                 $cantidad = (float) $it['cantidad_recibida'];
                 $rc->items()->create([
                     'orden_item_id' => $ocItem->id,
                     'variante_id' => $ocItem->variante_id,
-                    // 'descripcion' NO existe en RecepcionCompraItem; NO enviar
-                    // para evitar la falla silenciosa del mass-assign.
                     'cantidad_recibida' => $cantidad,
                     'costo_unit' => $costoUnit,
                     'subtotal' => round($costoUnit * $cantidad, 2),
                     'lote' => $it['lote'] ?? null,
+                    // LOG-J8 · persistir destino + motivo. El Action RecibirMercancia
+                    // lee `clasificacion` para decidir a qué almacén lógico va el
+                    // kardex (apto → stock vendible, el resto → stock no vendible).
+                    'clasificacion' => $it['clasificacion'] ?? 'apto',
+                    'motivo_clasificacion' => $it['motivo_clasificacion'] ?? null,
                 ]);
             }
 
@@ -515,34 +596,99 @@ class ComprasGestionController extends Controller implements HasMiddleware
     }
 
     // ================== REPORTE COMPRAS ==================
-    public function reporte(): Response
+    public function reporte(\Illuminate\Http\Request $request): Response
     {
-        $inicio = now('America/Bogota')->startOfMonth();
-        $fin = now('America/Bogota')->endOfMonth();
+        // COMP-B9 · filtros fecha editables + comparativa mes anterior.
+        $tz = 'America/Bogota';
+        $inicio = $request->filled('desde')
+            ? \Carbon\Carbon::parse($request->string('desde'), $tz)->startOfDay()
+            : now($tz)->startOfMonth();
+        $fin = $request->filled('hasta')
+            ? \Carbon\Carbon::parse($request->string('hasta'), $tz)->endOfDay()
+            : now($tz)->endOfMonth();
+        // Mismo rango un mes antes para la comparativa delta%.
+        $inicioPrev = $inicio->copy()->subMonthNoOverflow();
+        $finPrev    = $fin->copy()->subMonthNoOverflow();
+
         $ocPendientes = OrdenCompra::whereIn('estado', [EstadoOrdenCompra::Aprobada, EstadoOrdenCompra::Enviada, EstadoOrdenCompra::Parcial])->count();
-        $ocEsteMes = OrdenCompra::whereBetween('fecha_emision', [$inicio, $fin])->sum('total');
+        $ocPeriodo = (float) OrdenCompra::whereBetween('fecha_emision', [$inicio, $fin])->sum('total');
+        $ocPrev    = (float) OrdenCompra::whereBetween('fecha_emision', [$inicioPrev, $finPrev])->sum('total');
         $contenedoresPorLiquidar = Importacion::whereIn('estado', [EstadoImportacion::Nacionalizada, EstadoImportacion::EnPuerto])->count();
-        $totalFobMes = Importacion::whereBetween('created_at', [$inicio, $fin])
+        $totalFobPeriodo = Importacion::whereBetween('created_at', [$inicio, $fin])
             ->with('lineas')->get()->sum(fn ($i) => $i->lineas->sum('costo_fob_total'));
 
         $topProveedores = OrdenCompra::selectRaw('proveedor_id, COUNT(*) as ocs, SUM(total) as total')
             ->whereBetween('fecha_emision', [$inicio, $fin])
             ->groupBy('proveedor_id')->orderByDesc('total')->limit(10)
-            ->with('proveedor:id,nombre_completo,razon_social')
+            ->with('proveedor:id,nombre_completo,razon_social,numero_documento')
             ->get()->map(fn ($r) => [
+                'proveedor_id' => $r->proveedor?->id,
                 'nombre' => $r->proveedor?->razon_social ?: $r->proveedor?->nombre_completo,
+                'nit' => $r->proveedor?->numero_documento,
                 'ocs' => (int) $r->ocs, 'total' => (float) $r->total,
             ])->all();
 
+        // COMP-B9 · cruce con SIIGO /v1/accounts-payable (si está disponible).
+        // No bloquea el reporte si falla · solo omite la columna "SIIGO".
+        $cxpSiigo = $this->cruzarCxPConSiigo($topProveedores, $inicio, $fin);
+
+        $delta = fn ($a, $b) => $b > 0 ? round((($a - $b) / $b) * 100, 1) : null;
+
         return Inertia::render('Compras/Reporte', [
-            'periodo' => ['inicio' => $inicio->toDateString(), 'fin' => $fin->toDateString()],
+            'periodo' => [
+                'inicio' => $inicio->toDateString(),
+                'fin' => $fin->toDateString(),
+                'inicio_prev' => $inicioPrev->toDateString(),
+                'fin_prev' => $finPrev->toDateString(),
+            ],
             'kpis' => [
                 'oc_pendientes' => $ocPendientes,
-                'oc_este_mes' => (float) $ocEsteMes,
+                'oc_periodo' => $ocPeriodo,
+                'oc_prev' => $ocPrev,
+                'oc_delta_pct' => $delta($ocPeriodo, $ocPrev),
                 'contenedores_por_liquidar' => $contenedoresPorLiquidar,
-                'total_fob_mes' => (float) $totalFobMes,
+                'total_fob_periodo' => (float) $totalFobPeriodo,
             ],
             'topProveedores' => $topProveedores,
+            'siigo' => $cxpSiigo, // ['disponible'=>bool, 'por_nit'=>[...], 'mensaje'=>?string]
         ]);
+    }
+
+    /**
+     * COMP-B9 · Trae el saldo CxP por proveedor desde SIIGO para los NIT del
+     * top10 local. Si SIIGO está caído o no habilitado, degradamos silencioso
+     * (reporte igual se renderiza, solo se oculta la columna comparativa).
+     */
+    private function cruzarCxPConSiigo(array $topProveedores, \Carbon\Carbon $inicio, \Carbon\Carbon $fin): array
+    {
+        try {
+            $cliente = app(\App\Modules\Siigo\Clients\SiigoClient::class);
+            // Agrupamos por NIT · un GET por proveedor con limit chico (10) basta.
+            $out = [];
+            foreach ($topProveedores as $tp) {
+                if (empty($tp['nit'])) continue;
+                $r = $cliente->request('GET', '/v1/accounts-payable', [
+                    'identification' => $tp['nit'],
+                    'due_date_start' => $inicio->toDateString(),
+                    'due_date_end' => $fin->toDateString(),
+                    'page_size' => 25,
+                ]);
+                if (! $r->ok()) continue;
+                $data = $r->json();
+                $items = $data['results'] ?? (is_array($data) ? $data : []);
+                $saldo = 0.0; $facturas = 0;
+                foreach ($items as $it) {
+                    $saldo += (float) ($it['balance'] ?? $it['total'] ?? 0);
+                    $facturas++;
+                }
+                $out[$tp['nit']] = [
+                    'facturas' => $facturas,
+                    'saldo' => round($saldo, 2),
+                ];
+            }
+            return ['disponible' => true, 'por_nit' => $out, 'mensaje' => null];
+        } catch (\Throwable $e) {
+            return ['disponible' => false, 'por_nit' => [], 'mensaje' => $e->getMessage()];
+        }
     }
 }

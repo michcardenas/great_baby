@@ -74,6 +74,37 @@ class Reglas
         'siigo.cta_banco_default' => ['grupo' => 'siigo', 'tipo' => 'string', 'valor' => '1110', 'etiqueta' => 'SIIGO · Cuenta de banco por defecto', 'descripcion' => 'PUC de bancos'],
         'siigo.cta_conciliacion_default' => ['grupo' => 'siigo', 'tipo' => 'string', 'valor' => '139535', 'etiqueta' => 'SIIGO · Partida conciliatoria por defecto', 'descripcion' => 'PUC para la diferencia de conciliación'],
         'siigo.proveedor_importacion_doc' => ['grupo' => 'siigo', 'tipo' => 'string', 'valor' => '', 'etiqueta' => 'SIIGO · NIT proveedor de importaciones', 'descripcion' => 'Identificación por defecto para comprobantes de importación'],
+        // UBIC-6 · resolución DIAN FV auto-asignada a nuevas ubicaciones de venta.
+        'siigo.resolucion_fv_default_id' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 0, 'etiqueta' => 'SIIGO · Resolución DIAN default (FV)', 'descripcion' => 'ID del document-type FV que se auto-asigna a toda ubicación de venta nueva sin resolución elegida'],
+        // INV-A1 · cuentas PUC alineadas con CerrarTomaFisica para que SIIGO
+        // y el ERP escriban en la misma cuenta (antes SIIGO usaba 5195 y
+        // CerrarTomaFisica usaba 5299 → libros divergentes).
+        'siigo.cta_perdida_inventario_default' => ['grupo' => 'siigo', 'tipo' => 'string', 'valor' => '5299', 'etiqueta' => 'SIIGO · Cuenta pérdida por baja inventario', 'descripcion' => 'PUC débito para faltantes/mermas (default 5299 pérdida inventario)'],
+        'siigo.cta_sobrante_inventario_default' => ['grupo' => 'siigo', 'tipo' => 'string', 'valor' => '4295', 'etiqueta' => 'SIIGO · Cuenta sobrante inventario', 'descripcion' => 'PUC crédito para sobrantes de toma física (default 4295 diversos)'],
+        // COMP-B1 · documento SIIGO para NC de compra (devolución a proveedor).
+        'siigo.doc_type_nc_compra' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 0, 'etiqueta' => 'SIIGO · Tipo documento NC compra', 'descripcion' => 'ID del document-type para notas crédito de compra (devoluciones a proveedor)'],
+        'siigo.payment_type_compra_default' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 0, 'etiqueta' => 'SIIGO · Payment type compra default', 'descripcion' => 'Payment type por defecto para NC/factura de compra'],
+        // COMP-B1 · cuentas AUXILIARES transaccionales SIIGO para journals de devolución
+        // a proveedor. SIIGO rechaza cuentas padre (2205, 1435, 2408) con error
+        // `account_not_allowed · transactional characteristic not allowed`.
+        // La contadora las edita en el panel de Reglas sin tocar código.
+        'siigo.cta_cxp_proveedor_siigo' => ['grupo' => 'siigo', 'tipo' => 'string', 'valor' => '22050501', 'etiqueta' => 'SIIGO · Cuenta auxiliar CxP proveedor', 'descripcion' => 'PUC auxiliar transaccional de proveedores (SIIGO estándar: 22050501). Débito al devolver mercancía al proveedor'],
+        'siigo.cta_inventario_siigo' => ['grupo' => 'siigo', 'tipo' => 'string', 'valor' => '1435010101', 'etiqueta' => 'SIIGO · Cuenta auxiliar inventario', 'descripcion' => 'PUC auxiliar transaccional de inventario de mercancías (SIIGO estándar: 1435010101). Crédito al bajar inventario por devolución'],
+        'siigo.cta_iva_dev_compra_siigo' => ['grupo' => 'siigo', 'tipo' => 'string', 'valor' => '24082001', 'etiqueta' => 'SIIGO · Cuenta IVA devolución compra', 'descripcion' => 'PUC auxiliar transaccional de IVA Devolución en compras (estándar: 24082001 para 19%). Crédito al reversar el IVA de la compra devuelta'],
+        'siigo.centro_costo_siigo' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 0, 'etiqueta' => 'SIIGO · Centro de costo default', 'descripcion' => 'ID numérico del centro de costo SIIGO · Opcional; se envía solo si el tipo de comprobante lo exige'],
+        'siigo.tax_id_iva_19' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 1270, 'etiqueta' => 'SIIGO · ID impuesto IVA 19%', 'descripcion' => 'ID numérico del impuesto IVA 19% en SIIGO (default sandbox: 1270). Se usa en líneas de IVA de los journals'],
+        'siigo.iva_porcentaje' => ['grupo' => 'siigo', 'tipo' => 'float', 'valor' => '19', 'etiqueta' => 'SIIGO · Porcentaje IVA default', 'descripcion' => 'Porcentaje del IVA default (19 Colombia). Se usa para calcular base_value en journals a partir del monto del IVA'],
+        // Comprobantes de tesorería y contabilidad. Antes el código los leía con
+        // `setting('siigo.doc_type_egreso')` pero NUNCA estuvieron declarados acá:
+        // devolvían null, los jobs morían con "Falta configurar …" y no había
+        // forma de arreglarlo desde el panel. Los tipos son los de SIIGO:
+        // RC = recibo de caja (cobro a cliente) · RP = recibo de pago / egreso
+        // (pago a proveedor) · CC = comprobante contable (asientos).
+        'siigo.doc_type_recibo' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 2371, 'etiqueta' => 'SIIGO · Tipo documento Recibo de caja (RC)', 'descripcion' => 'ID del comprobante con que se registran los COBROS a clientes. Se consulta con GET /v1/document-types?type=RC'],
+        'siigo.payment_type_recibo' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 0, 'etiqueta' => 'SIIGO · Medio de pago del recibo de caja', 'descripcion' => 'Medio de pago para los cobros. Se consulta con GET /v1/payment-types?document_type=RC'],
+        'siigo.doc_type_egreso' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 2376, 'etiqueta' => 'SIIGO · Tipo documento Egreso (RP)', 'descripcion' => 'ID del comprobante con que se registran los PAGOS a proveedores. Se consulta con GET /v1/document-types?type=RP'],
+        'siigo.payment_type_egreso' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 0, 'etiqueta' => 'SIIGO · Medio de pago del egreso', 'descripcion' => 'Medio de pago para los pagos a proveedores. Si queda en 0 se usa el del recibo de caja'],
+        'siigo.doc_type_asiento' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 2393, 'etiqueta' => 'SIIGO · Tipo documento Asiento contable (CC)', 'descripcion' => 'ID del comprobante contable para asientos manuales y de inventario. Se consulta con GET /v1/document-types?type=CC'],
     ];
 
     /** Memoization por-request para evitar N lecturas de cache en un mismo handler. */
@@ -82,7 +113,14 @@ class Reglas
     public static function get(string $clave, mixed $default = null): mixed
     {
         if (self::$requestCache === null) {
-            self::$requestCache = ReglaNegocio::todas();
+            // `setting()` se usa en todo el código como si no pudiera fallar, así
+            // que si la tabla todavía no existe (instalación nueva, test unitario
+            // que no migra) devolvemos los valores por defecto en vez de reventar.
+            try {
+                self::$requestCache = ReglaNegocio::todas();
+            } catch (\Throwable) {
+                self::$requestCache = [];
+            }
         }
         if (array_key_exists($clave, self::$requestCache)) return self::$requestCache[$clave];
 

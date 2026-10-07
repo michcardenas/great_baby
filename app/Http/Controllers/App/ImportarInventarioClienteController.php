@@ -24,7 +24,7 @@ class ImportarInventarioClienteController extends Controller
 {
     public function show()
     {
-        abort_unless(auth()->user()?->esAracely(), 403);
+        abort_unless(auth()->user()?->esEquipoBodega(), 403);  // A1 FIX · AdminBodega debe poder importar inventario del cliente
 
         return Inertia::render('Inventario/ImportarCliente', [
             'bodegas' => InventarioUbicacion::query()
@@ -37,7 +37,7 @@ class ImportarInventarioClienteController extends Controller
 
     public function procesar(Request $request)
     {
-        abort_unless(auth()->user()?->esAracely(), 403);
+        abort_unless(auth()->user()?->esEquipoBodega(), 403);  // A1 FIX · AdminBodega debe poder importar inventario del cliente
 
         $data = $request->validate([
             'archivo' => ['required', 'file', 'mimes:xlsx,xls', 'max:10240'], // 10 MB

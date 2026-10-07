@@ -14,9 +14,11 @@ const money = (n) => new Intl.NumberFormat('es-CO', { style: 'currency', currenc
 const badgeEstado = (e) => ({
     borrador: 'bg-surface-100 text-surface-700',
     enviado: 'bg-blue-100 text-blue-800',
+    retenido: 'bg-amber-100 text-amber-800 ring-1 ring-amber-400',
     aprobado: 'bg-emerald-100 text-emerald-800',
     rechazado: 'bg-red-100 text-red-800',
     facturado: 'bg-brand-100 text-brand-800',
+    despachado: 'bg-indigo-100 text-indigo-800',
     anulado: 'bg-surface-200 text-surface-600',
 }[e] || 'bg-surface-100');
 
@@ -39,8 +41,10 @@ onBeforeUnmount(() => intervalId && clearInterval(intervalId));
 const tabs = [
     { key: '', label: 'Todos' },
     { key: 'enviado', label: 'Nuevos' },
+    { key: 'retenido', label: '⏸ Retenidos' },
     { key: 'aprobado', label: 'Aprobados' },
     { key: 'facturado', label: 'Facturados' },
+    { key: 'despachado', label: 'Despachados' },
     { key: 'rechazado', label: 'Rechazados' },
 ];
 </script>
@@ -57,8 +61,16 @@ const tabs = [
                     </h1>
                     <p class="text-sm text-surface-500 mt-1">Pedidos enviados por clientes desde el Portal.</p>
                 </div>
-                <div v-if="Number(conteos.enviado) > 0" class="px-3 py-2 rounded-lg bg-blue-500/15 text-blue-800 dark:text-blue-300 text-sm font-semibold">
-                    {{ Number(conteos.enviado) }} nuevo{{ Number(conteos.enviado) > 1 ? 's' : '' }} por revisar
+                <div class="flex items-center gap-2 flex-wrap">
+                    <!-- LOG-J3 · banner ámbar prominente para que Gerencia no se pierda los retenidos.
+                         Al clic filtra el listado para resolverlos. -->
+                    <button v-if="Number(conteos.retenido) > 0" @click="filtrar('retenido')"
+                        class="px-3 py-2 rounded-lg bg-amber-500/20 text-amber-900 dark:text-amber-200 text-sm font-bold ring-2 ring-amber-400 hover:bg-amber-500/30 transition">
+                        ⏸ {{ Number(conteos.retenido) }} retenido{{ Number(conteos.retenido) > 1 ? 's' : '' }} · requiere Gerencia
+                    </button>
+                    <div v-if="Number(conteos.enviado) > 0" class="px-3 py-2 rounded-lg bg-blue-500/15 text-blue-800 dark:text-blue-300 text-sm font-semibold">
+                        {{ Number(conteos.enviado) }} nuevo{{ Number(conteos.enviado) > 1 ? 's' : '' }} por revisar
+                    </div>
                 </div>
             </div>
 

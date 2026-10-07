@@ -31,6 +31,10 @@ class InventarioMovimientoObserver
     private const TIPOS_ASIENTO = [
         'traslado_salida',
         'traslado_entrada',
+        // BUG-TRASL · reversas de traslado (anulación) también deben llegar a
+        // SIIGO · antes el asiento original quedaba sin contrapartida al anular.
+        'traslado_reversa_salida',
+        'traslado_reversa_entrada',
         'merma',
         'faltante',
         'sobrante',

@@ -1,9 +1,10 @@
 <script setup>
 import { ref } from 'vue';
 import { Head } from '@inertiajs/vue3';
-import { Warehouse, AlertCircle, ArrowRightLeft, ClipboardCheck, Package } from 'lucide-vue-next';
+import { Warehouse, AlertCircle, ArrowRightLeft, ClipboardCheck, Package, FileDown, Cloud } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import KpiCard from '@/Components/KpiCard.vue';
+import BuscadorInventario from '@/Components/BuscadorInventario.vue';
 
 const props = defineProps({
     tab: { type: String, default: 'stock' },
@@ -29,12 +30,18 @@ const badgeEstado = (e) => ({
     <Head title="Inventario y logística"/>
     <AppLayout>
         <div class="space-y-4">
-            <div>
-                <h1 class="text-2xl font-bold flex items-center gap-2">
-                    <Warehouse class="h-6 w-6 text-brand-600"/>
-                    Inventario y logística
-                </h1>
-                <p class="text-sm text-surface-500 mt-1">Stock por bodega, traslados, tomas físicas y alertas de mínimo/máximo.</p>
+            <div class="flex items-start justify-between gap-4 flex-wrap">
+                <div>
+                    <h1 class="text-2xl font-bold flex items-center gap-2">
+                        <Warehouse class="h-6 w-6 text-brand-600"/>
+                        Inventario y logística
+                    </h1>
+                    <p class="text-sm text-surface-500 mt-1">Stock por bodega, traslados, tomas físicas y alertas de mínimo/máximo.</p>
+                </div>
+                <!-- INV-B1 · buscador global · tecla "/" lo enfoca -->
+                <div class="w-full md:w-96">
+                    <BuscadorInventario/>
+                </div>
             </div>
 
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -42,6 +49,25 @@ const badgeEstado = (e) => ({
                 <KpiCard label="Alertas activas" :value="kpis.alertas_activas" color="red" :icon="AlertCircle"/>
                 <KpiCard label="Traslados en tránsito" :value="kpis.traslados_transito" color="blue" :icon="ArrowRightLeft"/>
                 <KpiCard label="Reservas activas" :value="kpis.reservas_activas" color="amber" :icon="ClipboardCheck"/>
+            </div>
+
+            <!-- UBIC-10 · acceso directo al export de saldos iniciales SIIGO -->
+            <div class="card p-3 flex items-center justify-between gap-3 flex-wrap border-l-4 border-sky-500 bg-sky-50/40">
+                <div class="flex items-center gap-3 flex-1 min-w-[220px]">
+                    <Cloud class="h-5 w-5 text-sky-600 shrink-0"/>
+                    <div>
+                        <div class="text-sm font-bold text-sky-900">Enviar inventario actual a SIIGO</div>
+                        <div class="text-xs text-surface-600">
+                            Descargá el Excel con el layout de "Saldos iniciales de inventario" de SIIGO y pegalo allá.
+                        </div>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <a href="/app/siigo/saldos-iniciales.xlsx"
+                       class="text-sm inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-sky-600 text-white hover:bg-sky-700">
+                        <FileDown class="h-4 w-4"/> Descargar Excel SIIGO
+                    </a>
+                </div>
             </div>
 
             <div class="flex items-center gap-2 border-b border-surface-200 dark:border-surface-800 overflow-x-auto">

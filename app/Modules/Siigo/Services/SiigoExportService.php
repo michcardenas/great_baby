@@ -10,6 +10,7 @@ use App\Modules\Gerencia\Models\GastoOperativo;
 use App\Modules\Siigo\Clients\SiigoClient;
 use App\Modules\Siigo\Enums\TipoExportacionSiigo;
 use App\Modules\Siigo\Models\SiigoConfig;
+use App\Modules\Siigo\Support\CuentasSiigo;
 use App\Modules\Siigo\Models\SiigoSyncLog;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Log;
@@ -71,8 +72,14 @@ class SiigoExportService
             'borrador' => $esBorrador,
         ]);
 
+        // Idempotency-Key estable por (tipo · documento · borrador): si el envío
+        //   se reintenta tras un timeout, SIIGO devuelve el documento que ya
+        //   creó en vez de duplicar un gasto, una conciliación o una OC.
+        //   El cliente la hashea a ≤28 chars, así que puede ser descriptiva.
+        $idemKey = "exp:{$tipo->value}:{$documento->getKey()}" . ($esBorrador ? ':b' : '');
+
         try {
-            $response = $this->cliente->request('POST', $tipo->endpoint(), $payload);
+            $response = $this->cliente->request('POST', $tipo->endpoint(), $payload, 1, $idemKey);
         } catch (\Throwable $e) {
             $log = $this->registrarLog($tipo, 'error', "Error de red hacia SIIGO: {$e->getMessage()}", [
                 'documento' => $documento::class.'#'.$documento->getKey(),
@@ -226,7 +233,7 @@ class SiigoExportService
             return $movs->map(function (MovimientoContable $m) {
                 $esDebito = (float) $m->debe > 0;
                 $item = [
-                    'account' => ['code' => (string) $m->cuenta_puc, 'movement' => $esDebito ? 'Debit' : 'Credit'],
+                    'account' => ['code' => CuentasSiigo::codigo($m->cuenta_puc), 'movement' => $esDebito ? 'Debit' : 'Credit'],
                     'description' => (string) ($m->descripcion ?? ''),
                     'value' => (float) ($esDebito ? $m->debe : $m->haber),
                 ];
@@ -245,8 +252,8 @@ class SiigoExportService
             $ctaGasto = (string) setting('siigo.cta_gasto_default', '5195');
             $ctaBanco = (string) setting('siigo.cta_banco_default', '1110');
             return [
-                ['account' => ['code' => $ctaGasto, 'movement' => 'Debit'], 'description' => (string) $documento->descripcion, 'value' => $monto],
-                ['account' => ['code' => $ctaBanco, 'movement' => 'Credit'], 'description' => (string) $documento->descripcion, 'value' => $monto],
+                ['account' => ['code' => CuentasSiigo::codigo($ctaGasto), 'movement' => 'Debit'], 'description' => (string) $documento->descripcion, 'value' => $monto],
+                ['account' => ['code' => CuentasSiigo::codigo($ctaBanco), 'movement' => 'Credit'], 'description' => (string) $documento->descripcion, 'value' => $monto],
             ];
         }
 
@@ -263,8 +270,8 @@ class SiigoExportService
             $valor = abs($dif);
             $desc = 'Ajuste conciliación '.$documento->banco.' '.$this->fechaDocumento($documento);
             return [
-                ['account' => ['code' => $ctaBanco, 'movement' => $bancoDebita ? 'Debit' : 'Credit'], 'description' => $desc, 'value' => $valor],
-                ['account' => ['code' => $ctaClearing, 'movement' => $bancoDebita ? 'Credit' : 'Debit'], 'description' => 'Partida conciliatoria por aclarar', 'value' => $valor],
+                ['account' => ['code' => CuentasSiigo::codigo($ctaBanco), 'movement' => $bancoDebita ? 'Debit' : 'Credit'], 'description' => $desc, 'value' => $valor],
+                ['account' => ['code' => CuentasSiigo::codigo($ctaClearing), 'movement' => $bancoDebita ? 'Credit' : 'Debit'], 'description' => 'Partida conciliatoria por aclarar', 'value' => $valor],
             ];
         }
 

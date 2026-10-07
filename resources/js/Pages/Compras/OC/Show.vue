@@ -1,7 +1,7 @@
 <script setup>
 import { ref } from 'vue';
 import { Head, Link, router } from '@inertiajs/vue3';
-import { ArrowLeft, CheckCircle, XCircle, Truck, ShoppingCart, AlertTriangle } from 'lucide-vue-next';
+import { ArrowLeft, CheckCircle, XCircle, Truck, ShoppingCart, AlertTriangle, Cloud, CloudOff, CloudCog, RefreshCw } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import { useMoney } from '@/composables/useMoney';
 import { fechaCorta } from '@/composables/useFecha';
@@ -51,6 +51,25 @@ const badge = (e) => ({
     cerrada: 'bg-surface-200 text-surface-600 dark:bg-surface-800 dark:text-surface-400',
     anulada: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200',
 }[e] || 'bg-surface-100 dark:bg-surface-800');
+
+// COMP-B6 · semáforo SIIGO agregado de la OC.
+const siigoBadge = (e) => ({
+    ok:              { cls: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200', label: 'Sincronizado', icon: Cloud },
+    parcial:         { cls: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200',          label: 'Parcial',       icon: CloudCog },
+    pendiente:       { cls: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200',                   label: 'Pendiente',     icon: CloudOff },
+    sin_recepciones: { cls: 'bg-surface-100 text-surface-600 dark:bg-surface-800 dark:text-surface-400',      label: 'Sin recepciones', icon: Cloud },
+}[e] || { cls: 'bg-surface-100', label: '—', icon: Cloud });
+
+// COMP-B8 · reenvío manual a SIIGO desde la OC/Show.
+const reenviando = ref(null);
+const reenviarRecepcion = (rec) => {
+    if (rec.siigo_id && ! confirm(`La recepción ${rec.numero} ya está sincronizada con SIIGO (${rec.siigo_number || rec.siigo_id}). ¿Reenviar igual?`)) return;
+    reenviando.value = rec.id;
+    router.post(`/app/compras/recepcion/${rec.id}/reenviar-siigo`, {}, {
+        preserveScroll: true,
+        onFinish: () => reenviando.value = null,
+    });
+};
 </script>
 
 <template>
@@ -119,6 +138,44 @@ const badge = (e) => ({
                         </tbody>
                     </table>
                 </div>
+            </div>
+
+            <!-- COMP-B6 · Semáforo SIIGO + recepciones asociadas (+ reenvío manual COMP-B8). -->
+            <div v-if="orden.siigo" class="card p-4">
+                <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+                    <div class="flex items-center gap-2">
+                        <component :is="siigoBadge(orden.siigo.estado).icon" class="h-5 w-5"/>
+                        <div>
+                            <div class="text-xs uppercase tracking-widest font-bold text-brand-600">Estado SIIGO</div>
+                            <div class="text-xs text-surface-500">{{ orden.siigo.sincronizadas }} de {{ orden.siigo.total }} recepciones sincronizadas</div>
+                        </div>
+                    </div>
+                    <span :class="['px-3 py-1 rounded-full text-xs font-bold uppercase', siigoBadge(orden.siigo.estado).cls]">
+                        {{ siigoBadge(orden.siigo.estado).label }}
+                    </span>
+                </div>
+                <div v-if="orden.siigo.total === 0" class="text-sm text-surface-500 italic">Aún sin recepciones confirmadas.</div>
+                <ul v-else class="divide-y divide-surface-200 dark:divide-surface-800 text-sm">
+                    <li v-for="rec in orden.siigo.recepciones" :key="rec.id" class="flex items-center justify-between py-2 gap-3 flex-wrap">
+                        <div class="flex items-center gap-2 min-w-0">
+                            <Cloud v-if="rec.siigo_id" class="h-4 w-4 text-emerald-600 flex-shrink-0"/>
+                            <CloudOff v-else class="h-4 w-4 text-red-500 flex-shrink-0"/>
+                            <div class="min-w-0">
+                                <div class="font-mono text-xs truncate">{{ rec.numero }}</div>
+                                <div class="text-[11px] text-surface-500">
+                                    {{ rec.fecha }}
+                                    <template v-if="rec.siigo_number"> · FC {{ rec.siigo_number }}</template>
+                                    <template v-else-if="rec.siigo_id"> · {{ rec.siigo_id.substring(0, 12) }}…</template>
+                                    <template v-else> · <span class="text-red-600">sin SIIGO</span></template>
+                                </div>
+                            </div>
+                        </div>
+                        <button @click="reenviarRecepcion(rec)" :disabled="reenviando === rec.id" class="btn-ghost text-xs">
+                            <RefreshCw :class="['h-3 w-3', reenviando === rec.id && 'animate-spin']"/>
+                            {{ reenviando === rec.id ? 'Enviando…' : (rec.siigo_id ? 'Reenviar' : 'Enviar a SIIGO') }}
+                        </button>
+                    </li>
+                </ul>
             </div>
 
             <div v-if="orden.observaciones" class="card p-4">

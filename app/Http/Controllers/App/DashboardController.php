@@ -15,9 +15,15 @@ class DashboardController extends Controller
     public function __invoke(Request $request)
     {
         $u = $request->user();
-        // Solo Aracely/gerencia ve KPIs de negocio. Alistadores van directo a su estación.
-        if (! $u->esAracely()) {
-            return redirect()->route('app.estacion');
+        // Routing por rol de la pantalla "/app": los KPIs globales son de
+        //   Aracely/Gerencia/Gerente; cualquier otro rol se va a su propia
+        //   pantalla de trabajo. El destino lo decide `User::rutaInicial()`,
+        //   que es la misma que usa el login — antes aquí el fallback era la
+        //   Estación de Empaque y mandaba a Gerente/Contador/Vendedor/SAC/
+        //   Marketing/Facturador directo a un 403.
+        if (! $u->esAracely() && ! $u->hasRole('Gerente')) {
+            $destino = $u->rutaInicial();
+            return redirect($destino === '/app' ? '/app/cosas-del-dia' : $destino);
         }
 
         $kpis = $this->kpis();

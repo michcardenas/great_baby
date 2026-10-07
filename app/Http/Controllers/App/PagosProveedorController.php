@@ -49,6 +49,9 @@ class PagosProveedorController extends Controller implements HasMiddleware
                 'monto_retenciones' => (float) $p->monto_retenciones,
                 'monto_neto' => (float) $p->monto_neto,
                 'metodo' => $p->metodo,
+                // COMP-B5 · estado del pago para que la UI muestre Confirmar/Anular
+                'estado' => $p->estado ?? 'confirmado',
+                'confirmado_at' => $p->confirmado_at ? \Carbon\Carbon::parse($p->confirmado_at)->format('Y-m-d H:i') : null,
                 'retenciones' => $p->retenciones->map(fn ($r) => [
                     'tipo' => $r->tipo,
                     'tarifa_pct' => (float) $r->tarifa_pct,
@@ -62,6 +65,8 @@ class PagosProveedorController extends Controller implements HasMiddleware
                 'retenido_mes' => (float) PagoProveedor::whereMonth('fecha', now()->month)->whereYear('fecha', now()->year)->sum('monto_retenciones'),
                 'pagos_mes' => PagoProveedor::whereMonth('fecha', now()->month)->whereYear('fecha', now()->year)->count(),
                 'sin_siigo' => PagoProveedor::whereNull('siigo_voucher_id')->count(),
+                // COMP-B5 · pendientes de confirmar (nacen pendiente, no llegan a SIIGO hasta aprobar).
+                'pendientes_confirmar' => PagoProveedor::where('estado', 'pendiente')->count(),
             ],
         ]);
     }
@@ -89,13 +94,50 @@ class PagosProveedorController extends Controller implements HasMiddleware
             'type' => 'success',
             'message' => "Pago #{$pago->id} registrado · bruto \$" . number_format($pago->monto_bruto, 2)
                 . " · retenido \$" . number_format($pago->monto_retenciones, 2)
-                . " · neto \$" . number_format($pago->monto_neto, 2) . " · encolado a SIIGO.",
+                . " · neto \$" . number_format($pago->monto_neto, 2) . " · PENDIENTE de confirmación antes de ir a SIIGO.",
         ]);
     }
 
+    // COMP-B5 · Pago proveedor requiere confirmación.
+    // El pago nace `pendiente`. Hasta que un revisor confirme (habitualmente
+    // Aracely tras verificar NIT/monto/cuenta), no se encola a SIIGO. Evita
+    // que un typo del operador se replique al libro contable del cliente.
+    public function confirmar(PagoProveedor $pagoProveedor, Request $r): RedirectResponse
+    {
+        if ($pagoProveedor->estado === 'confirmado') {
+            return back()->with('flash', ['type' => 'info', 'message' => "Pago #{$pagoProveedor->id} ya estaba confirmado."]);
+        }
+        if ($pagoProveedor->estado === 'anulado') {
+            return back()->with('flash', ['type' => 'error', 'message' => "Pago #{$pagoProveedor->id} está anulado · no se puede confirmar."]);
+        }
+        $pagoProveedor->forceFill([
+            'estado' => 'confirmado',
+            'confirmado_at' => now(),
+            'confirmado_por' => $r->user()->id,
+        ])->save();
+        PushPagoProveedorASiigo::dispatchManual($pagoProveedor->id);
+        return back()->with('flash', [
+            'type' => 'success',
+            'message' => "Pago #{$pagoProveedor->id} confirmado y encolado a SIIGO.",
+        ]);
+    }
+
+    public function anular(PagoProveedor $pagoProveedor): RedirectResponse
+    {
+        if ($pagoProveedor->siigo_voucher_id) {
+            return back()->with('flash', ['type' => 'error', 'message' => "Pago #{$pagoProveedor->id} ya está en SIIGO · usar nota de ajuste allá."]);
+        }
+        $pagoProveedor->update(['estado' => 'anulado']);
+        return back()->with('flash', ['type' => 'success', 'message' => "Pago #{$pagoProveedor->id} anulado."]);
+    }
+
     // QA-FIX #7 · reenviar manualmente si el push automático falló.
+    // Solo tiene efecto en pagos ya confirmados — un pendiente no se puede empujar.
     public function reenviarSiigo(PagoProveedor $pagoProveedor): RedirectResponse
     {
+        if ($pagoProveedor->estado !== 'confirmado') {
+            return back()->with('flash', ['type' => 'error', 'message' => "Pago #{$pagoProveedor->id} no está confirmado · confírmalo primero."]);
+        }
         PushPagoProveedorASiigo::dispatchManual($pagoProveedor->id);
         return back()->with('flash', ['type' => 'success', 'message' => "Pago #{$pagoProveedor->id} encolado a SIIGO."]);
     }

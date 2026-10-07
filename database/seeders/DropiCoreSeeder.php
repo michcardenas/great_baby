@@ -28,6 +28,8 @@ class DropiCoreSeeder extends Seeder
         foreach ([
             'Aracely', 'Alistador', 'ServicioCliente', 'Gerencia',
             'Gerente', 'Contador', 'Vendedor',
+            // UBIC-8 · Admin bodega · scope restringido a su ubicación.
+            'AdminBodega',
         ] as $r) {
             Role::firstOrCreate(['name' => $r, 'guard_name' => 'web']);
         }

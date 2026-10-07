@@ -26,6 +26,29 @@ const form = reactive({
 });
 const procesando = ref(false);
 
+// COMP-B10 · autocomplete proveedor
+const busquedaProveedor = ref('');
+const proveedorAbierto = ref(false);
+const proveedoresFiltrados = computed(() => {
+    const q = busquedaProveedor.value.trim().toLowerCase();
+    if (q.length < 2) return [];
+    return props.proveedores
+        .filter(p => (p.nombre || '').toLowerCase().includes(q)
+                   || (p.numero_documento || '').toLowerCase().includes(q))
+        .slice(0, 15);
+});
+const elegirProveedor = (p) => {
+    form.proveedor_id = p.id;
+    busquedaProveedor.value = p.nombre + (p.numero_documento ? ` · ${p.numero_documento}` : '');
+    proveedorAbierto.value = false;
+};
+// Cierra el panel al clicar fuera.
+if (typeof window !== 'undefined') {
+    window.addEventListener('click', (e) => {
+        if (!e.target.closest('.md\\:col-span-2.relative')) proveedorAbierto.value = false;
+    });
+}
+
 const addItem = () => form.items.push({ descripcion: '', cantidad: 1, precio_unit: 0, iva_pct: 19, descuento_pct: 0 });
 const rmItem = (i) => form.items.splice(i, 1);
 
@@ -63,12 +86,38 @@ const guardar = () => {
 
             <div class="card p-5 space-y-3">
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    <div class="md:col-span-2">
+                    <!-- COMP-B10 · Autocomplete de proveedor
+                        Antes era `<select>` plano con todos los proveedores · con 200+ la UX era inviable.
+                        Ahora: input de búsqueda incremental (nombre o NIT) + lista desplegable con hits.
+                    -->
+                    <div class="md:col-span-2 relative">
                         <label class="text-xs font-semibold">Proveedor</label>
-                        <select v-model="form.proveedor_id" class="input w-full" required>
-                            <option value="">— Seleccionar —</option>
-                            <option v-for="p in proveedores" :key="p.id" :value="p.id">{{ p.nombre }}</option>
-                        </select>
+                        <input
+                            type="text" class="input w-full"
+                            :placeholder="form.proveedor_id ? '' : 'Busca por nombre o NIT…'"
+                            v-model="busquedaProveedor"
+                            @focus="proveedorAbierto = true"
+                            @input="proveedorAbierto = true; form.proveedor_id = ''"
+                            autocomplete="off"
+                            required
+                        />
+                        <button v-if="form.proveedor_id" type="button"
+                            @click="form.proveedor_id = ''; busquedaProveedor = ''"
+                            class="absolute right-2 top-7 text-surface-400 hover:text-red-500 text-sm"
+                            title="Limpiar">×</button>
+                        <ul v-if="proveedorAbierto && proveedoresFiltrados.length > 0"
+                            class="absolute z-10 mt-1 max-h-56 w-full overflow-auto rounded-lg border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 shadow-lg text-sm">
+                            <li v-for="p in proveedoresFiltrados" :key="p.id"
+                                @click="elegirProveedor(p)"
+                                class="px-3 py-2 cursor-pointer hover:bg-brand-50 dark:hover:bg-surface-800">
+                                <div class="font-semibold">{{ p.nombre }}</div>
+                                <div class="text-[11px] text-surface-500" v-if="p.numero_documento">NIT {{ p.numero_documento }}</div>
+                            </li>
+                        </ul>
+                        <p v-if="proveedorAbierto && busquedaProveedor.length >= 2 && proveedoresFiltrados.length === 0"
+                           class="absolute z-10 mt-1 w-full rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-[11px] text-amber-700">
+                            Sin coincidencias con «{{ busquedaProveedor }}».
+                        </p>
                     </div>
                     <!-- Re-audit M2 UX-A4 · selector de bodega destino. -->
                     <div>

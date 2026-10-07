@@ -60,6 +60,11 @@ class SiigoService
         // Mapear warehouses → inventario_ubicaciones
         $this->mapearWarehouses();
 
+        // UBIC-4 · extraer de los document-types las resoluciones de FACTURA
+        // VENTA (type=FV) a su propio catálogo. El modal de Ubicaciones lo
+        // lee para poblar el dropdown "Resolución DIAN para facturar".
+        $resumen['resolutions-fv'] = $this->extraerResolucionesFV();
+
         // Propagar los siigo_id a las tablas locales (impuestos, categorias,
         // listas_precios) para que los selectores del form y el PayloadBuilder
         // tengan matching directo sin depender de nombres/porcentajes.
@@ -393,6 +398,49 @@ class SiigoService
                 SiigoCatalogo::updateOrCreate(
                     ['tipo' => $tipo, 'codigo' => $codigo],
                     ['nombre' => (string) ($item['name'] ?? $item['description'] ?? $codigo), 'payload' => $item],
+                );
+                $total++;
+            }
+            return $total;
+        });
+    }
+
+    /**
+     * UBIC-4 · De los document-types ya guardados, se filtran los `type == 'FV'`
+     * (factura venta) y se re-guardan en `siigo_catalogos.tipo = 'resolutions-fv'`
+     * con un payload compacto que es lo único que el modal de Ubicaciones
+     * necesita (id/name/prefix/resolution_number/active/electronic).
+     *
+     * Esto evita que el front tenga que entender la jerarquía de document-types
+     * para pintar un simple dropdown "elegí la resolución con la que vas a facturar".
+     */
+    private function extraerResolucionesFV(): int
+    {
+        $docTypes = SiigoCatalogo::where('tipo', 'document-types')->get();
+        $total = 0;
+
+        return DB::transaction(function () use ($docTypes, &$total): int {
+            SiigoCatalogo::where('tipo', 'resolutions-fv')->delete();
+
+            foreach ($docTypes as $dt) {
+                $p = $dt->payload ?? [];
+                $tipoDoc = (string) ($p['type'] ?? '');
+                if (strtoupper($tipoDoc) !== 'FV') continue;
+                if (array_key_exists('active', $p) && $p['active'] === false) continue;
+
+                SiigoCatalogo::updateOrCreate(
+                    ['tipo' => 'resolutions-fv', 'codigo' => (string) $dt->codigo],
+                    [
+                        'nombre' => (string) ($p['name'] ?? $dt->nombre),
+                        'payload' => [
+                            'id' => (int) $dt->codigo,
+                            'name' => $p['name'] ?? null,
+                            'prefix' => $p['consecutive']['prefix'] ?? ($p['prefix'] ?? null),
+                            'resolution_number' => $p['resolution_number'] ?? null,
+                            'electronic_type' => $p['electronic_type'] ?? null,
+                            'active' => $p['active'] ?? true,
+                        ],
+                    ]
                 );
                 $total++;
             }

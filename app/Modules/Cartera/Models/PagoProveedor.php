@@ -28,6 +28,7 @@ class PagoProveedor extends Model implements AuditableContract
         'gran_contribuyente' => 'boolean',
         'siigo_response' => 'array',
         'siigo_sync_at' => 'datetime',
+        'confirmado_at' => 'datetime',
     ];
 
     public function proveedor(): BelongsTo
@@ -43,5 +44,13 @@ class PagoProveedor extends Model implements AuditableContract
     public function retenciones(): MorphMany
     {
         return $this->morphMany(RetencionAplicada::class, 'origen');
+    }
+
+    // COMP-B3 · recepción origen del pago. Permite al emisor SIIGO enlazar el
+    // voucher egreso a la factura de compra (invoice_id) para que SIIGO baje
+    // el saldo de ESA CxP específica en vez de dejarlo como ajuste suelto.
+    public function recepcion(): BelongsTo
+    {
+        return $this->belongsTo(\App\Modules\Compras\Models\RecepcionCompra::class, 'recepcion_id');
     }
 }

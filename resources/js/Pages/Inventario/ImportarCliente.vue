@@ -88,10 +88,25 @@ const enviar = (dryRun = false) => {
                     <div class="flex-1">
                         <h1 class="text-2xl font-bold">Importar inventario del cliente</h1>
                         <p class="text-sm text-surface-500 mt-1">
-                            Sube el Excel formato <strong>INVENTARIO DR REPORTE</strong> (134 productos por categoría).
+                            Sube el Excel formato <strong>INVENTARIO DR REPORTE</strong> (filas por categoría + productos).
                             Los productos se crean como <strong>agregados</strong> (colores surtidos, sin desglose por variante)
-                            con el stock inicial en la bodega que elijas.
+                            con el stock inicial en la ubicación que elijas.
                         </p>
+                    </div>
+                </div>
+
+                <!-- INV-B3 · hint explícito de la auto-creación de productos. -->
+                <div class="mt-4 p-3 rounded-lg bg-emerald-50 border-l-4 border-emerald-500 text-emerald-800 text-sm">
+                    <div class="font-semibold mb-1 flex items-center gap-1.5">
+                        <CheckCircle2 class="h-4 w-4"/>
+                        Creación automática de productos
+                    </div>
+                    <div class="text-xs leading-relaxed">
+                        Si una <strong>referencia</strong> del Excel no existe aún en el catálogo, se crea
+                        automáticamente con los defaults del Excel (nombre, categoría, stock). No necesitás
+                        crearlos manualmente antes.
+                        <strong>Tip:</strong> probá primero con el modo "Simulación (dry-run)" para ver cuántos
+                        se van a crear vs actualizar antes de aplicar.
                     </div>
                 </div>
             </div>

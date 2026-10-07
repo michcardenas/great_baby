@@ -29,7 +29,8 @@ class CarteraExtrasController extends Controller implements HasMiddleware
     {
         return [new Middleware(function (Request $r, \Closure $next) {
             $u = $r->user();
-            abort_unless($u && ($u->esAracely() || $u->hasAnyRole(['Gerente', 'Contador', 'Cobrador'])), 403);
+            // A1 FIX #10 · 'Cobrador' removido · nunca estuvo seeded, era shadow role.
+            abort_unless($u && $u->esContable(), 403);
             return $next($r);
         })];
     }
@@ -170,7 +171,7 @@ class CarteraExtrasController extends Controller implements HasMiddleware
         $nivel = strtolower((string) $s->nivel_actual);
         $puedeResolver = match ($nivel) {
             'gerencia', 'direccion' => $u->esAracely() || $u->hasRole('Gerente'),
-            default => $u->esAracely() || $u->hasAnyRole(['Cobrador', 'Contador', 'Gerente']),
+            default => $u->esContable(),  // A1 FIX #10 · 'Cobrador' era shadow role
         };
         abort_unless($puedeResolver, 403,
             "Tu rol no puede resolver solicitudes escaladas a {$nivel}. Escalar a Gerencia.");

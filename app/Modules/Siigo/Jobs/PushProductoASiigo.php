@@ -68,7 +68,11 @@ class PushProductoASiigo implements ShouldQueue
      * entre dispatch y handle).
      */
     public bool $manual = false;
-    public ?string $siigoId = null;
+    // El id de SIIGO llega indistintamente como int (de PushAsiento tests y
+    //   del Observer en delete→desactivar) o string (algunos payloads de la
+    //   UI y de reconciliación). Union type para que PHP no coacciones a
+    //   string y los tests comparen con tipo estricto.
+    public null|int|string $siigoId = null;
 
     public function __construct(
         public int $productoId,
@@ -166,7 +170,7 @@ class PushProductoASiigo implements ShouldQueue
      *
      * NO se usa desde el Observer · exclusivo para acciones humanas explícitas.
      */
-    public static function dispatchManual(int $productoId, string $accion, ?string $siigoId = null): void
+    public static function dispatchManual(int $productoId, string $accion, null|int|string $siigoId = null): void
     {
         $job = new static($productoId, $accion);
         $job->manual = true;
@@ -332,12 +336,16 @@ class PushProductoASiigo implements ShouldQueue
         // llegamos a avisar a SIIGO, restauramos el producto para que Aracely
         // pueda intentar manualmente (botón "Forzar re-sync") y no quede
         // divergencia silenciosa (local=borrado, SIIGO=vivo).
+        //
+        // A2 FIX · envolvemos en withoutEvents() para evitar el loop
+        //   restore→ProductoObserver::restored()→nuevo push a SIIGO→falla→
+        //   restore→... (reportado en auditoría A2 flujo producto medio #6).
         if (in_array($this->accion, ['eliminar', 'desactivar'], true)) {
             try {
                 $p = \App\Modules\Dropi\Models\Producto::onlyTrashed()->find($this->productoId);
                 if ($p) {
-                    $p->restore();
-                    Log::channel('siigo')->warning("Producto {$this->productoId} restaurado tras fallo de SIIGO · evita zombie inverso");
+                    \App\Modules\Dropi\Models\Producto::withoutEvents(fn () => $p->restore());
+                    Log::channel('siigo')->warning("Producto {$this->productoId} restaurado tras fallo de SIIGO (withoutEvents · evita loop restored→push)");
                 }
             } catch (\Throwable $re) {
                 Log::channel('siigo')->error("Failed to auto-restore producto {$this->productoId}: " . $re->getMessage());

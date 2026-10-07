@@ -1,13 +1,22 @@
 <script setup>
 import { ref, reactive } from 'vue';
 import { Head, Link, router } from '@inertiajs/vue3';
-import { Bell, Plus, Pencil, Trash2, Search } from 'lucide-vue-next';
+import { Bell, Plus, Pencil, Trash2, Search, Upload } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import ImportMasivoModal from '@/Components/ImportMasivoModal.vue';
 import { useEscClose } from '@/composables/useEscClose';
+
+const importMasivoAbierto = ref(false);
+const importMasivoUbicacion = ref(null);
+const importMasivoOk = () => {
+    importMasivoAbierto.value = false;
+    router.reload({ only: ['configs'] });
+};
 
 const props = defineProps({
     alertas: { type: Object, required: true },
     ubicaciones: { type: Array, default: () => [] },
+    can_importar_alertas: { type: Boolean, default: false },
 });
 
 const modal = ref(false);
@@ -93,8 +102,26 @@ const eliminar = (a) => {
         <div class="space-y-4">
             <div class="flex items-start justify-between flex-wrap gap-3">
                 <h1 class="text-2xl font-bold flex items-center gap-2"><Bell class="h-6 w-6 text-brand-600"/>Alertas de stock</h1>
-                <button @click="abrirCrear" class="btn-primary min-h-11"><Plus class="h-4 w-4"/> Nueva alerta</button>
+                <div class="flex items-center gap-2">
+                    <!-- FIX-S0 · gate: solo gerencia carga alertas masivas -->
+                    <button v-if="can_importar_alertas" @click="importMasivoAbierto = true" class="text-sm inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-emerald-500 text-emerald-700 hover:bg-emerald-50 min-h-11"
+                            title="Cargar alertas en lote desde Excel">
+                        <Upload class="h-4 w-4"/> Importar Excel
+                    </button>
+                    <button @click="abrirCrear" class="btn-primary min-h-11"><Plus class="h-4 w-4"/> Nueva alerta</button>
+                </div>
             </div>
+
+            <ImportMasivoModal
+                :abierto="importMasivoAbierto"
+                endpoint="/app/inventario/alertas/importar"
+                tipo="alerta"
+                titulo="Importar alertas de stock"
+                ayuda="Columna A: SKU/referencia · Columna B: stock mínimo · Columna C (opcional): stock máximo. Si eliges una ubicación abajo, se aplicará sólo a esa; vacío = alerta global."
+                :extraPayload="{ ubicacion_id: importMasivoUbicacion }"
+                @cerrar="importMasivoAbierto = false"
+                @ok="importMasivoOk"
+            />
 
             <div v-if="$page.props.flash?.success" class="p-3 rounded-lg bg-emerald-500/15 border-l-4 border-emerald-500 text-emerald-700 text-sm">
                 {{ $page.props.flash.success }}

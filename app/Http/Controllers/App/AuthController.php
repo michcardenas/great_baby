@@ -32,7 +32,21 @@ class AuthController extends Controller
         }
 
         $request->session()->regenerate();
-        return redirect()->intended('/app');
+
+        $u = $request->user();
+        $home = $u->rutaInicial();
+
+        // `intended` recuerda la última URL que el visitante intentó abrir, y
+        // puede ser una que su rol no tiene permitida (quedaba entrando a un
+        // 403 recién logueado). Sólo la respetamos para los perfiles que ven
+        // todo el sistema; los demás van siempre a su pantalla de trabajo.
+        $puedeDeepLink = $u->esAracely() || $u->hasRole('Gerente');
+        if (! $puedeDeepLink) {
+            $request->session()->forget('url.intended');
+            return redirect($home);
+        }
+
+        return redirect()->intended($home);
     }
 
     public function logout(Request $request): RedirectResponse

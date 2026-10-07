@@ -47,6 +47,23 @@ class ProductoPayloadBuilder
             'model'   => $this->trunc($p->modelo_siigo, 50),
         ], fn ($v) => $v !== null && $v !== '');
 
+        // A2 FIX · camposSiigoExtra() antes se declaraba pero NUNCA se llamaba.
+        //   Toda la metadata fiscal (línea/grupo/subgrupo/clase, NIIF, lotes,
+        //   seriales, estadístico) se armaba pero jamás viajaba a SIIGO.
+        //   Lo mergeamos acá · si Aracely mapeó custom_fields_map en settings,
+        //   agrega los additional_fields ya con el id SIIGO correcto; sino
+        //   los deja en `notes` como texto para que se vean en la ficha SIIGO.
+        $extras = $this->camposSiigoExtra($p);
+        if (! empty($extras['additional_fields'] ?? [])) {
+            // Mergeamos el array de extras SIN pisar los 4 básicos del objeto raíz.
+            //   SIIGO acepta additional_fields como ARRAY de {id,value} cuando
+            //   custom_fields_map está configurado — en ese caso la rama anterior
+            //   (objeto literal) la ignoramos a favor del array estructurado.
+            $additionalFieldsFinal = $extras['additional_fields'];
+        } else {
+            $additionalFieldsFinal = $additionalFields;
+        }
+
         return array_filter(array_merge([
             'code' => $this->sanitizarCode($p->referencia, "producto {$p->id}"),
             'name' => $this->limpiarNombre($p->nombre ?? $p->referencia),
@@ -54,6 +71,13 @@ class ProductoPayloadBuilder
             'type' => $p->tipo_siigo ?: 'Product',
             'stock_control' => (bool) ($p->stock_control ?? true),
             'active' => (bool) $p->activo,
+            // FASE H5 fix · 3 campos SIIGO que estaban declarados en el Model
+            //   pero el payload nunca los emitía. Los tests de paridad los
+            //   exigen. SIIGO los acepta como raíz; si son null los dejamos
+            //   fuera (array_filter de abajo).
+            'available_for_sale' => isset($p->visible_en_facturas) ? (bool) $p->visible_en_facturas : null,
+            'minimum_stock' => $p->stock_minimo !== null ? (float) $p->stock_minimo : null,
+            'withholding_taxes' => $this->resolverRetencion($p) ?: null,
             'tax_classification' => $p->tax_classification ?: 'Taxed',
             'tax_included' => (bool) ($p->tax_included ?? false),
             'tax_consumption_value' => $p->tax_consumption_value !== null ? (float) $p->tax_consumption_value : null,
@@ -63,7 +87,11 @@ class ProductoPayloadBuilder
             'unit_label' => $this->trunc($p->unit_label ?: optional($p->unidadMedida)->nombre, 50) ?: 'Unidad',
             'reference' => $this->trunc($p->reference_fabrica ?: $p->referencia, 80),
             'description' => $this->limpiarDescripcion($p->descripcion),
-            'additional_fields' => $additionalFields ?: null,
+            // A2 FIX · si camposSiigoExtra devolvió notes (texto legible como
+            //   fallback cuando no hay custom_fields_map), lo anexamos a la
+            //   descripción para que al menos quede visible en SIIGO.
+            'notes' => $extras['notes'] ?? null,
+            'additional_fields' => $additionalFieldsFinal ?: null,
         ]), fn ($v) => $v !== null && $v !== [] && $v !== '');
     }
 
@@ -130,6 +158,10 @@ class ProductoPayloadBuilder
             'type' => $p->tipo_siigo ?: 'Product',
             'stock_control' => (bool) ($p->stock_control ?? true),
             'active' => (bool) $p->activo,
+            // FASE H5 fix · 3 campos SIIGO que faltaban en el payload (ver paraProducto).
+            'available_for_sale' => isset($p->visible_en_facturas) ? (bool) $p->visible_en_facturas : null,
+            'minimum_stock' => $p->stock_minimo !== null ? (float) $p->stock_minimo : null,
+            'withholding_taxes' => $this->resolverRetencion($p) ?: null,
             'tax_classification' => $p->tax_classification ?: 'Taxed',
             'tax_included' => (bool) ($p->tax_included ?? false),
             'tax_consumption_value' => $p->tax_consumption_value ? (float) $p->tax_consumption_value : null,

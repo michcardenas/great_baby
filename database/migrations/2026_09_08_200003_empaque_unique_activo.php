@@ -17,7 +17,7 @@ return new class extends Migration {
         // Antes de agregar el índice, limpiar duplicados en_curso si existen (idempotencia).
         DB::statement("
             UPDATE empaques_registro
-            SET estado = 'anulado', fin_at = NOW()
+            SET estado = 'anulado', fin_at = CURRENT_TIMESTAMP
             WHERE estado = 'en_curso'
               AND id NOT IN (
                 SELECT id FROM (

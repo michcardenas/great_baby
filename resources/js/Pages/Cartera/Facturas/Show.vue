@@ -1,7 +1,8 @@
 <script setup>
-import { Head, Link } from '@inertiajs/vue3';
+import { ref } from 'vue';
+import { Head, Link, router, usePage } from '@inertiajs/vue3';
 import { useMoney } from '@/composables/useMoney';
-import { ArrowLeft, Download, Phone, Mail, MapPin, User, FileText, CreditCard, QrCode } from 'lucide-vue-next';
+import { ArrowLeft, Download, Phone, Mail, MapPin, User, FileText, CreditCard, QrCode, Send, XCircle, FileCode, AlertTriangle } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 
 const props = defineProps({
@@ -39,6 +40,34 @@ const copiarUrl = async () => {
         window.dispatchEvent(new CustomEvent('gb:ok', { detail: { mensaje: 'Enlace copiado' } }));
     } catch (e) {}
 };
+
+// ─── Acciones SIIGO sobre factura ────────────────────────────────────
+const esRoot = (usePage().props?.auth?.user?.roles ?? []).some(r =>
+    ['Aracely', 'Gerencia'].includes(r?.name ?? r));
+
+const erroresDian = ref(null);
+const consultandoDian = ref(false);
+
+const reenviarMail = () => {
+    const email = window.prompt('Reenviar factura a email:', props.contacto?.email ?? '');
+    if (! email) return;
+    router.post(`/app/facturas/${props.factura.id}/siigo/reenviar-mail`, { email }, { preserveScroll: true });
+};
+const consultarErroresDian = async () => {
+    consultandoDian.value = true;
+    try {
+        const r = await fetch(`/app/facturas/${props.factura.id}/siigo/errores-dian`);
+        erroresDian.value = await r.json();
+    } catch (e) {
+        erroresDian.value = { ok: false, mensaje: e.message };
+    } finally {
+        consultandoDian.value = false;
+    }
+};
+const anularFactura = () => {
+    if (! window.confirm(`¿Anular en SIIGO la factura ${props.factura.numero}?\n\nSolo se puede anular dentro de las 72h de emisión. Después de ese plazo, usar nota crédito.`)) return;
+    router.post(`/app/facturas/${props.factura.id}/siigo/anular`, {}, { preserveScroll: true });
+};
 </script>
 
 <template>
@@ -59,14 +88,61 @@ const copiarUrl = async () => {
                         </span>
                     </h1>
                 </div>
-                <div class="flex items-center gap-2">
+                <div class="flex items-center gap-2 flex-wrap justify-end">
+                    <!-- PDF local (dompdf) · siempre disponible -->
                     <a :href="`/cartera/factura/${factura.id}/pdf`" target="_blank" class="btn-secondary text-sm">
-                        <Download class="h-4 w-4"/> PDF
+                        <Download class="h-4 w-4"/> PDF local
                     </a>
+
+                    <!-- Acciones SIIGO · solo si la factura ya se emitió a SIIGO -->
+                    <template v-if="factura.siigo_id || factura.numero_siigo">
+                        <a :href="`/app/facturas/${factura.id}/siigo/pdf`" target="_blank"
+                           class="btn-secondary text-sm bg-blue-50 hover:bg-blue-100 text-blue-700" title="PDF oficial SIIGO con QR DIAN">
+                            <Download class="h-4 w-4"/> PDF DIAN
+                        </a>
+                        <a :href="`/app/facturas/${factura.id}/siigo/xml`"
+                           class="btn-secondary text-sm bg-slate-50 hover:bg-slate-100 text-slate-700" title="XML DIAN para archivo contable">
+                            <FileCode class="h-4 w-4"/> XML
+                        </a>
+                        <button @click="reenviarMail"
+                                class="btn-secondary text-sm bg-indigo-50 hover:bg-indigo-100 text-indigo-700">
+                            <Mail class="h-4 w-4"/> Reenviar mail
+                        </button>
+                        <button @click="consultarErroresDian" :disabled="consultandoDian"
+                                class="btn-secondary text-sm bg-amber-50 hover:bg-amber-100 text-amber-800">
+                            <AlertTriangle class="h-4 w-4"/> Errores DIAN
+                        </button>
+                        <button v-if="esRoot && factura.estado !== 'anulada'" @click="anularFactura"
+                                class="btn-secondary text-sm bg-red-50 hover:bg-red-100 text-red-700" title="Anular factura en SIIGO · solo primeras 72h">
+                            <XCircle class="h-4 w-4"/> Anular SIIGO
+                        </button>
+                    </template>
+
                     <button v-if="contacto?.telefono && factura.saldo > 0" @click="abrirWhatsApp"
                             class="btn-primary text-sm bg-emerald-600 hover:bg-emerald-700">
                         <Phone class="h-4 w-4"/> Cobrar por WhatsApp
                     </button>
+                </div>
+
+                <!-- Modal errores DIAN -->
+                <div v-if="erroresDian" class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+                     @click.self="erroresDian = null">
+                    <div class="bg-white dark:bg-surface-900 rounded-xl shadow-xl max-w-xl w-full p-5">
+                        <h3 class="font-semibold mb-3 flex items-center gap-2">
+                            <AlertTriangle class="h-5 w-5 text-amber-600"/> Errores DIAN · {{ factura.numero }}
+                        </h3>
+                        <div v-if="erroresDian.ok === false" class="text-sm p-3 bg-red-50 border-l-4 border-red-500 rounded">
+                            <b>Error consultando SIIGO:</b> {{ erroresDian.mensaje }}
+                        </div>
+                        <div v-else-if="erroresDian.errores?.sin_siigo || erroresDian.errores?.sin_errores"
+                             class="text-sm p-3 bg-emerald-50 border-l-4 border-emerald-500 rounded">
+                            ✓ {{ erroresDian.errores.mensaje }}
+                        </div>
+                        <pre v-else class="text-xs bg-surface-100 p-3 rounded overflow-x-auto max-h-96">{{ JSON.stringify(erroresDian.errores, null, 2) }}</pre>
+                        <div class="mt-4 text-right">
+                            <button @click="erroresDian = null" class="btn-secondary text-sm">Cerrar</button>
+                        </div>
+                    </div>
                 </div>
             </div>
 

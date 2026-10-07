@@ -208,6 +208,14 @@ class LiquidarImportacion
 
             RegistrarAsientoCompra::make()->liquidacion($importacion);
 
+            // BUG-IMP · tras cerrar los MovimientosContable locales, encolamos
+            // el journal consolidado a SIIGO. Antes el 1465→1435 + IVA 1355 +
+            // CxP agencia solo quedaban locales, nunca llegaban a SIIGO.
+            // afterCommit evita que el push dispare si la liquidación revierte.
+            \Illuminate\Support\Facades\DB::afterCommit(function () use ($importacion) {
+                \App\Modules\Siigo\Jobs\PushLiquidacionImportacionASiigo::dispatch($importacion->id);
+            });
+
             return $importacion->fresh(['ordenes', 'gastos', 'lineas']);
         });
     }

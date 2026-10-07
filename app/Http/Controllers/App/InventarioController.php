@@ -21,7 +21,9 @@ class InventarioController extends Controller implements HasMiddleware
     {
         return [
             new Middleware(function (Request $r, \Closure $next) {
-                abort_unless($r->user()?->esAracely(), 403);
+                // LOG · Inventario es la casa del AdminBodega. Antes solo Aracely
+                //   entraba y Jorge recibía 403 en todo /app/inventario/*.
+                abort_unless($r->user()?->esEquipoBodega(), 403);
                 return $next($r);
             }),
         ];
@@ -41,9 +43,20 @@ class InventarioController extends Controller implements HasMiddleware
 
     private function kpis(): array
     {
-        $stockTotal = Schema::hasTable('inventario_movimientos')
-            ? (int) DB::table('inventario_movimientos')->sum('cantidad')
-            : 0;
+        // INV-A4 · stock total correcto · antes se hacía SUM(cantidad) sobre
+        // TODA la tabla, lo que arrastraba traslados en tránsito (una salida
+        // -X sin entrada +X todavía) e inflaba el número con reversas. Ahora
+        // agrupamos por (sujeto, ubicacion) y descartamos buckets negativos:
+        // el stock físico es la suma de todas las posiciones con saldo > 0.
+        $stockTotal = 0;
+        if (Schema::hasTable('inventario_movimientos')) {
+            $saldos = DB::table('inventario_movimientos')
+                ->selectRaw('COALESCE(variante_id, 0) as v, COALESCE(producto_id, 0) as p, ubicacion_id, SUM(cantidad) as saldo')
+                ->groupBy('v', 'p', 'ubicacion_id')
+                ->havingRaw('SUM(cantidad) > 0')
+                ->pluck('saldo');
+            $stockTotal = (int) $saldos->sum();
+        }
 
         return [
             'unidades_stock' => $stockTotal,

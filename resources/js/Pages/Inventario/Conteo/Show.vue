@@ -1,9 +1,14 @@
 <script setup>
 import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue';
 import { Head, Link, router } from '@inertiajs/vue3';
-import { ClipboardList, ArrowLeft, Play, Save, CheckCircle2, Search } from 'lucide-vue-next';
+import { ClipboardList, ArrowLeft, Play, Save, CheckCircle2, Search, Upload } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import ImportMasivoModal from '@/Components/ImportMasivoModal.vue';
 import { useFecha } from '@/composables/useFecha';
+
+const importMasivoAbierto = ref(false);
+const abrirImportMasivo = () => { importMasivoAbierto.value = true; };
+const importMasivoOk = () => { importMasivoAbierto.value = false; router.reload({ only: ['toma'] }); };
 
 const props = defineProps({ toma: { type: Object, required: true } });
 const { fechaCorta } = useFecha();
@@ -184,8 +189,21 @@ onMounted(() => {
                         inputmode="numeric"
                     />
                     <button @click="focoBarras" class="btn-ghost text-xs">Enfocar escáner</button>
+                    <button @click="abrirImportMasivo" class="text-xs inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-emerald-500 text-emerald-700 hover:bg-emerald-50"
+                            title="Importar cantidades contadas en lote desde Excel">
+                        <Upload class="h-3.5 w-3.5"/> Importar Excel
+                    </button>
                 </div>
             </div>
+            <ImportMasivoModal
+                :abierto="importMasivoAbierto"
+                :endpoint="`/app/inventario/conteos/${toma.id}/importar`"
+                tipo="conteo"
+                titulo="Importar cantidades contadas"
+                ayuda="Columna A: SKU/código de barras · Columna B: cantidad contada. Sólo actualiza los items ya cargados en esta toma."
+                @cerrar="importMasivoAbierto = false"
+                @ok="importMasivoOk"
+            />
 
             <!-- Tabla captura -->
             <div v-if="toma.items.length" class="card overflow-x-auto">

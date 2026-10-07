@@ -7,6 +7,7 @@ use App\Modules\Compras\Models\OrdenCompra;
 use App\Modules\Compras\Models\OrdenCompraItem;
 use App\Modules\Compras\Models\RecepcionCompra;
 use App\Modules\Dropi\Models\InventarioMovimiento;
+use App\Modules\Siigo\Jobs\PushRecepcionASiigo;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use Lorisleiva\Actions\Concerns\AsAction;
@@ -110,6 +111,15 @@ class RecibirMercancia
             $this->actualizarEstadoOrden($recepcion->orden);
 
             RegistrarAsientoCompra::make()->recepcion($recepcion);
+
+            // COMP-B7 · push automático a SIIGO como factura de compra al
+            // confirmar · evita el estado "recepciones sin SIIGO" que requería
+            // que Aracely entrara una por una a reenviar manual. El job
+            // respeta el kill-switch global y se encola después del commit
+            // para no disparar si la tx se revierte.
+            DB::afterCommit(function () use ($recepcion) {
+                PushRecepcionASiigo::dispatch($recepcion->id);
+            });
 
             return $recepcion->fresh(['items', 'orden']);
         });

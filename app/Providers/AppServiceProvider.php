@@ -54,11 +54,26 @@ class AppServiceProvider extends ServiceProvider
         });
 
         // SIIGO API · respeta el rate limit por empresa (100 req/min en prod,
-        //   10 req/min en cuenta de pruebas). Usado por PushProductoASiigo::middleware.
+        //   10 req/min en sandbox/pruebas). Usado por PushProductoASiigo::middleware.
         //   Cuando se excede, el job se libera con delay = tiempo hasta el próximo
         //   slot disponible (Laravel calcula esto automáticamente).
+        //
+        //   Fuente de verdad del límite (prioridad):
+        //     1. env SIIGO_RATE_LIMIT_PER_MIN (override explícito)
+        //     2. siigo_configs.ambiente='sandbox' → 10, 'produccion' → 100
+        //     3. default 100 si aún no hay config
         RateLimiter::for('siigo-api', function () {
-            return Limit::perMinute((int) config('siigo.rate_limit_per_min', 100));
+            $explicit = env('SIIGO_RATE_LIMIT_PER_MIN');
+            if ($explicit !== null && $explicit !== '') {
+                return Limit::perMinute((int) $explicit);
+            }
+            try {
+                $ambiente = \App\Modules\Siigo\Models\SiigoConfig::query()->value('ambiente');
+                $perMin = $ambiente === 'sandbox' ? 10 : 100;
+            } catch (\Throwable) {
+                $perMin = 100;
+            }
+            return Limit::perMinute($perMin);
         });
     }
 }

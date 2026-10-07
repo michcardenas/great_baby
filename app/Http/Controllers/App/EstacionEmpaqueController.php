@@ -30,7 +30,8 @@ class EstacionEmpaqueController extends Controller implements HasMiddleware
         return [
             new Middleware(function (Request $r, \Closure $next) {
                 $u = $r->user();
-                abort_unless($u && ($u->esAracely() || $u->hasAnyRole(['Alistador'])), 403);
+                // A1 FIX · AdminBodega llegaba desde el sidebar y recibía 403.
+                abort_unless($u && ($u->esAracely() || $u->hasAnyRole(['Alistador', 'AdminBodega'])), 403);
                 return $next($r);
             }),
         ];

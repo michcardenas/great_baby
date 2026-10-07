@@ -26,6 +26,10 @@ class RecepcionCompra extends Model implements AuditableContract
         'fecha_recepcion' => 'date',
         'confirmada_at' => 'datetime',
         'total_recibido' => 'decimal:2',
+        // Sin este cast llegaba como texto y el badge SIIGO de /app/compras
+        // reventaba con "Call to a member function diffInHours() on string".
+        // No se veía porque ninguna recepción había llegado a SIIGO todavía.
+        'siigo_sync_at' => 'datetime',
     ];
 
     /**
@@ -38,7 +42,17 @@ class RecepcionCompra extends Model implements AuditableContract
             if (! $rc->exists) return;
             if ($rc->getOriginal('estado') !== 'confirmada') return;
 
-            $mutables = ['observaciones', 'updated_at'];
+            // Los campos de integración se escriben DESPUÉS de confirmar, que es
+            // cuando la recepción viaja a SIIGO. Dejarlos fuera de la lista hacía
+            // que ninguna recepción confirmada pudiera guardar su `siigo_id`: la
+            // factura de compra se creaba en SIIGO, el ERP no podía marcarla y el
+            // job la reintentaba para siempre, con riesgo de duplicarla allá.
+            // No tocan importes ni estado, así que no abren la puerta que este
+            // guard vino a cerrar.
+            $mutables = [
+                'observaciones', 'updated_at',
+                'siigo_id', 'siigo_number', 'siigo_sync_at', 'siigo_response', 'siigo_error',
+            ];
             foreach ($rc->getDirty() as $campo => $_) {
                 if (! in_array($campo, $mutables, true)) {
                     throw new \RuntimeException(sprintf(
