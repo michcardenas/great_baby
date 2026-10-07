@@ -47,6 +47,11 @@ class HandleInertiaRequests extends Middleware
                     'roles' => $user->getRoleNames()->all(),
                     'es_aracely' => method_exists($user, 'esAracely') && $user->esAracely(),
                 ] : null,
+                // Qué puede abrir en el menú. Se calcula con la misma expresión
+                // que usa el controller de cada ruta (ver App\Auth\MenuApp), así
+                // el sidebar no puede ofrecer algo que después responda 403 —
+                // que era lo que pasaba con las listas de roles del Vue.
+                'menu' => $user ? \App\Auth\MenuApp::clavesDe($user) : [],
                 'cliente' => $cliente ? [
                     'id' => $cliente->id,
                     'email' => $cliente->email,
@@ -68,6 +73,8 @@ class HandleInertiaRequests extends Middleware
                 'empaqueResultado' => fn () => $request->session()->get('empaqueResultado'),
                 'errores' => fn () => $request->session()->get('errores'),
                 'importResumen' => fn () => $request->session()->get('importResumen'),
+                // Enlace al Excel que SIIGO acaba de generar (balance de prueba).
+                'siigo_reporte_url' => fn () => $request->session()->get('siigo_reporte_url'),
             ],
             'app' => [
                 'name' => config('app.name'),

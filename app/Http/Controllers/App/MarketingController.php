@@ -22,7 +22,11 @@ class MarketingController extends Controller implements HasMiddleware
     public static function middleware(): array
     {
         return [new Middleware(function (Request $r, \Closure $next) {
-            abort_unless($r->user()?->esAracely(), 403);
+            // Era `esAracely()` fijo: el rol Marketing veía la parrilla en el
+            // menú y recibía 403. Ahora es un permiso propio —hoy sólo de
+            // gerencia, igual que antes— que se le puede dar a Marketing desde
+            // /app/roles sin tocar código.
+            abort_unless(\App\Auth\Permisos::puede($r->user(), 'marketing_parrilla'), 403);
             return $next($r);
         })];
     }

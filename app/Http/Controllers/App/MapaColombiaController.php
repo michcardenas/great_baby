@@ -18,7 +18,12 @@ class MapaColombiaController extends Controller implements HasMiddleware
     public static function middleware(): array
     {
         return [new Middleware(function (Request $r, \Closure $next) {
-            abort_unless($r->user()?->esAracely(), 403);
+            // LOG · El Mapa de Colombia también es útil para el AdminBodega
+            //   (ve el calor de despachos por ciudad desde su propia bodega).
+            //   Tiene sección propia (`mapa_colombia`, sembrada con AdminBodega
+            //   y Gerente) en vez de la mezcla `esEquipoBodega() || hasAnyRole`,
+            //   que no se podía cambiar sin tocar código.
+            abort_unless(\App\Auth\Permisos::puede($r->user(), 'mapa_colombia'), 403);
             return $next($r);
         })];
     }

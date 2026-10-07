@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed } from 'vue';
-import { Head, router, Link } from '@inertiajs/vue3';
+import { Head, router, Link, usePage } from '@inertiajs/vue3';
 import { useMoney } from '@/composables/useMoney';
 import { useIntervalFn } from '@vueuse/core';
 import { Wallet, TrendingUp, AlertCircle, Calendar, Phone, ExternalLink, FileText } from 'lucide-vue-next';
@@ -8,6 +8,11 @@ import AppLayout from '@/Layouts/AppLayout.vue';
 import KpiCard from '@/Components/KpiCard.vue';
 import LineChart from '@/Components/LineChart.vue';
 import DoughnutChart from '@/Components/DoughnutChart.vue';
+
+// `auth.menu` trae lo que esta persona puede abrir de verdad (App\Auth\MenuApp),
+// así los enlaces dentro de las pantallas se esconden con el mismo criterio que
+// el menú y no mandan a nadie a un 403.
+const puedeReglas = computed(() => (usePage().props.auth?.menu || []).includes('configuracion'));
 
 const props = defineProps({
     semaforo: { type: Object, required: true },
@@ -100,8 +105,16 @@ const abrirWhatsApp = (telefono, nombre, saldo, dias) => {
                         :values="semaforo.data"
                         :colors="semaforo.colors"
                         height="200px"/>
+                    <!-- `/app/reglas` es sólo de gerencia: a la Contadora este
+                         enlace le respondía 403. Se muestra a quien puede abrirlo
+                         y al resto se le dice a quién pedírselo. -->
                     <div class="text-xs text-surface-500 mt-3 text-center">
-                        Umbrales configurables en <Link href="/app/reglas" class="text-brand-600 hover:underline">Reglas</Link>
+                        <template v-if="puedeReglas">
+                            Umbrales configurables en <Link href="/app/reglas" class="text-brand-600 hover:underline">Reglas</Link>
+                        </template>
+                        <template v-else>
+                            Umbrales de antigüedad definidos por gerencia.
+                        </template>
                     </div>
                 </div>
 

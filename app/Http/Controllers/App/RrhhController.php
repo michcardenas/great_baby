@@ -24,7 +24,11 @@ class RrhhController extends Controller implements HasMiddleware
     {
         return [new Middleware(function (Request $r, \Closure $next) {
             $u = $r->user();
-            abort_unless($u && ($u->esAracely() || $u->hasAnyRole(['Gerente', 'RRHH'])), 403);
+            // A1 FIX #10 · 'RRHH' removido · nunca estuvo seeded, era shadow role.
+            //   Era `hasRole('Gerente')` fijo; ahora va por la sección `rrhh`,
+            //   sembrada con el mismo rol, para que se pueda delegar desde la
+            //   pantalla de Roles sin tocar código.
+            abort_unless(\App\Auth\Permisos::puede($u, 'rrhh'), 403);
             return $next($r);
         })];
     }
