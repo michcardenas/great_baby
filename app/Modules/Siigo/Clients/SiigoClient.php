@@ -46,6 +46,8 @@ class SiigoClient
         }
 
         if (empty($this->config->username) || empty($this->config->access_key)) {
+            $this->registrarAuth(false, 'Credenciales SIIGO no configuradas.');
+
             throw new RuntimeException('Credenciales SIIGO no configuradas.');
         }
 
@@ -61,6 +63,12 @@ class SiigoClient
                 'status' => $response->status(),
                 'body' => $this->sanitizarRespuesta($response->body()),
             ]);
+
+            // Se deja constancia del fallo para que la pantalla de integración
+            // muestre el estado REAL. Antes decía «Activa» en verde con las
+            // credenciales vencidas y nadie se enteraba de que no salía nada.
+            $this->registrarAuth(false, 'HTTP '.$response->status().' · '.$this->motivoDe($response));
+
             throw new RuntimeException('Fallo autenticando contra SIIGO: HTTP '.$response->status());
         }
 
@@ -70,17 +78,60 @@ class SiigoClient
         $this->config->forceFill([
             'token_cache' => $token,
             'token_expires_at' => now()->addSeconds(max(60, $expiresIn - 30)),
+            'ultimo_auth_ok' => true,
+            'ultimo_auth_at' => now(),
+            'ultimo_auth_error' => null,
         ])->save();
 
         return $token;
     }
 
     /**
+     * Deja escrito el resultado del último intento de autenticación.
+     *
+     * Es lo que alimenta la tarjeta «Estado» de la pantalla de integración, que
+     * antes leía la casilla `activo` y por eso mostraba verde aunque SIIGO
+     * estuviera devolviendo 401 en cada llamada.
+     *
+     * Nunca tumba la operación: si por lo que sea no se puede escribir, el
+     * error original tiene que seguir su camino.
+     */
+    private function registrarAuth(bool $ok, ?string $error = null): void
+    {
+        try {
+            $this->config->forceFill([
+                'ultimo_auth_ok' => $ok,
+                'ultimo_auth_at' => now(),
+                'ultimo_auth_error' => $error ? mb_substr($error, 0, 200) : null,
+            ])->save();
+        } catch (\Throwable) {
+            // columna aún sin migrar o BD de solo lectura · no es crítico
+        }
+    }
+
+    /** Motivo legible que manda SIIGO, sin exponer la credencial. */
+    private function motivoDe(\Illuminate\Http\Client\Response $r): string
+    {
+        $msg = $r->json('errors.0.message') ?? $r->json('message') ?? '';
+
+        return $msg !== ''
+            ? (string) $msg
+            : 'SIIGO rechazó las credenciales. Revisá usuario y access key en el portal de SIIGO.';
+    }
+
+    /**
      * Ejecuta un request autenticado con reintento inteligente.
      *
      * @param  array<string, mixed>  $payload
+     * @param  ?string  $idempotencyKey  Opcional · clave estable del documento
+     *     origen (ej. "dev:1"). Se hashea a ≤28 chars (SIIGO exige ≤30 y
+     *     alfanumérico sin especiales). Si el reintento repite la misma clave,
+     *     SIIGO devuelve el documento previo en vez de duplicarlo. Solo tiene
+     *     efecto en POST a /v1/journals, /v1/invoices, /v1/credit-notes y
+     *     /v1/vouchers (en /purchases y /payment-receipts SIIGO no lo soporta,
+     *     el header se envía sin efecto pero no rompe).
      */
-    public function request(string $method, string $path, array $payload = [], int $intento = 1): Response
+    public function request(string $method, string $path, array $payload = [], int $intento = 1, ?string $idempotencyKey = null): Response
     {
         // Modo FAKE · responde OK simulando SIIGO sin tocar la API real.
         // Perfecto para demos con el cliente antes de tener credenciales.
@@ -92,14 +143,31 @@ class SiigoClient
         $method = strtoupper($method);
         $url = rtrim(self::BASE_URL, '/').'/'.ltrim($path, '/');
 
-        $pending = $this->cliente($token);
+        $sinCuerpo = in_array($method, ['GET', 'DELETE'], true);
+
+        // Los callers escriben el path con la query ya puesta
+        // (ej. `/v1/document-types?type=FV`). La separamos para que Laravel la
+        // mande como parámetros y no la duplique al fusionarla con $payload.
+        $query = [];
+        if ($sinCuerpo && str_contains($url, '?')) {
+            [$url, $qs] = explode('?', $url, 2);
+            parse_str($qs, $query);
+        }
+
+        $pending = $this->cliente($token, ! $sinCuerpo);
+
+        // SIIGO exige Idempotency-Key alfanumérico ≤30 chars; UUID (36) es rechazado.
+        if ($method === 'POST' && $idempotencyKey !== null && $idempotencyKey !== '') {
+            $safeKey = 'gb'.substr(sha1($idempotencyKey), 0, 28); // 2+28=30
+            $pending = $pending->withHeaders(['Idempotency-Key' => $safeKey]);
+        }
 
         $response = match ($method) {
-            'GET' => $pending->get($url, $payload),
+            'GET' => $pending->get($url, array_merge($query, $payload)),
             'POST' => $pending->post($url, $payload),
             'PUT' => $pending->put($url, $payload),
             'PATCH' => $pending->patch($url, $payload),
-            'DELETE' => $pending->delete($url, $payload),
+            'DELETE' => $pending->delete($url, array_merge($query, $payload)),
             default => throw new RuntimeException("Método HTTP no soportado: {$method}"),
         };
 
@@ -125,6 +193,7 @@ class SiigoClient
                 'status' => $response->status(),
                 'body' => $this->sanitizarRespuesta($response->body()),
             ]);
+            $this->registrarCuentaRechazada($response);
         }
 
         return $response;
@@ -189,7 +258,14 @@ class SiigoClient
         return new Response(new \GuzzleHttp\Psr7\Response(200, ['Content-Type' => 'application/json'], json_encode($body)));
     }
 
-    private function cliente(string $token): PendingRequest
+    /**
+     * @param  bool  $conCuerpoJson  Sólo para métodos que mandan payload. En GET
+     *     y DELETE NO debe activarse: `asJson()` fija `Content-Type: application/json`
+     *     y Laravel manda un cuerpo vacío `[]`, que SIIGO responde con HTTP 400.
+     *     Ese era el motivo de que `/v1/document-types?type=FV` fallara desde el
+     *     ERP y funcionara con un curl normal.
+     */
+    private function cliente(string $token, bool $conCuerpoJson = true): PendingRequest
     {
         $headers = [
             'Authorization' => 'Bearer '.$token,
@@ -200,9 +276,11 @@ class SiigoClient
             $headers['Partner-Id'] = (string) $this->config->partner_id;
         }
 
-        return Http::withHeaders($headers)
+        $req = Http::withHeaders($headers)
             ->timeout(self::TIMEOUT_SEGUNDOS)
-            ->acceptJson()->asJson();
+            ->acceptJson();
+
+        return $conCuerpoJson ? $req->asJson() : $req;
     }
 
     private function tokenEsVigente(): bool
@@ -218,6 +296,48 @@ class SiigoClient
         $this->config->forceFill([
             'token_cache' => null, 'token_expires_at' => null,
         ])->save();
+    }
+
+    /**
+     * Deja registrada la cuenta contable que SIIGO acaba de rechazar.
+     *
+     * SIIGO es el único que sabe qué cuentas acepta (no publica su plan de
+     * cuentas por API), y ese dato se perdía dentro del log técnico de un job:
+     * la contadora veía "falló" sin saber qué mapear. Guardándolo en
+     * `siigo_sync_log` con recurso `cuentas_rechazadas`, la pantalla de
+     * validación PUC puede listar exactamente qué cuentas hay que mapear.
+     */
+    private function registrarCuentaRechazada(Response $response): void
+    {
+        $json = $response->json();
+        if (! is_array($json)) {
+            return;
+        }
+
+        $errores = $json['Errors'] ?? $json['errors'] ?? [];
+        foreach ($errores as $e) {
+            $code = mb_strtolower((string) ($e['Code'] ?? $e['code'] ?? ''));
+            if (! in_array($code, ['account_not_allowed', 'invalid_reference', 'account_settings'], true)) {
+                continue;
+            }
+
+            $mensaje = (string) ($e['Message'] ?? $e['message'] ?? '');
+            // Los mensajes traen el código entre texto: "The code 11100501 cannot be used…"
+            if (! preg_match('/\b(\d{4,12})\b/', $mensaje, $m)) {
+                continue;
+            }
+
+            try {
+                \App\Modules\Siigo\Models\SiigoSyncLog::create([
+                    'recurso' => 'cuentas_rechazadas',
+                    'estado' => 'fallido',
+                    'mensaje' => "SIIGO no acepta la cuenta {$m[1]}: {$mensaje}",
+                    'detalle' => ['cuenta' => $m[1], 'code' => $code],
+                ]);
+            } catch (\Throwable) {
+                // Nunca romper la petición original por no poder dejar el registro.
+            }
+        }
     }
 
     /**

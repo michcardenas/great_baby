@@ -33,19 +33,30 @@ class BusquedaGlobalController extends Controller implements HasMiddleware
 
         $out = [];
         $like = "%{$q}%";
+        $u = $request->user();
+
+        // El buscador no puede ser una puerta trasera: antes bastaba estar
+        // autenticado para enumerar la cartera y el libro de clientes letra por
+        // letra, sin importar los permisos del rol. Cada bloque pide el mismo
+        // permiso que la pantalla a la que lleva.
+        $puedeFacturas = \App\Auth\Permisos::puede($u, 'facturas');
+        $puedeContactos = \App\Auth\Permisos::puede($u, 'contactos');
 
         // Facturas por número
-        foreach (FacturaVenta::where('numero', 'like', $like)->limit(5)->get(['id', 'numero', 'total', 'estado']) as $f) {
-            $out[] = [
-                'tipo' => 'Factura',
-                'label' => $f->numero,
-                'sub' => '$' . number_format($f->total, 0, ',', '.') . ' · ' . (is_object($f->estado) ? $f->estado->value : $f->estado),
-                'url' => '/app/facturas/' . $f->id,
-                'icon' => 'FileText',
-            ];
+        if ($puedeFacturas) {
+            foreach (FacturaVenta::where('numero', 'like', $like)->limit(5)->get(['id', 'numero', 'total', 'estado']) as $f) {
+                $out[] = [
+                    'tipo' => 'Factura',
+                    'label' => $f->numero,
+                    'sub' => '$' . number_format($f->total, 0, ',', '.') . ' · ' . (is_object($f->estado) ? $f->estado->value : $f->estado),
+                    'url' => '/app/facturas/' . $f->id,
+                    'icon' => 'FileText',
+                ];
+            }
         }
 
         // Contactos
+        if ($puedeContactos) {
         foreach (Contacto::where('activo', true)->where(function ($w) use ($like) {
             $w->where('nombre_completo', 'like', $like)
                 ->orWhere('razon_social', 'like', $like)
@@ -61,32 +72,39 @@ class BusquedaGlobalController extends Controller implements HasMiddleware
                 'icon' => 'User',
             ];
         }
+        }
 
         // Pedidos Dropi por guía o Dropi ID
-        foreach (DropiPedido::where(function ($w) use ($like) {
-            $w->where('guia', 'like', $like)->orWhere('dropi_orden_id', 'like', $like);
-        })->limit(5)->get(['id', 'guia', 'cliente_nombre', 'estado']) as $p) {
-            $out[] = [
-                'tipo' => 'Dropi',
-                'label' => $p->guia,
-                'sub' => $p->cliente_nombre . ' · ' . (is_object($p->estado) ? $p->estado->value : $p->estado),
-                'url' => '/app/dropi',
-                'icon' => 'Truck',
-            ];
+        if (\App\Auth\Permisos::puede($u, 'dropi_pedidos')) {
+            foreach (DropiPedido::where(function ($w) use ($like) {
+                $w->where('guia', 'like', $like)->orWhere('dropi_orden_id', 'like', $like);
+            })->limit(5)->get(['id', 'guia', 'cliente_nombre', 'estado']) as $p) {
+                $out[] = [
+                    'tipo' => 'Dropi',
+                    'label' => $p->guia,
+                    'sub' => $p->cliente_nombre . ' · ' . (is_object($p->estado) ? $p->estado->value : $p->estado),
+                    'url' => '/app/dropi',
+                    'icon' => 'Truck',
+                ];
+            }
         }
 
-        // Pedidos B2B
-        foreach (PedidoCliente::where('numero', 'like', $like)->limit(5)->get(['id', 'numero', 'total', 'estado']) as $p) {
-            $out[] = [
-                'tipo' => 'Pedido B2B',
-                'label' => $p->numero,
-                'sub' => '$' . number_format($p->total, 0, ',', '.') . ' · ' . $p->estado,
-                'url' => '/app/pedidos-b2b/' . $p->id,
-                'icon' => 'Package',
-            ];
+        // Pedidos B2B · los ve quien trabaja el pedido: comercial o logística.
+        if ($puedeContactos || \App\Auth\Permisos::puede($u, 'logistica')) {
+            foreach (PedidoCliente::where('numero', 'like', $like)->limit(5)->get(['id', 'numero', 'total', 'estado']) as $p) {
+                $out[] = [
+                    'tipo' => 'Pedido B2B',
+                    'label' => $p->numero,
+                    'sub' => '$' . number_format($p->total, 0, ',', '.') . ' · ' . $p->estado,
+                    'url' => '/app/pedidos-b2b/' . $p->id,
+                    'icon' => 'Package',
+                ];
+            }
         }
 
-        // Variantes por código de barras
+        // Variantes por código de barras · buscar un producto por su código no
+        // revela nada sensible y es lo que más usa la bodega, así que queda
+        // abierto a cualquier usuario del ERP.
         foreach (ProductoVariante::with('producto:id,nombre,referencia')
             ->where('codigo_barras', 'like', $like)->limit(5)->get(['id', 'producto_id', 'codigo_barras']) as $v) {
             $out[] = [

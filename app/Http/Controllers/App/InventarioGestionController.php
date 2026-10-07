@@ -7,8 +7,12 @@ use App\Modules\Dropi\Models\InventarioMovimiento;
 use App\Modules\Dropi\Models\InventarioUbicacion;
 use App\Modules\Dropi\Models\ProductoVariante;
 use App\Modules\Inventario\Models\AlertaStockConfig;
+use App\Modules\Dropi\Models\Producto;
 use App\Modules\Inventario\Models\TomaFisica;
+use App\Modules\Inventario\Models\TomaFisicaItem;
 use App\Modules\Inventario\Models\Traslado;
+use App\Modules\Inventario\Models\TrasladoItem;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Routing\Controllers\HasMiddleware;
@@ -23,7 +27,15 @@ class InventarioGestionController extends Controller implements HasMiddleware
     {
         return [new Middleware(function (Request $r, \Closure $next) {
             $u = $r->user();
-            abort_unless($u && ($u->esAracely() || (method_exists($u, 'esAlistador') && $u->esAlistador())), 403);
+            // UBIC-8 · AdminBodega entra con scope limitado por bodegasAsignadasIds().
+            abort_unless(
+                $u && (
+                    $u->esAracely()
+                    || (method_exists($u, 'esAlistador') && $u->esAlistador())
+                    || (method_exists($u, 'esAdminBodega') && $u->esAdminBodega())
+                ),
+                403
+            );
             return $next($r);
         })];
     }
@@ -33,20 +45,36 @@ class InventarioGestionController extends Controller implements HasMiddleware
     {
         $codigo = trim((string) $request->input('codigo', ''));
         $variante = null;
+        // INV-A6 · soporte para producto AGREGADO (sin variantes). Antes solo
+        // ProductoVariante era navegable desde kardex; los agregados no
+        // tenían historial consultable aunque sí movimientos en la BD.
+        $productoAgregado = null;
         $movimientos = [];
         $saldoTotal = 0;
         $costoPromedio = 0;
         $valorStock = 0;
 
         if ($codigo) {
+            // 1. Buscar variante granular por código de barras.
             $variante = ProductoVariante::with('producto:id,referencia,nombre')
                 ->where('codigo_barras', $codigo)
-                ->orWhereHas('producto', fn ($p) => $p->where('referencia', $codigo))
                 ->first();
-            if ($variante) {
+            // 2. Si no hay variante, probar como producto AGREGADO por referencia.
+            if (! $variante) {
+                $productoAgregado = \App\Modules\Dropi\Models\Producto::where('referencia', $codigo)
+                    ->where('desglose_stock', false)
+                    ->first(['id', 'referencia', 'nombre', 'desglose_stock']);
+            }
+
+            if ($variante || $productoAgregado) {
                 $u = $request->user();
-                $q = InventarioMovimiento::where('variante_id', $variante->id)
-                    ->with('ubicacion:id,codigo,nombre');
+                $q = InventarioMovimiento::with('ubicacion:id,codigo,nombre');
+                if ($variante) {
+                    $q->where('variante_id', $variante->id);
+                } else {
+                    // Agregado: variante_id NULL + producto_id del agregado.
+                    $q->whereNull('variante_id')->where('producto_id', $productoAgregado->id);
+                }
                 if (! $u->esAracely()) {
                     $bodegas = $u->bodegasAsignadasIds();
                     if (empty($bodegas)) {
@@ -84,7 +112,7 @@ class InventarioGestionController extends Controller implements HasMiddleware
                     // SIIGO badge según siigo_journal_id.
                     $siigoColor = $m->siigo_journal_id
                         ? 'emerald'
-                        : (in_array($m->tipo, ['traslado_salida', 'traslado_entrada', 'merma', 'faltante', 'sobrante', 'ajuste_toma_fisica'], true) ? 'amber' : 'gray');
+                        : (in_array($m->tipo, ['traslado_salida', 'traslado_entrada', 'traslado_reversa_salida', 'traslado_reversa_entrada', 'merma', 'faltante', 'sobrante', 'ajuste_toma_fisica'], true) ? 'amber' : 'gray');
 
                     return [
                         'id' => $m->id,
@@ -115,13 +143,23 @@ class InventarioGestionController extends Controller implements HasMiddleware
 
         return Inertia::render('Inventario/Kardex', [
             'codigo' => $codigo,
+            // INV-A6 · unificamos la salida: la variante usada por el UI puede
+            // venir de una ProductoVariante granular O de un Producto agregado.
+            // El Vue sigue usando `variante` como objeto único, no hay cambios
+            // visuales obligatorios.
             'variante' => $variante ? [
                 'id' => $variante->id, 'codigo' => $variante->codigo_barras,
                 'producto' => $variante->producto?->nombre, 'referencia' => $variante->producto?->referencia,
                 'detalle' => trim(($variante->color_nombre ?? '') . ' ' . ($variante->talla ?? '')),
                 'siigo_id' => $variante->siigo_id,
                 'siigo_code' => $variante->siigo_code,
-            ] : null,
+            ] : ($productoAgregado ? [
+                'id' => $productoAgregado->id, 'codigo' => $productoAgregado->referencia,
+                'producto' => $productoAgregado->nombre, 'referencia' => $productoAgregado->referencia,
+                'detalle' => 'Producto agregado · sin variantes',
+                'siigo_id' => null, 'siigo_code' => null,
+                'es_agregado' => true,
+            ] : null),
             'movimientos' => $movimientos,
             'saldoTotal' => $saldoTotal,
             'costoPromedio' => $costoPromedio,
@@ -132,6 +170,33 @@ class InventarioGestionController extends Controller implements HasMiddleware
     /**
      * Sprint 3 · Kardex SIIGO · label legible del documento origen.
      */
+    /**
+     * INV-A2 · resumen del badge SIIGO para una colección de movimientos.
+     * Verde = todos con journal · ámbar = parciales/pendientes ·
+     * gris = sin movs todavía. Usado por Traslado/Conteo/ReporteStock Show.
+     */
+    private function resumirBadgeSiigo(\Illuminate\Support\Collection $movs): array
+    {
+        if ($movs->isEmpty()) {
+            return ['color' => 'gray', 'label' => 'Sin movimientos', 'total' => 0, 'con_siigo' => 0];
+        }
+        $conSiigo = $movs->filter(fn ($m) => ! empty($m->siigo_journal_id))->count();
+        $total = $movs->count();
+        $color = match (true) {
+            $conSiigo === 0 => 'amber',
+            $conSiigo < $total => 'amber',
+            default => 'emerald',
+        };
+        $label = $color === 'emerald'
+            ? "SIIGO ✓ · {$total}/{$total} asientos"
+            : "Pendiente · {$conSiigo}/{$total} en SIIGO";
+        return [
+            'color' => $color, 'label' => $label,
+            'total' => $total, 'con_siigo' => $conSiigo,
+            'ultima_sync_hace' => optional($movs->max('siigo_sync_at'))?->diffForHumans(),
+        ];
+    }
+
     private function labelReferencia(?string $tipo, ?int $id): string
     {
         if (! $tipo || ! $id) return '—';
@@ -354,12 +419,23 @@ class InventarioGestionController extends Controller implements HasMiddleware
         $t = Traslado::with(['items.variante.producto', 'origen', 'destino', 'solicitante', 'ejecutor'])
             ->findOrFail($id);
 
+        // INV-A2 · badge SIIGO del traslado · se calcula desde los movimientos
+        // kardex ligados: si todos los traslado_salida/entrada tienen
+        // siigo_journal_id → verde (asientos ya en SIIGO); si alguno falta → ámbar;
+        // sin movs todavía → gris.
+        $siigoBadge = $this->resumirBadgeSiigo(
+            \App\Modules\Dropi\Models\InventarioMovimiento::where('referencia_type', Traslado::class)
+                ->where('referencia_id', $t->id)
+                ->get(['id', 'siigo_journal_id', 'siigo_sync_at'])
+        );
+
         return Inertia::render('Inventario/Traslado/Show', [
             'traslado' => [
                 'id' => $t->id, 'numero' => $t->numero,
                 'origen' => ['id' => $t->origen_id, 'nombre' => $t->origen?->codigo . ' · ' . $t->origen?->nombre],
                 'destino' => ['id' => $t->destino_id, 'nombre' => $t->destino?->codigo . ' · ' . $t->destino?->nombre],
                 'estado' => is_object($t->estado) ? $t->estado->value : $t->estado,
+                'siigo' => $siigoBadge,
                 'motivo' => $t->motivo,
                 'observaciones' => $t->observaciones,
                 'solicitante' => $t->solicitante?->name,
@@ -383,11 +459,19 @@ class InventarioGestionController extends Controller implements HasMiddleware
 
     public function trasladoItemGuardar(Request $r, int $id): RedirectResponse
     {
+        // INV-A7 · acepta producto agregado (producto_id XOR variante_id).
+        // Antes solo validaba variante → productos en modo agregado no se
+        // podían trasladar desde el UI, aunque los Actions ya los soportaban.
         $data = $r->validate([
-            'variante_id' => ['required', 'integer', 'exists:producto_variantes,id'],
+            'variante_id' => ['nullable', 'required_without:producto_id', 'integer', 'exists:producto_variantes,id'],
+            'producto_id' => ['nullable', 'required_without:variante_id', 'integer', 'exists:productos,id'],
             'cantidad' => ['required', 'numeric', 'min:0.0001', 'max:999999'],
             'notas' => ['nullable', 'string', 'max:200'],
         ]);
+        if (! empty($data['variante_id']) && ! empty($data['producto_id'])) {
+            return back()->with('flash', ['type' => 'error',
+                'message' => 'Elegí variante O producto agregado, no ambos.']);
+        }
         $t = Traslado::findOrFail($id);
         abort_unless(
             (is_object($t->estado) ? $t->estado->value : $t->estado) === 'borrador',
@@ -400,7 +484,11 @@ class InventarioGestionController extends Controller implements HasMiddleware
             abort_unless(in_array((int)$t->origen_id, $bod, true) && in_array((int)$t->destino_id, $bod, true), 403);
         }
         \App\Modules\Inventario\Models\TrasladoItem::updateOrCreate(
-            ['traslado_id' => $t->id, 'variante_id' => (int) $data['variante_id']],
+            [
+                'traslado_id' => $t->id,
+                'variante_id' => $data['variante_id'] ?? null,
+                'producto_id' => $data['producto_id'] ?? null,
+            ],
             ['cantidad_solicitada' => round((float) $data['cantidad'], 4), 'notas' => $data['notas'] ?? null]
         );
         return back()->with('success', 'Ítem guardado.');
@@ -422,9 +510,49 @@ class InventarioGestionController extends Controller implements HasMiddleware
         return back()->with('success', 'Ítem eliminado.');
     }
 
+    /**
+     * Un traslado sólo lo mueve quien responde por sus dos bodegas.
+     *
+     * Varios métodos de este controller ya lo validaban y otros no: por esos
+     * huecos un admin de bodega podía enviar, recibir o anular traslados de
+     * otra sede, que mueven stock y generan asiento en SIIGO.
+     */
+    private function autorizarTraslado(Traslado $t): void
+    {
+        $u = request()->user();
+        if (! $u || $u->esAracely()) {
+            return;
+        }
+        $bodegas = $u->bodegasAsignadasIds();
+        abort_unless(
+            in_array((int) $t->origen_id, $bodegas, true) && in_array((int) $t->destino_id, $bodegas, true),
+            403,
+            'Este traslado es de otra bodega.'
+        );
+    }
+
+    /**
+     * Una toma física sólo la opera quien responde por esa bodega. Sin esto se
+     * podía escribir la cantidad contada de otra sede y cerrarla: un ajuste de
+     * inventario ajeno, con su asiento contable, disfrazado de conteo.
+     */
+    private function autorizarToma(TomaFisica $toma): void
+    {
+        $u = request()->user();
+        if (! $u || $u->esAracely()) {
+            return;
+        }
+        abort_unless(
+            in_array((int) $toma->ubicacion_id, $u->bodegasAsignadasIds(), true),
+            403,
+            'Esta toma física es de otra bodega.'
+        );
+    }
+
     public function trasladoEnviar(int $id): RedirectResponse
     {
         $t = Traslado::findOrFail($id);
+        $this->autorizarTraslado($t);
         try {
             app(\App\Modules\Inventario\Actions\EjecutarTraslado::class)->enviar($t);
             return back()->with('success', "Traslado {$t->numero} enviado.");
@@ -436,6 +564,7 @@ class InventarioGestionController extends Controller implements HasMiddleware
     public function trasladoRecibir(int $id): RedirectResponse
     {
         $t = Traslado::findOrFail($id);
+        $this->autorizarTraslado($t);
         try {
             app(\App\Modules\Inventario\Actions\EjecutarTraslado::class)->recibir($t);
             return back()->with('success', "Traslado {$t->numero} recibido.");
@@ -448,6 +577,7 @@ class InventarioGestionController extends Controller implements HasMiddleware
     {
         $data = $r->validate(['motivo' => ['required','string','min:5','max:500']]);
         $t = Traslado::findOrFail($id);
+        $this->autorizarTraslado($t);
         try {
             app(\App\Modules\Inventario\Actions\EjecutarTraslado::class)->anular($t, $data['motivo']);
             return back()->with('success', "Traslado {$t->numero} anulado.");
@@ -462,6 +592,14 @@ class InventarioGestionController extends Controller implements HasMiddleware
         $toma = TomaFisica::with(['items.variante.producto', 'ubicacion', 'creador', 'cerrador'])->findOrFail($id);
         $estado = is_object($toma->estado) ? $toma->estado->value : $toma->estado;
 
+        // INV-A2 · badge SIIGO del conteo · ajuste_toma_fisica dispara journal
+        // en SIIGO (post BUG-INV). Mostramos el estado del asiento aquí.
+        $siigoBadge = $this->resumirBadgeSiigo(
+            \App\Modules\Dropi\Models\InventarioMovimiento::where('referencia_type', TomaFisica::class)
+                ->where('referencia_id', $toma->id)
+                ->get(['id', 'siigo_journal_id', 'siigo_sync_at'])
+        );
+
         return Inertia::render('Inventario/Conteo/Show', [
             'toma' => [
                 'id' => $toma->id, 'numero' => $toma->numero,
@@ -469,6 +607,7 @@ class InventarioGestionController extends Controller implements HasMiddleware
                 'creador' => $toma->creador?->name,
                 'cerrador' => $toma->cerrador?->name,
                 'estado' => $estado,
+                'siigo' => $siigoBadge,
                 'tipo' => $toma->tipo, 'alcance' => $toma->alcance,
                 'fecha_conteo' => optional($toma->fecha_conteo)->format('Y-m-d'),
                 'cerrada_at' => optional($toma->cerrada_at)->format('Y-m-d H:i'),
@@ -491,6 +630,7 @@ class InventarioGestionController extends Controller implements HasMiddleware
     public function conteoIniciar(int $id): RedirectResponse
     {
         $toma = TomaFisica::findOrFail($id);
+        $this->autorizarToma($toma);
         try {
             \App\Modules\Inventario\Actions\PrepararTomaFisica::run($toma);
             return back()->with('success', "Toma {$toma->numero} lista para capturar.");
@@ -505,6 +645,7 @@ class InventarioGestionController extends Controller implements HasMiddleware
             'cantidad_contada' => ['nullable', 'numeric', 'min:0', 'max:999999'],
         ]);
         $toma = TomaFisica::findOrFail($id);
+        $this->autorizarToma($toma);
         $item = \App\Modules\Inventario\Models\TomaFisicaItem::whereKey($itemId)->firstOrFail();
         abort_unless($item->toma_id === $toma->id, 403);
         abort_unless(
@@ -520,6 +661,7 @@ class InventarioGestionController extends Controller implements HasMiddleware
     public function conteoCerrar(int $id): RedirectResponse
     {
         $toma = TomaFisica::findOrFail($id);
+        $this->autorizarToma($toma);
         try {
             \App\Modules\Inventario\Actions\CerrarTomaFisica::run($toma);
             return back()->with('success', "Toma {$toma->numero} cerrada.");
@@ -564,14 +706,24 @@ class InventarioGestionController extends Controller implements HasMiddleware
         $data = $r->validate(['motivo' => ['required', 'string', 'min:10', 'max:300']]);
         $toma = TomaFisica::findOrFail($id);
 
-        if (! in_array($toma->estado, ['borrador', 'en_conteo'], true)) {
+        // INV-A8 · usar enum en vez de strings sueltos. Si el cast está activo
+        // $toma->estado es el enum; comparamos contra los cases para evitar
+        // divergencia silenciosa si alguien cambia los valores del enum.
+        $estadoActual = $toma->estado instanceof \App\Modules\Inventario\Enums\EstadoTomaFisica
+            ? $toma->estado
+            : \App\Modules\Inventario\Enums\EstadoTomaFisica::tryFrom((string) $toma->estado);
+        $permitidos = [
+            \App\Modules\Inventario\Enums\EstadoTomaFisica::Borrador,
+            \App\Modules\Inventario\Enums\EstadoTomaFisica::EnConteo,
+        ];
+        if (! in_array($estadoActual, $permitidos, true)) {
             return back()->with('flash', [
                 'type' => 'error',
-                'message' => "No se puede anular una toma {$toma->estado}.",
+                'message' => "No se puede anular una toma en estado {$estadoActual?->label()}.",
             ]);
         }
 
-        $toma->estado = 'anulada';
+        $toma->estado = \App\Modules\Inventario\Enums\EstadoTomaFisica::Anulada;
         $toma->observaciones = trim(($toma->observaciones ?? '') . "\n[ANULADA " . now()->toDateString() . " por " . auth()->user()?->name . "] " . $data['motivo']);
         $toma->save();
 
@@ -581,23 +733,37 @@ class InventarioGestionController extends Controller implements HasMiddleware
     // ---------- ALERTAS CRUD ----------
     public function alertaGuardar(Request $r): RedirectResponse
     {
+        // INV-A5 · soporta producto agregado (producto_id) además de variante,
+        // y stock_maximo (que ya existe en la tabla pero no se exponía).
+        // Validación XOR: debe venir variante_id O producto_id, no ambos ni ninguno.
         $data = $r->validate([
             'id' => ['nullable', 'integer', 'exists:alertas_stock_config,id'],
-            'variante_id' => ['required', 'integer', 'exists:producto_variantes,id'],
+            'variante_id' => ['nullable', 'required_without:producto_id', 'integer', 'exists:producto_variantes,id'],
+            'producto_id' => ['nullable', 'required_without:variante_id', 'integer', 'exists:productos,id'],
             'ubicacion_id' => ['nullable', 'integer', 'exists:inventario_ubicaciones,id'],
             'stock_minimo' => ['required', 'integer', 'min:0'],
+            'stock_maximo' => ['nullable', 'integer', 'min:0'],
             'punto_reorden' => ['nullable', 'integer', 'min:0'],
             'cantidad_reorden' => ['nullable', 'integer', 'min:0'],
             'notificar_email' => ['boolean'],
             'notificar_whatsapp' => ['boolean'],
             'activa' => ['boolean'],
         ]);
+        if (! empty($data['variante_id']) && ! empty($data['producto_id'])) {
+            return back()->with('flash', ['type' => 'error',
+                'message' => 'Elegí variante O producto agregado, no ambos.']);
+        }
+
         if (! empty($data['id'])) {
             $a = AlertaStockConfig::findOrFail($data['id']);
             $a->fill($data)->save();
         } else {
             AlertaStockConfig::updateOrCreate(
-                ['variante_id' => $data['variante_id'], 'ubicacion_id' => $data['ubicacion_id'] ?? null],
+                [
+                    'variante_id' => $data['variante_id'] ?? null,
+                    'producto_id' => $data['producto_id'] ?? null,
+                    'ubicacion_id' => $data['ubicacion_id'] ?? null,
+                ],
                 $data
             );
         }
@@ -644,12 +810,16 @@ class InventarioGestionController extends Controller implements HasMiddleware
     }
 
     // ---------- ALERTAS STOCK ----------
-    public function alertasIndex(): Response
+    public function alertasIndex(Request $r): Response
     {
         $configs = AlertaStockConfig::with(['variante.producto:id,nombre', 'ubicacion:id,codigo,nombre'])
             ->orderByDesc('id')->paginate(30);
         $ubicaciones = InventarioUbicacion::where('activa', true)->orderBy('codigo')->get(['id','codigo','nombre']);
         return Inertia::render('Inventario/Alertas/Index', [
+            // FIX-S0 · botón "Importar Excel" solo para Aracely/Gerencia (es
+            // acción masiva con contrapartida contable). Antes se mostraba
+            // también al Alistador aunque el endpoint devolvía 403.
+            'can_importar_alertas' => (bool) $r->user()?->esAracely(),
             'alertas' => $configs->through(fn ($a) => [
                 'id' => $a->id,
                 'variante_id' => $a->variante_id,
@@ -665,6 +835,140 @@ class InventarioGestionController extends Controller implements HasMiddleware
                 'activa' => (bool) $a->activa,
             ]),
             'ubicaciones' => $ubicaciones,
+        ]);
+    }
+
+    // ---------- INV-B1 · BUSCADOR INTELIGENTE GLOBAL ----------
+
+    /**
+     * INV-B1 · Buscador inteligente para Inventario / Logística.
+     *
+     * Una sola consulta que busca en TRES ejes y los devuelve agrupados:
+     *   · variantes (código de barras, nombre producto, referencia)
+     *   · productos agregados (sin desglose: referencia / nombre)
+     *   · ubicaciones (código / nombre / ciudad)
+     *
+     * Cada resultado trae su "drill-down" para que la UI arme el link al
+     * Kardex / Reporte stock / Ubicación. Respeta scope por bodega para
+     * AdminBodega y Alistador (no filtra textos, filtra el stock mostrado).
+     */
+    public function buscadorInteligente(Request $r): JsonResponse
+    {
+        $q = trim((string) $r->input('q', ''));
+        if (mb_strlen($q) < 2) {
+            return response()->json([
+                'ok' => true, 'q' => $q, 'variantes' => [], 'productos' => [], 'ubicaciones' => [],
+            ]);
+        }
+        $u = $r->user();
+        $bodegasPermitidas = $u->esAracely() ? null : $u->bodegasAsignadasIds();
+
+        // FIX-S0 · si el user tiene scope restringido pero vacío (Alistador/
+        // AdminBodega sin bodegas aún asignadas), devolvemos resultados pero
+        // marcando que el stock no es confiable para no mostrar "0" engañoso.
+        $scopeVacio = ($bodegasPermitidas !== null) && empty($bodegasPermitidas);
+
+        // --- 1) Variantes (código de barras, nombre o referencia padre) ---
+        $variantes = ProductoVariante::query()
+            ->with('producto:id,referencia,nombre,desglose_stock')
+            ->where(function ($x) use ($q) {
+                $x->where('codigo_barras', 'like', "%{$q}%")
+                    ->orWhereHas('producto', fn ($p) =>
+                        $p->where('nombre', 'like', "%{$q}%")
+                          ->orWhere('referencia', 'like', "%{$q}%")
+                    );
+            })
+            ->limit(10)
+            ->get();
+
+        $variantesOut = $variantes->map(function ($v) use ($bodegasPermitidas, $scopeVacio) {
+            if ($scopeVacio) {
+                $stock = null; // sin bodegas asignadas → no reportamos stock
+            } else {
+                $qMov = InventarioMovimiento::where('variante_id', $v->id);
+                if ($bodegasPermitidas !== null) {
+                    $qMov->whereIn('ubicacion_id', $bodegasPermitidas);
+                }
+                $stock = (int) $qMov->sum('cantidad');
+            }
+            return [
+                'tipo' => 'variante',
+                'id' => $v->id,
+                'sku' => $v->codigo_barras,
+                'producto' => $v->producto?->nombre,
+                'referencia' => $v->producto?->referencia,
+                'detalle' => trim(($v->color_nombre ?? '').' '.($v->talla ?? '')),
+                'stock' => $stock,
+                'url_kardex' => route('app.inventario.kardex').'?codigo='.urlencode($v->codigo_barras),
+            ];
+        })->values();
+
+        // --- 2) Productos agregados (sin variantes, stock a nivel producto) ---
+        $productos = Producto::query()
+            ->where('desglose_stock', false)
+            ->where(function ($x) use ($q) {
+                $x->where('referencia', 'like', "%{$q}%")
+                  ->orWhere('nombre', 'like', "%{$q}%");
+            })
+            ->limit(8)
+            ->get(['id', 'referencia', 'nombre']);
+
+        $productosOut = $productos->map(function ($p) use ($bodegasPermitidas, $scopeVacio) {
+            if ($scopeVacio) {
+                $stock = null;
+            } else {
+                $qMov = InventarioMovimiento::where('producto_id', $p->id)->whereNull('variante_id');
+                if ($bodegasPermitidas !== null) {
+                    $qMov->whereIn('ubicacion_id', $bodegasPermitidas);
+                }
+                $stock = (int) $qMov->sum('cantidad');
+            }
+            return [
+                'tipo' => 'producto_agregado',
+                'id' => $p->id,
+                'referencia' => $p->referencia,
+                'nombre' => $p->nombre,
+                'stock' => $stock,
+                'url_kardex' => route('app.inventario.kardex').'?codigo='.urlencode($p->referencia),
+            ];
+        })->values();
+
+        // --- 3) Ubicaciones (código, nombre o ciudad) ---
+        $qUbic = InventarioUbicacion::query()
+            ->where(function ($x) use ($q) {
+                $x->where('codigo', 'like', "%{$q}%")
+                  ->orWhere('nombre', 'like', "%{$q}%")
+                  ->orWhere('ciudad', 'like', "%{$q}%");
+            });
+        if ($bodegasPermitidas !== null) {
+            $qUbic->whereIn('id', $bodegasPermitidas);
+        }
+        $ubicacionesOut = $qUbic->limit(8)->get(['id', 'codigo', 'nombre', 'ciudad', 'categoria', 'activa'])
+            ->map(function ($u2) {
+                $skuCount = (int) InventarioMovimiento::where('ubicacion_id', $u2->id)
+                    ->selectRaw('COUNT(DISTINCT COALESCE(variante_id, 0), COALESCE(producto_id, 0)) as c')
+                    ->value('c');
+                return [
+                    'tipo' => 'ubicacion',
+                    'id' => $u2->id,
+                    'codigo' => $u2->codigo,
+                    'nombre' => $u2->nombre,
+                    'ciudad' => $u2->ciudad,
+                    'categoria' => is_object($u2->categoria) ? $u2->categoria->value : $u2->categoria,
+                    'activa' => (bool) $u2->activa,
+                    'skus_distintos' => $skuCount,
+                    'url_reporte' => route('app.inventario.reporte').'?ubicacion_id='.$u2->id,
+                ];
+            })->values();
+
+        return response()->json([
+            'ok' => true,
+            'q' => $q,
+            'variantes' => $variantesOut,
+            'productos' => $productosOut,
+            'ubicaciones' => $ubicacionesOut,
+            'total' => $variantesOut->count() + $productosOut->count() + $ubicacionesOut->count(),
+            'scope_vacio' => $scopeVacio,
         ]);
     }
 
@@ -687,5 +991,300 @@ class InventarioGestionController extends Controller implements HasMiddleware
             'detalle' => trim(($v->color_nombre ?? '') . ' ' . ($v->talla ?? '')),
             'label' => trim(($v->producto?->nombre ?? '?') . ' · ' . ($v->color_nombre ?? '') . ' ' . ($v->talla ?? '') . ' [' . $v->codigo_barras . ']'),
         ]));
+    }
+
+    // ---------- INV-B2 · IMPORT EXCEL MASIVO (Conteos, Traslados, Alertas) ----------
+
+    /**
+     * INV-B2 · Parser común. Lee XLSX/CSV y devuelve filas estandarizadas.
+     * Primera columna = SKU/código de barras o referencia de producto agregado,
+     * segunda columna = cantidad. Devuelve: array de ['sku','cantidad','linea','variante_id','producto_id'].
+     * Omite header si la primera celda no es numérica/código válido.
+     */
+    private function parsearArchivoSku(Request $r): array
+    {
+        $r->validate(['archivo' => ['required', 'file', 'mimes:xlsx,xls,csv,txt', 'max:5120']]);
+        $file = $r->file('archivo');
+        $filas = [];
+        try {
+            $ext = strtolower($file->getClientOriginalExtension());
+            if (in_array($ext, ['csv', 'txt'], true)) {
+                $fh = fopen($file->getRealPath(), 'r');
+                // FIX-S0 · auto-detectar separador CSV (ES usa ';', EN usa ','),
+                // leyendo la primera línea cruda.
+                $primera = fgets($fh);
+                rewind($fh);
+                $sep = (substr_count((string) $primera, ';') > substr_count((string) $primera, ',')) ? ';' : ',';
+                $num = 0;
+                while (($row = fgetcsv($fh, 2000, $sep)) !== false) {
+                    $num++;
+                    $filas[] = ['linea' => $num, 'cols' => array_map('trim', $row)];
+                }
+                fclose($fh);
+            } else {
+                // FIX-S0 · SEGURIDAD · calculateFormulas=false para no evaluar
+                // =WEBSERVICE/=HYPERLINK/=INDIRECT en el servidor (SSRF/DoS).
+                // readDataOnly=true para omitir estilos y acelerar.
+                $reader = \PhpOffice\PhpSpreadsheet\IOFactory::createReaderForFile($file->getRealPath());
+                if (method_exists($reader, 'setReadDataOnly')) $reader->setReadDataOnly(true);
+                $sheet = $reader->load($file->getRealPath())->getActiveSheet();
+                foreach ($sheet->toArray(null, false, false, false) as $i => $row) {
+                    $filas[] = ['linea' => $i + 1, 'cols' => array_map(fn ($v) => trim((string) $v), $row)];
+                }
+            }
+        } catch (\Throwable $e) {
+            abort(422, 'No pude leer el archivo: '.$e->getMessage());
+        }
+
+        // FIX-S0 · límite duro para evitar que 20k filas bloqueen la request.
+        abort_if(count($filas) > 5000, 422, 'Máximo 5000 filas por import. Dividí el archivo en varios lotes.');
+
+        // Omitir header si la primera fila tiene "sku" o "código" en col A.
+        if (isset($filas[0]['cols'][0]) && preg_match('/sku|c[oó]d|referencia|producto/i', (string) $filas[0]['cols'][0])) {
+            array_shift($filas);
+        }
+
+        $resultado = [];
+        foreach ($filas as $f) {
+            $sku = (string) ($f['cols'][0] ?? '');
+            $cant = $f['cols'][1] ?? null;
+            if ($sku === '' && ($cant === null || $cant === '')) continue; // fila vacía
+            $resultado[] = [
+                'linea' => $f['linea'],
+                'sku' => $sku,
+                'cantidad' => $cant,
+                'extra' => $f['cols'][2] ?? null,
+            ];
+        }
+        return $resultado;
+    }
+
+    /**
+     * INV-B2 · Resuelve SKU a (variante_id | producto_id). Devuelve null si no existe.
+     * Admite código de barras exacto de variante O referencia exacta de producto agregado.
+     *
+     * FIX-S0 · acepta mapas pre-cargados en memoria (pattern "arrange once,
+     * resolve many") para no hacer 2 queries por fila dentro de la
+     * transacción del import; cuando no se pasan, cae al modo query-por-fila.
+     */
+    private function resolverSku(string $sku, ?array $varMap = null, ?array $prodMap = null): ?array
+    {
+        $sku = trim($sku);
+        if ($sku === '') return null;
+        if ($varMap !== null) {
+            if (isset($varMap[$sku])) return ['variante_id' => $varMap[$sku], 'producto_id' => null];
+            if ($prodMap !== null && isset($prodMap[$sku])) return ['variante_id' => null, 'producto_id' => $prodMap[$sku]];
+            return null;
+        }
+        $v = ProductoVariante::where('codigo_barras', $sku)->first(['id']);
+        if ($v) return ['variante_id' => $v->id, 'producto_id' => null];
+        $p = Producto::where('referencia', $sku)->where('desglose_stock', false)->first(['id']);
+        if ($p) return ['variante_id' => null, 'producto_id' => $p->id];
+        return null;
+    }
+
+    /**
+     * FIX-S0 · Pre-carga mapas SKU → id para resolver filas en O(1) sin tocar
+     * la BD por cada iteración del import masivo.
+     */
+    private function construirMapasSku(array $filas): array
+    {
+        $skus = array_values(array_unique(array_filter(array_map(
+            fn ($f) => (string) ($f['sku'] ?? ''),
+            $filas
+        ))));
+        if (empty($skus)) return [[], []];
+        $varMap = ProductoVariante::whereIn('codigo_barras', $skus)
+            ->pluck('id', 'codigo_barras')->map(fn ($id) => (int) $id)->all();
+        $prodMap = Producto::whereIn('referencia', $skus)
+            ->where('desglose_stock', false)
+            ->pluck('id', 'referencia')->map(fn ($id) => (int) $id)->all();
+        return [$varMap, $prodMap];
+    }
+
+    /**
+     * INV-B2 · Import masivo de cantidades contadas para una Toma Física.
+     * Formato Excel: col A = SKU/referencia, col B = cantidad contada.
+     * Sólo actualiza items YA cargados en la toma (no crea nuevas filas: la
+     * toma los crea al iniciar la captura con el snapshot teórico). Las no
+     * encontradas se reportan como "no_matcheadas".
+     */
+    public function conteoImportarMasivo(Request $r, int $id): JsonResponse
+    {
+        $toma = TomaFisica::findOrFail($id);
+        abort_unless(
+            (is_object($toma->estado) ? $toma->estado->value : $toma->estado) === 'en_conteo',
+            409, 'Sólo se importan cantidades mientras la toma está En Conteo.'
+        );
+        $u = $r->user();
+        if (! $u->esAracely()) {
+            abort_unless(in_array((int) $toma->ubicacion_id, $u->bodegasAsignadasIds(), true), 403);
+        }
+
+        $filas = $this->parsearArchivoSku($r);
+        [$varMap, $prodMap] = $this->construirMapasSku($filas);
+        $items = TomaFisicaItem::where('toma_id', $toma->id)->get()->keyBy(function ($i) {
+            return $i->variante_id ? "V:{$i->variante_id}" : "P:{$i->producto_id}";
+        });
+
+        $actualizadas = 0; $noMatcheadas = []; $invalidas = [];
+        DB::transaction(function () use ($filas, $items, $varMap, $prodMap, &$actualizadas, &$noMatcheadas, &$invalidas) {
+            foreach ($filas as $f) {
+                $resolv = $this->resolverSku($f['sku'], $varMap, $prodMap);
+                if (! $resolv) { $noMatcheadas[] = "Línea {$f['linea']}: SKU '{$f['sku']}' no existe"; continue; }
+                $cant = is_numeric($f['cantidad']) ? (float) $f['cantidad'] : null;
+                if ($cant === null || $cant < 0) { $invalidas[] = "Línea {$f['linea']}: cantidad '{$f['cantidad']}' inválida"; continue; }
+                $key = $resolv['variante_id'] ? "V:{$resolv['variante_id']}" : "P:{$resolv['producto_id']}";
+                $it = $items->get($key);
+                if (! $it) { $noMatcheadas[] = "Línea {$f['linea']}: SKU '{$f['sku']}' no está en esta toma"; continue; }
+                $it->cantidad_contada = round($cant, 4);
+                $it->save();
+                $actualizadas++;
+            }
+        });
+
+        return response()->json([
+            'ok' => true,
+            'actualizadas' => $actualizadas,
+            'no_matcheadas' => $noMatcheadas,
+            'invalidas' => $invalidas,
+            'mensaje' => "Importadas {$actualizadas} cantidades contadas"
+                . (count($noMatcheadas) ? " · ".count($noMatcheadas)." SKUs no encontrados" : '')
+                . (count($invalidas) ? " · ".count($invalidas)." cantidades inválidas" : '')
+                . '.',
+        ]);
+    }
+
+    /**
+     * INV-B2 · Import masivo de items para un Traslado en Borrador.
+     * Formato Excel: col A = SKU/referencia, col B = cantidad solicitada.
+     * Hace updateOrCreate por (traslado_id, variante_id, producto_id).
+     */
+    public function trasladoImportarMasivo(Request $r, int $id): JsonResponse
+    {
+        $t = Traslado::findOrFail($id);
+        abort_unless(
+            (is_object($t->estado) ? $t->estado->value : $t->estado) === 'borrador',
+            409, 'Sólo se cargan items en traslados en estado Borrador.'
+        );
+        $u = $r->user();
+        if (! $u->esAracely()) {
+            $bod = $u->bodegasAsignadasIds();
+            abort_unless(in_array((int) $t->origen_id, $bod, true) && in_array((int) $t->destino_id, $bod, true), 403);
+        }
+
+        $filas = $this->parsearArchivoSku($r);
+        [$varMap, $prodMap] = $this->construirMapasSku($filas);
+        $creadas = 0; $actualizadas = 0; $noMatcheadas = []; $invalidas = [];
+        DB::transaction(function () use ($filas, $t, $varMap, $prodMap, &$creadas, &$actualizadas, &$noMatcheadas, &$invalidas) {
+            foreach ($filas as $f) {
+                $resolv = $this->resolverSku($f['sku'], $varMap, $prodMap);
+                if (! $resolv) { $noMatcheadas[] = "Línea {$f['linea']}: SKU '{$f['sku']}' no existe"; continue; }
+                $cant = is_numeric($f['cantidad']) ? (float) $f['cantidad'] : null;
+                if ($cant === null || $cant <= 0) { $invalidas[] = "Línea {$f['linea']}: cantidad '{$f['cantidad']}' inválida"; continue; }
+                $item = TrasladoItem::updateOrCreate(
+                    [
+                        'traslado_id' => $t->id,
+                        'variante_id' => $resolv['variante_id'],
+                        'producto_id' => $resolv['producto_id'],
+                    ],
+                    ['cantidad_solicitada' => round($cant, 4), 'notas' => $f['extra'] ?: null]
+                );
+                $item->wasRecentlyCreated ? $creadas++ : $actualizadas++;
+            }
+        });
+
+        return response()->json([
+            'ok' => true,
+            'creadas' => $creadas,
+            'actualizadas' => $actualizadas,
+            'no_matcheadas' => $noMatcheadas,
+            'invalidas' => $invalidas,
+            'mensaje' => "Importados: {$creadas} nuevos, {$actualizadas} actualizados"
+                . (count($noMatcheadas) ? " · ".count($noMatcheadas)." no encontrados" : '')
+                . (count($invalidas) ? " · ".count($invalidas)." inválidos" : '')
+                . '.',
+        ]);
+    }
+
+    /**
+     * INV-B2 · Import masivo de configuración de alertas de stock.
+     * Formato Excel: col A = SKU/referencia, col B = stock_minimo,
+     * col C (opcional) = stock_maximo.
+     * Se ancla a `ubicacion_id` del request (NULL = global para esa variante).
+     */
+    public function alertasImportarMasivo(Request $r): JsonResponse
+    {
+        $r->validate(['ubicacion_id' => ['nullable', 'integer', 'exists:inventario_ubicaciones,id']]);
+        abort_unless($r->user()->esAracely(), 403, 'Sólo gerencia carga alertas en lote.');
+
+        $ubicacionId = $r->input('ubicacion_id') ? (int) $r->input('ubicacion_id') : null;
+        $filas = $this->parsearArchivoSku($r);
+        [$varMap, $prodMap] = $this->construirMapasSku($filas);
+        $creadas = 0; $actualizadas = 0; $noMatcheadas = []; $invalidas = [];
+
+        DB::transaction(function () use ($filas, $ubicacionId, $varMap, $prodMap, &$creadas, &$actualizadas, &$noMatcheadas, &$invalidas) {
+            foreach ($filas as $f) {
+                $resolv = $this->resolverSku($f['sku'], $varMap, $prodMap);
+                if (! $resolv) { $noMatcheadas[] = "Línea {$f['linea']}: SKU '{$f['sku']}' no existe"; continue; }
+                $min = is_numeric($f['cantidad']) ? (int) $f['cantidad'] : null;
+                if ($min === null || $min < 0) { $invalidas[] = "Línea {$f['linea']}: stock mínimo '{$f['cantidad']}' inválido"; continue; }
+                $max = is_numeric($f['extra']) ? max((int) $f['extra'], $min) : null;
+
+                $a = AlertaStockConfig::updateOrCreate(
+                    [
+                        'variante_id' => $resolv['variante_id'],
+                        'producto_id' => $resolv['producto_id'],
+                        'ubicacion_id' => $ubicacionId,
+                    ],
+                    ['stock_minimo' => $min, 'stock_maximo' => $max, 'activa' => true, 'notificar_email' => true]
+                );
+                $a->wasRecentlyCreated ? $creadas++ : $actualizadas++;
+            }
+        });
+
+        return response()->json([
+            'ok' => true,
+            'creadas' => $creadas,
+            'actualizadas' => $actualizadas,
+            'no_matcheadas' => $noMatcheadas,
+            'invalidas' => $invalidas,
+            'mensaje' => "Alertas: {$creadas} nuevas, {$actualizadas} actualizadas"
+                . (count($noMatcheadas) ? " · ".count($noMatcheadas)." no encontradas" : '')
+                . (count($invalidas) ? " · ".count($invalidas)." inválidas" : '')
+                . '.',
+        ]);
+    }
+
+    /**
+     * INV-B2 · Plantilla descargable XLSX con 2 columnas (SKU + cantidad)
+     * y 3 filas de ejemplo. Sirve para los 3 flujos (conteo/traslado/alerta).
+     * El parámetro `tipo` sólo cambia el label de la cabecera.
+     */
+    public function plantillaMasivaExcel(Request $r)
+    {
+        $tipo = $r->query('tipo', 'conteo');
+        $labelB = match ($tipo) {
+            'traslado' => 'cantidad_solicitada',
+            'alerta' => 'stock_minimo',
+            default => 'cantidad_contada',
+        };
+        $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
+        $s = $spreadsheet->getActiveSheet();
+        $s->setTitle(ucfirst($tipo));
+        $s->setCellValue('A1', 'sku_o_referencia');
+        $s->setCellValue('B1', $labelB);
+        if ($tipo === 'alerta') $s->setCellValue('C1', 'stock_maximo');
+        if ($tipo === 'traslado') $s->setCellValue('C1', 'notas');
+        $s->setCellValue('A2', 'AND2512-79/154-02LEÓ-6M');
+        $s->setCellValue('B2', 10);
+        $s->setCellValue('A3', 'BAB4402-11');
+        $s->setCellValue('B3', 5);
+        foreach (['A', 'B', 'C'] as $c) $s->getColumnDimension($c)->setAutoSize(true);
+
+        $temp = tempnam(sys_get_temp_dir(), 'plantilla_'.$tipo).'.xlsx';
+        (new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet))->save($temp);
+
+        return response()->download($temp, "plantilla_{$tipo}.xlsx")->deleteFileAfterSend(true);
     }
 }

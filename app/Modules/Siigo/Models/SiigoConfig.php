@@ -23,6 +23,12 @@ class SiigoConfig extends Model
         'sync_clientes_at' => 'datetime',
         'sync_stock_at' => 'datetime',
         'push_auto_updated_at' => 'datetime',
+        // Sin el cast a datetime, el `diffForHumans()` de la tarjeta de estado
+        // revienta la pantalla entera (ya nos pasó con recepciones).
+        // `ultimo_auth_ok` se deja en null mientras nadie haya probado nunca:
+        // la vista distingue true / false / «sin probar».
+        'ultimo_auth_at' => 'datetime',
+        'ultimo_auth_ok' => 'bool',
         'activo' => 'bool',
         'push_auto' => 'bool',
         'tipo_documento_id' => 'integer',

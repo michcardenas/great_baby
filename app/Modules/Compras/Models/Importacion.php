@@ -56,7 +56,17 @@ class Importacion extends Model implements AuditableContract
             // Guard: si ya está Liquidada, congelamos casi todo. Solo `observaciones`
             // (para agregar notas post-facto) puede cambiar.
             if ($estadoAnterior === EstadoImportacion::Liquidada) {
-                $mutablesPostLiquidacion = ['observaciones', 'updated_at'];
+                // Los campos de SIIGO tienen que poder escribirse DESPUÉS de
+                // liquidar: el comprobante se manda a SIIGO justamente cuando
+                // la importación ya quedó liquidada, y al volver hay que anotar
+                // el id del journal. Con el guard cerrado pasaba lo peor: el
+                // comprobante SÍ se creaba en SIIGO, el ERP no podía marcarlo,
+                // el job se reintentaba y duplicaba el asiento allá. Es el
+                // mismo caso que ya se arregló en RecepcionCompra.
+                $mutablesPostLiquidacion = [
+                    'observaciones', 'updated_at',
+                    'siigo_journal_id', 'siigo_sync_at',
+                ];
                 foreach ($imp->getDirty() as $campo => $_) {
                     if (! in_array($campo, $mutablesPostLiquidacion, true)) {
                         throw new \RuntimeException(sprintf(

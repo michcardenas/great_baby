@@ -28,6 +28,18 @@ Schedule::command('siigo:sync clientes')->everyThreeHours()->withoutOverlapping(
 Schedule::command('siigo:sync catalogos')->dailyAt('03:00')->withoutOverlapping();
 // B3-M5 · purga nocturna del log SIIGO (retención 30 días por default).
 Schedule::command('siigo:purgar-logs')->dailyAt('02:30')->withoutOverlapping();
+// TEST-S7 · comparador diario ERP ↔ SIIGO (03:45 Bogotá). Genera reporte en
+// storage/app/siigo-diario/ y manda WhatsApp si hay discrepancias del día.
+Schedule::command('siigo:comparador-diario')
+    ->dailyAt('03:45')->timezone('America/Bogota')->withoutOverlapping();
+
+// Red de seguridad: reencola todo documento que debería estar en SIIGO y no
+// está. Los observers ya empujan al crear cada documento, pero eso se pierde si
+// en ese momento la cola estaba caída, SIIGO no respondía o faltaba mapear una
+// cuenta — y nadie vuelve a intentarlo. Corre después del comparador para que
+// el reporte del día ya refleje lo reenviado.
+Schedule::command('siigo:empujar-pendientes')
+    ->dailyAt('04:15')->timezone('America/Bogota')->withoutOverlapping();
 
 // M3 Inventario — barrido cada 15 min · escalonado al minuto :07.
 Schedule::command('inventario:barrer')

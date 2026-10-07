@@ -42,6 +42,10 @@ class Contacto extends Model implements AuditableContract, AuthenticatableContra
         'total_comprado_ytd', 'segmentado_at',
         // Portal B2B — operativos, no auth
         'lista_precios_id', 'ultimo_login_at',
+        // Cartera de clientes · sólo lo escribe el formulario de gerencia (el
+        // campo no existe en el form para un Vendedor) o el "claim" del primer
+        // pedido. Ningún endpoint hace `update($request->all())` sobre Contacto.
+        'vendedor_id',
         // password, portal_habilitado, reset_token, reset_token_at INTENCIONALMENTE OMITIDOS.
     ];
 
@@ -64,6 +68,45 @@ class Contacto extends Model implements AuditableContract, AuthenticatableContra
     public function listaPrecios(): BelongsTo
     {
         return $this->belongsTo(ListaPrecios::class, 'lista_precios_id');
+    }
+
+    /**
+     * Alias de `listaPrecios`. Varias pantallas cargan `with('lista:id,nombre')`
+     * y sin esto Eloquent lanzaba BadMethodCallException al abrir el armador de
+     * pedidos del vendedor.
+     */
+    public function lista(): BelongsTo
+    {
+        return $this->belongsTo(ListaPrecios::class, 'lista_precios_id');
+    }
+
+    /** Vendedor dueño de la cuenta. NULL = cliente libre. */
+    public function vendedor(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'vendedor_id');
+    }
+
+    /**
+     * Clientes que un vendedor puede trabajar: los suyos y los que no tienen
+     * dueño. Los de otro vendedor quedan fuera para que nadie le levante el
+     * pedido —y la comisión— a un compañero.
+     *
+     * Gerencia no pasa por acá: ve todo (`esAracely()` primero).
+     */
+    public function scopeDeVendedor($q, int $vendedorId)
+    {
+        return $q->where(function ($w) use ($vendedorId) {
+            $w->where('vendedor_id', $vendedorId)->orWhereNull('vendedor_id');
+        });
+    }
+
+    /** ¿Este vendedor puede trabajar esta cuenta? */
+    public function esTrabajablePor(?User $u): bool
+    {
+        if (! $u) return false;
+        if ($u->esAracely()) return true;
+
+        return $this->vendedor_id === null || (int) $this->vendedor_id === (int) $u->id;
     }
 
     public function pedidosB2b(): HasMany

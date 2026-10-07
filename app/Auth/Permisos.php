@@ -53,8 +53,19 @@ final class Permisos
         'condiciones_credito' => ['Gerente', 'Contador'],
         'cobranzas'        => ['Gerente', 'Contador'],
         'excepciones_credito' => ['Gerente', 'Contador'],
+        // Maestro de métodos de pago · lo mantenía el área contable en Filament.
+        'metodos_pago'     => ['Gerente', 'Contador'],
         'crm'              => ['Gerente', 'ServicioCliente', 'Vendedor'],
-        'comisiones'       => ['Gerente', 'Contador', 'Vendedor'],
+        // `comisiones` = correr y aprobar el cierre mensual de comisiones de
+        //   TODOS los vendedores. Estaba declarada pero no gateaba nada, y
+        //   figuraba Vendedor: al darle significado eso habría dejado a un
+        //   vendedor liquidando las comisiones de la empresa. Queda con los
+        //   mismos roles que tenía la pantalla en Filament.
+        'comisiones'       => ['Gerente', 'Contador'],
+        //   La configuración (porcentajes, metas, bonos) es más sensible que
+        //   el cierre: define cuánto cobra cada quien. Sólo gerencia, igual
+        //   que antes.
+        'comisiones_config' => [],
 
         // CONTABILIDAD
         'contabilidad'     => ['Gerente', 'Contador'],
@@ -74,8 +85,11 @@ final class Permisos
         'kardex'           => ['Gerente', 'Contador', 'Alistador'],
         'stock_bodegas'    => ['Gerente', 'Alistador', 'Contador'],
 
-        // CATÁLOGO
-        'productos'        => ['Gerente'],
+        // CATÁLOGO · A1 FIX · Contador tiene link en sidebar · darle lectura.
+        //   Las acciones destructivas (eliminar, forzar push, duplicar) ya
+        //   piden esRoot aparte en ProductosController, así que el Contador
+        //   solo puede leer/editar · lo mínimo para su rol fiscal.
+        'productos'        => ['Gerente', 'Contador'],
         'ubicaciones'      => ['Gerente'],
         'importar_productos' => ['Gerente'],
         // B3-A5 · llave dedicada para el botón «Sincronizar con SIIGO»
@@ -91,6 +105,32 @@ final class Permisos
         'garantias'        => ['Gerente', 'ServicioCliente'],
         'servicio_cliente' => ['Gerente', 'ServicioCliente'],
 
+        // PERFILES OPERATIVOS
+        //   Estas secciones no nacieron en la matriz: el acceso de bodega,
+        //   facturación y marketing se decidía con `hasRole()` dentro de los
+        //   helpers de User. Al declararlas acá, esos perfiles también quedan
+        //   bajo el control de la pantalla de Roles en vez de estar fijos en
+        //   código. Los roles que figuran son los que ya tenían el acceso.
+        'bodega'           => ['AdminBodega'],
+        'logistica'        => ['AdminBodega', 'Alistador', 'Despachador'],
+        'facturacion'      => ['Facturador'],
+        'marketing'        => ['Marketing'],
+
+        // Secciones que no existían y por eso no se podían delegar: el acceso
+        //   se decidía con `hasRole('Vendedor')` / `hasRole('Gerente')` escrito
+        //   en el controller. Se declaran con EXACTAMENTE los roles que ya
+        //   tenían el acceso, así nada cambia y a la vez quedan bajo el control
+        //   de la pantalla de Roles.
+        'vendedor'         => ['Vendedor'],
+        'rrhh'             => ['Gerente'],
+        'mapa_colombia'    => ['AdminBodega', 'Gerente'],
+        // La parrilla de contenido la gateaba `esAracely()`, así que el rol
+        //   Marketing la veía en el menú y recibía 403. Se deja como permiso
+        //   propio con la lista vacía (hoy sólo gerencia, igual que antes),
+        //   para que dárselo a Marketing sea marcar una casilla y no un cambio
+        //   de código.
+        'marketing_parrilla' => [],
+
         // CONFIGURACIÓN — solo root
         'empresa'          => [],
         'siigo'            => [],
@@ -99,15 +139,190 @@ final class Permisos
     ];
 
     /**
+     * Roles que la pantalla de administración no deja borrar ni renombrar.
+     *
+     *   Aracely  · la dueña. Si se puede borrar, un error de configuración deja
+     *              el sistema sin nadie que entre a arreglarlo.
+     *   Gerencia · el otro acceso root, por si Aracely no está disponible.
+     *   AdminBodega · la operación logística (Don Jorge). Sin ese rol la bodega
+     *              se detiene, y no es algo que convenga poder borrar por error.
+     *
+     * Todo lo demás —Vendedor, Contador, Facturador, etc.— el admin lo crea,
+     * edita y elimina desde la pantalla de Roles.
+     */
+    public const ROLES_PROTEGIDOS = ['Aracely', 'Gerencia', 'AdminBodega'];
+
+    /**
+     * Cómo se muestra cada sección en la pantalla de Roles: grupo y etiqueta
+     * en palabras. Sin esto el admin vería nombres técnicos como
+     * `dropi_discrepancias` y tendría que adivinar qué está marcando.
+     *
+     * Una sección sin entrada acá se muestra con su nombre formateado, así que
+     * agregar una sección nueva nunca rompe la pantalla.
+     */
+    public const GRUPOS = [
+        'Operación' => ['torre_control', 'estacion_empaque', 'vista_alistador', 'escanner_camara', 'inventario_vivo'],
+        'Dropi' => ['dropi_dashboard', 'dropi_pedidos', 'dropi_cortes', 'dropi_wallet', 'dropi_devoluciones', 'dropi_discrepancias', 'dropi_reportes'],
+        'Cartera y CRM' => ['facturas', 'pagos', 'contactos', 'cartera_dashboard', 'condiciones_credito', 'cobranzas', 'excepciones_credito', 'crm', 'comisiones', 'comisiones_config', 'metodos_pago'],
+        'Contabilidad' => ['contabilidad', 'libro_diario', 'reportes_contables'],
+        'Compras' => ['compras_oc', 'compras_recepcion', 'compras_importacion', 'compras_reportes'],
+        'Inventario' => ['traslados', 'tomas_fisicas', 'alertas_stock', 'kardex', 'stock_bodegas'],
+        'Catálogo' => ['productos', 'ubicaciones', 'importar_productos', 'productos.push_siigo'],
+        'Servicio al cliente' => ['garantias', 'servicio_cliente', 'bandeja_importaciones'],
+        'Perfiles operativos' => ['bodega', 'logistica', 'facturacion', 'marketing', 'marketing_parrilla', 'vendedor', 'rrhh', 'mapa_colombia'],
+        'Configuración' => ['empresa', 'siigo', 'usuarios', 'plantillas'],
+    ];
+
+    public const ETIQUETAS = [
+        'torre_control' => 'Torre de control',
+        'estacion_empaque' => 'Estación de empaque',
+        'vista_alistador' => 'Vista del alistador',
+        'escanner_camara' => 'Escáner con cámara',
+        'inventario_vivo' => 'Inventario en vivo',
+        'dropi_dashboard' => 'Panel Dropi',
+        'dropi_pedidos' => 'Pedidos Dropi',
+        'dropi_cortes' => 'Cortes Dropi',
+        'dropi_wallet' => 'Billetera Dropi',
+        'dropi_devoluciones' => 'Devoluciones Dropi',
+        'dropi_discrepancias' => 'Discrepancias Dropi',
+        'dropi_reportes' => 'Reportes Dropi',
+        'facturas' => 'Facturas de venta',
+        'pagos' => 'Pagos recibidos',
+        'contactos' => 'Clientes y proveedores',
+        'cartera_dashboard' => 'Panel de cartera',
+        'condiciones_credito' => 'Condiciones de crédito',
+        'cobranzas' => 'Cobranzas',
+        'excepciones_credito' => 'Excepciones de crédito',
+        'crm' => 'CRM y segmentación',
+        'comisiones' => 'Cierre mensual de comisiones',
+        'comisiones_config' => 'Configurar comisiones (porcentajes y metas)',
+        'metodos_pago' => 'Métodos de pago',
+        'contabilidad' => 'Panel contable',
+        'libro_diario' => 'Libro diario',
+        'reportes_contables' => 'Reportes contables',
+        'compras_oc' => 'Órdenes de compra',
+        'compras_recepcion' => 'Recepción de mercancía',
+        'compras_importacion' => 'Importaciones',
+        'compras_reportes' => 'Reportes de compras',
+        'traslados' => 'Traslados entre bodegas',
+        'tomas_fisicas' => 'Tomas físicas',
+        'alertas_stock' => 'Alertas de stock',
+        'kardex' => 'Kardex',
+        'stock_bodegas' => 'Stock por bodega',
+        'productos' => 'Productos',
+        'ubicaciones' => 'Ubicaciones y bodegas',
+        'importar_productos' => 'Importar productos',
+        'productos.push_siigo' => 'Enviar productos a SIIGO',
+        'bandeja_importaciones' => 'Bandeja de importaciones',
+        'garantias' => 'Garantías',
+        'servicio_cliente' => 'Servicio al cliente',
+        'bodega' => 'Operar bodega (recepción, traslados, conteos)',
+        'logistica' => 'Cola de alistamiento y despacho',
+        'facturacion' => 'Bandeja de facturación',
+        'marketing' => 'Marketing y préstamos de producto',
+        'vendedor' => 'Panel del vendedor y armar pedidos en terreno',
+        'rrhh' => 'Gestión humana (vacantes y empleados)',
+        'mapa_colombia' => 'Mapa de Colombia',
+        'marketing_parrilla' => 'Parrilla de contenido',
+        'empresa' => 'Datos de la empresa',
+        'siigo' => 'Integración SIIGO',
+        'usuarios' => 'Usuarios',
+        'plantillas' => 'Plantillas de documentos',
+    ];
+
+    /**
+     * Nombre con que cada sección vive en la tabla `permissions` de Spatie.
+     * Prefijamos para no chocar con permisos de otros paquetes.
+     */
+    public static function permiso(string $seccion): string
+    {
+        return 'ver.'.$seccion;
+    }
+
+    /** Etiqueta legible de una sección, con respaldo para secciones nuevas. */
+    public static function etiqueta(string $seccion): string
+    {
+        return self::ETIQUETAS[$seccion] ?? ucfirst(str_replace(['_', '.'], ' ', $seccion));
+    }
+
+    /**
+     * Catálogo para la pantalla de Roles: grupos con sus permisos y etiquetas.
+     * Las secciones que no estén en GRUPOS caen en "Otros" para que nunca
+     * queden invisibles.
+     *
+     * @return array<string, list<array{seccion:string, permiso:string, etiqueta:string}>>
+     */
+    public static function catalogo(): array
+    {
+        $agrupadas = [];
+        foreach (self::GRUPOS as $grupo => $secciones) {
+            foreach ($secciones as $s) {
+                $agrupadas[$grupo][] = [
+                    'seccion' => $s,
+                    'permiso' => self::permiso($s),
+                    'etiqueta' => self::etiqueta($s),
+                ];
+            }
+        }
+
+        $yaListadas = array_merge(...array_values(self::GRUPOS));
+        foreach (array_keys(self::MATRIZ) as $s) {
+            if (! in_array($s, $yaListadas, true)) {
+                $agrupadas['Otros'][] = [
+                    'seccion' => $s,
+                    'permiso' => self::permiso($s),
+                    'etiqueta' => self::etiqueta($s),
+                ];
+            }
+        }
+
+        return $agrupadas;
+    }
+
+    /**
      * ¿El user tiene acceso a esta sección?
-     * Aracely y Gerencia siempre true (root).
+     *
+     * Desde que existe la pantalla de Roles, la autoridad es la tabla
+     * `permissions`: lo que el admin marca ahí es lo que manda. La MATRIZ de
+     * abajo quedó como semilla (de dónde salieron los permisos la primera vez)
+     * y como respaldo para una instalación que todavía no los sembró — sin eso,
+     * un deploy sin seeder dejaría a todo el mundo sin acceso.
+     *
+     * Aracely y Gerencia son root y pasan siempre: si el admin se equivoca
+     * marcando casillas, alguien tiene que poder entrar a arreglarlo.
      */
     public static function puede(?User $u, string $seccion): bool
     {
         if (! $u) return false;
         if (self::esRoot($u)) return true;
-        $rolesPermitidos = self::MATRIZ[$seccion] ?? [];
-        return $u->hasAnyRole($rolesPermitidos);
+
+        if (self::permisosSembrados()) {
+            return $u->can(self::permiso($seccion));
+        }
+
+        return $u->hasAnyRole(self::MATRIZ[$seccion] ?? []);
+    }
+
+    /**
+     * ¿Ya se sembraron los permisos? Se consulta una vez por request.
+     * Si la tabla no existe todavía (instalación a medio migrar) devolvemos
+     * false y la autorización cae a la matriz en código.
+     */
+    private static function permisosSembrados(): bool
+    {
+        static $sembrados = null;
+        if ($sembrados !== null) {
+            return $sembrados;
+        }
+
+        try {
+            $sembrados = \Spatie\Permission\Models\Permission::query()
+                ->where('name', 'like', 'ver.%')->exists();
+        } catch (\Throwable) {
+            $sembrados = false;
+        }
+
+        return $sembrados;
     }
 
     /**
@@ -119,15 +334,48 @@ final class Permisos
     }
 
     /**
+     * Secciones que efectivamente abren algo en `/admin`.
+     *
+     * `/admin` quedó siendo **sólo Dropi**: el ERP se maneja completo en Vue
+     * (`/app`). Antes Filament tenía 40 pantallas que duplicaban lo que ya
+     * existe en Vue, cada una con su propia autorización, y por eso un mismo
+     * módulo se comportaba distinto según por dónde entraras.
+     *
+     * Así que la puerta del panel la abre tener algo de Dropi, más las dos
+     * secciones con que se autorizan sus pantallas de operación (el alistador
+     * y las devoluciones que atiende servicio al cliente).
+     */
+    public const SECCIONES_PANEL = [
+        'dropi_dashboard', 'dropi_pedidos', 'dropi_cortes', 'dropi_wallet',
+        'dropi_devoluciones', 'dropi_discrepancias', 'dropi_reportes',
+        'vista_alistador', 'servicio_cliente',
+    ];
+
+    /**
      * ¿Puede entrar al panel Filament?
-     * Todos los roles reconocidos pueden entrar; la matriz filtra qué ven adentro.
+     *
+     * Antes era una lista de nombres de rol escrita acá, así que un rol creado
+     * en `/app/roles` NUNCA podía entrar a `/admin` por más casillas que se le
+     * marcaran: la pantalla de roles prometía algo que no cumplía.
+     *
+     * Ahora la puerta la abre tener al menos una sección que el panel muestre,
+     * y adentro cada Resource sigue pidiendo su propio permiso.
+     *
+     * Desde que `/admin` es sólo Dropi, el Vendedor ya no entra: no tiene nada
+     * que hacer ahí, su trabajo entero vive en `/app/vendedor`.
      */
     public static function puedeAccederPanel(?User $u): bool
     {
-        return $u && $u->hasAnyRole([
-            'Aracely', 'Gerencia', 'Gerente', 'Contador',
-            'Vendedor', 'Alistador', 'ServicioCliente',
-        ]);
+        if (! $u) return false;
+        if (self::esRoot($u)) return true;
+
+        foreach (self::SECCIONES_PANEL as $seccion) {
+            if (self::puede($u, $seccion)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
