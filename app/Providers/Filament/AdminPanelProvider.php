@@ -29,48 +29,41 @@ class AdminPanelProvider extends PanelProvider
         return $panel
             ->id('admin')
             ->path('admin')
-            ->login()
+            // El login de Filament está deshabilitado · usamos UN SOLO login,
+            //   el de Vue en /app/login. Cuando un no-autenticado toca /admin/*,
+            //   el middleware redirige a la ruta nombrada `login`, que apunta
+            //   a /app/login (ver routes/web.php:459). La sesión 'web' se
+            //   comparte entre Filament y Vue, así que entrar por /app vale
+            //   para los dos.
             ->brandName('GREAT BABY · ERP')
             ->colors([
                 'primary' => Color::Amber,
             ])
-            ->discoverResources(in: app_path('Filament/Admin/Resources'), for: 'App\Filament\Admin\Resources')
+            // ──────────────────────────────────────────────────────────────
+            //  /admin = SOLO DROPI.
+            //
+            //  El ERP se maneja entero en Vue (/app). Filament había quedado
+            //  como un segundo sistema paralelo: 40 pantallas que duplicaban
+            //  lo que ya existe en Vue, cada una con su propia autorización y
+            //  su propio criterio. Eso es lo que hacía que un mismo módulo se
+            //  comportara distinto según por dónde entraras.
+            //
+            //  Acá se dejan de descubrir los módulos que NO son Dropi. Los
+            //  archivos siguen en disco a propósito: sin repositorio git, un
+            //  borrado no tiene vuelta atrás, así que primero se saca de
+            //  circulación y se borra cuando la clienta confirme.
+            // ──────────────────────────────────────────────────────────────
             ->discoverResources(in: app_path('Modules/Dropi/Filament/Resources'), for: 'App\Modules\Dropi\Filament\Resources')
-            ->discoverResources(in: app_path('Modules/Cartera/Filament/Resources'), for: 'App\Modules\Cartera\Filament\Resources')
-            ->discoverResources(in: app_path('Modules/Compras/Filament/Resources'), for: 'App\Modules\Compras\Filament\Resources')
-            ->discoverResources(in: app_path('Modules/Inventario/Filament/Resources'), for: 'App\Modules\Inventario\Filament\Resources')
-            ->discoverResources(in: app_path('Modules/Crm/Filament/Resources'), for: 'App\Modules\Crm\Filament\Resources')
-            ->discoverResources(in: app_path('Modules/Contabilidad/Filament/Resources'), for: 'App\Modules\Contabilidad\Filament\Resources')
             ->navigationGroups([
                 'Operación',
                 'Dropi',
-                'Cartera y CRM',
-                // Contabilidad y Compras e Importaciones van juntas (área contable de Silvia).
-                'Contabilidad',
-                'Compras e Importaciones',
-                'Inventario y Logística',
                 'Catálogo',
-                'Catálogo · Maestras',
-                'Integraciones',
-                'Herramientas',
-                'Configuración',
             ])
-            ->discoverPages(in: app_path('Filament/Admin/Pages'), for: 'App\Filament\Admin\Pages')
             ->discoverPages(in: app_path('Modules/Dropi/Filament/Pages'), for: 'App\Modules\Dropi\Filament\Pages')
-            ->discoverPages(in: app_path('Modules/Cartera/Filament/Pages'), for: 'App\Modules\Cartera\Filament\Pages')
-            ->discoverPages(in: app_path('Modules/Contabilidad/Filament/Pages'), for: 'App\Modules\Contabilidad\Filament\Pages')
-            ->discoverPages(in: app_path('Modules/Siigo/Filament/Pages'), for: 'App\Modules\Siigo\Filament\Pages')
-            ->discoverPages(in: app_path('Modules/Compras/Filament/Pages'), for: 'App\Modules\Compras\Filament\Pages')
-            ->discoverPages(in: app_path('Modules/Inventario/Filament/Pages'), for: 'App\Modules\Inventario\Filament\Pages')
-            ->discoverPages(in: app_path('Modules/Crm/Filament/Pages'), for: 'App\Modules\Crm\Filament\Pages')
             ->discoverWidgets(in: app_path('Modules/Dropi/Filament/Widgets'), for: 'App\Modules\Dropi\Filament\Widgets')
-            ->discoverWidgets(in: app_path('Modules/Cartera/Filament/Widgets'), for: 'App\Modules\Cartera\Filament\Widgets')
-            ->discoverWidgets(in: app_path('Modules/Compras/Filament/Widgets'), for: 'App\Modules\Compras\Filament\Widgets')
-            ->discoverWidgets(in: app_path('Modules/Inventario/Filament/Widgets'), for: 'App\Modules\Inventario\Filament\Widgets')
             ->pages([
                 DashboardDropi::class,
             ])
-            ->discoverWidgets(in: app_path('Filament/Admin/Widgets'), for: 'App\Filament\Admin\Widgets')
             ->widgets([
                 // Los widgets Dropi se registran directamente en DashboardDropi::getWidgets().
                 AccountWidget::class,

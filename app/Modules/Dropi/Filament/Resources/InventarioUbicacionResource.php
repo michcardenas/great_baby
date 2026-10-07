@@ -41,9 +41,19 @@ class InventarioUbicacionResource extends Resource
 
     protected static ?string $slug = 'ubicaciones';
 
+    /**
+     * Fuera del panel: las bodegas y ubicaciones se manejan en Vue, en
+     * `/app/inventario/ubicaciones`. Está en la carpeta de Dropi por historia,
+     * pero es inventario general y ninguna pantalla Dropi lo referencia.
+     */
     public static function canViewAny(): bool
     {
-        return auth()->user()?->esAracely() ?? false;
+        return false;
+    }
+
+    public static function shouldRegisterNavigation(): bool
+    {
+        return false;
     }
 
     public static function form(Schema $schema): Schema

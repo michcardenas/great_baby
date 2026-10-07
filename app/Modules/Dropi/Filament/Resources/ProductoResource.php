@@ -39,10 +39,25 @@ class ProductoResource extends Resource
 
     protected static ?int $navigationSort = 1;
 
+    /**
+     * Fuera del panel: el catálogo se maneja en Vue, en `/app/catalogo/productos`.
+     *
+     * Este Resource vive en la carpeta de Dropi por historia, pero es el
+     * catálogo general del ERP, no una pantalla de Dropi. Ahora que `/admin`
+     * quedó sólo para Dropi, tener las dos puertas significaba dos fichas de
+     * producto con reglas distintas. No lo referencia ninguna pantalla Dropi.
+     *
+     * El permiso `productos` se sigue consultando desde Vue; acá queda a la
+     * vista por si hace falta volver a encenderlo.
+     */
     public static function canViewAny(): bool
     {
-        // C-F-QA5 · usar matriz oficial en vez de esAracely (permite Gerente por matriz).
-        return \App\Auth\Permisos::puede(auth()->user(), 'productos');
+        return false;
+    }
+
+    public static function shouldRegisterNavigation(): bool
+    {
+        return false;
     }
 
     public static function getGloballySearchableAttributes(): array

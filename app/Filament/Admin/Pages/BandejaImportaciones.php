@@ -22,6 +22,17 @@ class BandejaImportaciones extends Page
 
     protected string $view = 'admin.pages.bandeja-importaciones';
 
+    /**
+     * Esta página no tenía ninguna guarda: `Page::canAccess()` devuelve true por
+     * defecto, así que cualquiera que entrara a `/admin` veía el historial de
+     * importaciones con el nombre de quién corrió cada una. Ahora pide su
+     * sección, la misma que gatea `/app/bandeja-importaciones`.
+     */
+    public static function canAccess(): bool
+    {
+        return \App\Auth\Permisos::puede(auth()->user(), 'bandeja_importaciones');
+    }
+
     public function importaciones()
     {
         return ImportacionBandeja::with('user')
