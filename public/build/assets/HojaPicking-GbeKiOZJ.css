@@ -1,0 +1,1 @@
+@media print{aside,header,nav,.no-print,[class*=sidebar],[class*=topbar],[class*=bell]{display:none!important}body,html{background:#fff!important}.hoja{box-shadow:none!important;padding:0!important;max-width:100%!important}main{padding:0!important}@page{size:letter;margin:10mm}}
