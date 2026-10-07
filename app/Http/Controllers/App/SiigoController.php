@@ -60,14 +60,94 @@ class SiigoController extends Controller implements HasMiddleware
                 'sync_productos_at' => $cfg->sync_productos_at?->diffForHumans(),
                 'sync_clientes_at' => $cfg->sync_clientes_at?->diffForHumans(),
                 'sync_catalogos_at' => $cfg->sync_catalogos_at?->diffForHumans(),
+                // Estado REAL de la conexión. La casilla `activo` sólo dice que
+                // alguien prendió el interruptor: con la llave vencida el panel
+                // se veía verde mientras cada llamada moría con 401.
+                // La access_key no sale nunca al navegador, sólo si existe.
+                'tiene_access_key' => ! empty($cfg->access_key),
+                'ultimo_auth_ok' => $cfg->ultimo_auth_ok,
+                'ultimo_auth_at' => $cfg->ultimo_auth_at?->diffForHumans(),
+                'ultimo_auth_error' => $cfg->ultimo_auth_error,
             ],
             'kpis' => $this->kpis(),
             'cola' => $this->cola(),
+            // UBIC-7 · estado del setup de Facturación Electrónica para el wizard.
+            'setup_fe' => $this->estadoSetupFacturacionElectronica(),
             'fallidos_recientes' => $this->fallidosRecientes(),
+            // PROD-15 · productos con falla permanente (≥3 intentos fallidos).
+            'fallas_permanentes' => $this->fallasPermanentes(),
+            // INV-A3 · movimientos kardex contables sin asiento SIIGO · da
+            // visibilidad del "stock" de pendientes para que Aracely vea de un
+            // vistazo si hay backlog de asientos sin empujar.
+            'movs_pendientes_siigo' => $this->movsPendientesSiigo(),
             'logs' => $ultimosLogs->map(fn ($l) => $this->serializarLog($l))->all(),
             'puede_toggle' => (bool) auth()->user()?->esAracely(),
             'reconciliar' => $this->estadoReconciliarVista(),
         ]);
+    }
+
+    /**
+     * Credenciales de SIIGO · usuario, access key, Partner-Id y ambiente.
+     *
+     * Vivía sólo en la pantalla de Filament. Al dejar `/admin` para Dropi, sin
+     * esto Aracely no tenía dónde pegar una llave nueva cuando SIIGO la rota,
+     * y con la llave vencida el ERP deja de mandar todo en silencio.
+     *
+     * La access key se guarda encriptada (mutador del modelo) y nunca vuelve al
+     * navegador: dejarla vacía conserva la actual.
+     */
+    public function guardarCredenciales(Request $r): RedirectResponse
+    {
+        abort_unless($r->user()?->esAracely(), 403, 'Sólo gerencia cambia las credenciales de SIIGO.');
+
+        $datos = $r->validate([
+            'usuario' => ['required', 'string', 'max:190'],
+            'access_key' => ['nullable', 'string', 'max:500'],
+            'partner_id' => ['nullable', 'string', 'max:120'],
+            'ambiente' => ['required', 'in:sandbox,produccion'],
+        ]);
+
+        $cfg = SiigoConfig::current();
+        $cfg->username = $datos['usuario'];
+        $cfg->partner_id = $datos['partner_id'] ?: null;
+        $cfg->ambiente = $datos['ambiente'];
+
+        if (! empty($datos['access_key'])) {
+            $cfg->access_key = $datos['access_key'];
+        }
+
+        // Cambió la credencial: el token viejo y el último resultado ya no
+        // valen, y el estado vuelve a "sin probar" hasta que alguien pruebe.
+        $cfg->forceFill([
+            'token_cache' => null,
+            'token_expires_at' => null,
+            'ultimo_auth_ok' => null,
+            'ultimo_auth_at' => null,
+            'ultimo_auth_error' => null,
+        ])->save();
+
+        return back()->with('success', 'Credenciales guardadas. Probá la conexión para confirmar que SIIGO responde.');
+    }
+
+    /**
+     * Prueba la autenticación contra SIIGO y deja el resultado a la vista.
+     * `SiigoClient::authenticate()` escribe `ultimo_auth_*`, así que después de
+     * esto la tarjeta de estado muestra lo que de verdad contestó SIIGO.
+     */
+    public function probarConexion(Request $r): RedirectResponse
+    {
+        abort_unless($r->user()?->esAracely(), 403);
+
+        $cfg = SiigoConfig::current();
+        $cfg->forceFill(['token_cache' => null, 'token_expires_at' => null])->save();
+
+        try {
+            app(\App\Modules\Siigo\Clients\SiigoClient::class)->authenticate();
+
+            return back()->with('success', 'SIIGO respondió correctamente: la integración está viva.');
+        } catch (\Throwable $t) {
+            return back()->with('error', 'SIIGO no aceptó las credenciales · '.$t->getMessage());
+        }
     }
 
     /**
@@ -138,6 +218,77 @@ class SiigoController extends Controller implements HasMiddleware
             );
             $r = $svc->sincronizarCatalogos();
             return response()->json(['ok' => true, 'resumen' => $r]);
+        } catch (\Throwable $e) {
+            return response()->json(['ok' => false, 'mensaje' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Catálogo /v1/document-types agrupado por type · lo consumen los selectores
+     * de settings doc_type_* en el panel Reglas. Devuelve solo activos, ordenados
+     * por nombre, en el formato que Vue necesita para `<select>`.
+     */
+    public function documentTypes(Request $r): JsonResponse
+    {
+        $soloActivos = ! $r->boolean('incluir_inactivos', false);
+        $q = \App\Modules\Siigo\Models\SiigoDocumentType::query();
+        if ($soloActivos) $q->where('active', true);
+        $rows = $q->orderBy('type')->orderBy('name')
+            ->get(['type', 'siigo_id', 'code', 'name', 'active'])
+            ->groupBy('type')
+            ->map(fn ($g) => $g->map(fn ($x) => [
+                'id' => $x->siigo_id,
+                'code' => $x->code,
+                'name' => $x->name,
+                'label' => "{$x->siigo_id} · {$x->code} · {$x->name}",
+            ])->values());
+        $synced = \App\Modules\Siigo\Models\SiigoDocumentType::max('synced_at');
+        return response()->json(['grupos' => $rows, 'ultima_sync' => $synced]);
+    }
+
+    /**
+     * Dispara `siigo:sync-document-types`. Lo exponemos por POST para que el
+     * botón "Actualizar desde SIIGO" del panel Reglas lo refresque sin usar CLI.
+     */
+    public function documentTypesSync(): JsonResponse
+    {
+        try {
+            \Illuminate\Support\Facades\Artisan::call('siigo:sync-document-types');
+            $total = \App\Modules\Siigo\Models\SiigoDocumentType::count();
+            return response()->json(['ok' => true, 'total' => $total, 'output' => \Illuminate\Support\Facades\Artisan::output()]);
+        } catch (\Throwable $e) {
+            return response()->json(['ok' => false, 'mensaje' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Catálogo /v1/taxes agrupado por tipo · lo consumen los selectores de
+     * settings tax_id_iva_19, tax_id_retefuente, etc. en el panel Reglas.
+     */
+    public function taxes(Request $r): JsonResponse
+    {
+        $soloActivos = ! $r->boolean('incluir_inactivos', false);
+        $q = \App\Modules\Siigo\Models\SiigoTax::query();
+        if ($soloActivos) $q->where('active', true);
+        $rows = $q->orderBy('type')->orderBy('percentage', 'desc')->orderBy('name')
+            ->get(['siigo_id', 'type', 'name', 'percentage', 'active'])
+            ->groupBy('type')
+            ->map(fn ($g) => $g->map(fn ($x) => [
+                'id' => $x->siigo_id,
+                'name' => $x->name,
+                'percentage' => $x->percentage,
+                'label' => "{$x->siigo_id} · {$x->name} ({$x->percentage}%)",
+            ])->values());
+        $synced = \App\Modules\Siigo\Models\SiigoTax::max('synced_at');
+        return response()->json(['grupos' => $rows, 'ultima_sync' => $synced]);
+    }
+
+    public function taxesSync(): JsonResponse
+    {
+        try {
+            \Illuminate\Support\Facades\Artisan::call('siigo:sync-taxes');
+            $total = \App\Modules\Siigo\Models\SiigoTax::count();
+            return response()->json(['ok' => true, 'total' => $total, 'output' => \Illuminate\Support\Facades\Artisan::output()]);
         } catch (\Throwable $e) {
             return response()->json(['ok' => false, 'mensaje' => $e->getMessage()], 500);
         }
@@ -367,6 +518,137 @@ class SiigoController extends Controller implements HasMiddleware
         ]);
     }
 
+    /**
+     * PROD-14 · Página de discrepancias ERP↔SIIGO.
+     * Compara en bulk todos los productos locales con siigo_id contra los
+     * datos vivos de SIIGO. Para no reventar el rate limit con N llamadas
+     * individuales, usa el GET /v1/products paginado (25/página) y hace el
+     * match en memoria por siigo_id. Si hay 134 productos, cuesta ~6 páginas.
+     */
+    public function discrepancias(Request $r): Response
+    {
+        return Inertia::render('Siigo/Discrepancias', [
+            'generado_at' => null,  // se completa cuando el user clickea "Calcular"
+        ]);
+    }
+
+    /**
+     * PROD-14 · endpoint JSON que de verdad calcula las diferencias.
+     * Lo llama el front cuando el usuario pide "Calcular ahora". Lo separo
+     * de la ruta Inertia para no bloquear el primer paint con 6 llamadas HTTP
+     * a SIIGO (que pueden tardar 10-15s con 500 productos).
+     */
+    public function discrepanciasCalcular(Request $r): JsonResponse
+    {
+        $client = new \App\Modules\Siigo\Clients\SiigoClient(SiigoConfig::current());
+
+        // 1. Trae todos los productos SIIGO en memoria, paginando (cap 25).
+        //    Recorrer decenas de páginas puede pasarse del timeout o cortarse a
+        //    mitad: si eso ocurre avisamos y comparamos con lo que alcanzamos a
+        //    traer, en vez de tumbar la pantalla con un 500.
+        $siigoProductos = [];
+        $pagina = 1;
+        $hardCap = 50;  // 50 pags × 25 = 1250 productos; suficiente para el catálogo real.
+        $avisoParcial = null;
+        do {
+            try {
+                $resp = $client->request('GET', '/v1/products', ['page' => $pagina, 'page_size' => 25]);
+            } catch (\Throwable $e) {
+                $avisoParcial = 'SIIGO dejó de responder en la página '.$pagina
+                    .'. El comparativo se hizo con los '.count($siigoProductos)
+                    .' productos que alcanzamos a traer; volvé a intentarlo para verlo completo.';
+                break;
+            }
+            if ($resp->failed()) break;
+            $items = $resp->json('results') ?? [];
+            if (empty($items)) break;
+            foreach ($items as $it) {
+                if (! empty($it['id'])) {
+                    $siigoProductos[$it['id']] = $it;
+                }
+            }
+            $pagina++;
+        } while (count($items) === 25 && $pagina <= $hardCap);
+
+        // 2. Locales con siigo_id · comparar en memoria.
+        $locales = Producto::whereNotNull('siigo_id')
+            ->select('id', 'referencia', 'nombre', 'activo', 'siigo_id', 'siigo_code', 'siigo_sync_at', 'precio_proveedor')
+            ->with(['marca:id,nombre'])
+            ->get();
+
+        $filas = [];
+        $zombiesSiigo = [];  // en SIIGO pero sin contraparte local
+        $huerfanosLocal = []; // en ERP con siigo_id pero NO están en SIIGO
+
+        foreach ($locales as $p) {
+            $sg = $siigoProductos[$p->siigo_id] ?? null;
+            if (! $sg) {
+                $huerfanosLocal[] = [
+                    'id' => $p->id, 'referencia' => $p->referencia, 'nombre' => $p->nombre,
+                    'siigo_id' => $p->siigo_id, 'siigo_code' => $p->siigo_code,
+                ];
+                continue;
+            }
+
+            $localPrecio = (float) $p->precio_proveedor;
+            $siigoPrecio = (float) ($sg['prices'][0]['price_list'][0]['value'] ?? 0);
+            $localBrand  = optional($p->marca)->nombre;
+            $siigoBrand  = $sg['additional_fields']['brand'] ?? null;
+
+            $difs = [];
+            if (trim((string) $p->nombre) !== trim((string) ($sg['name'] ?? ''))) {
+                $difs[] = ['campo' => 'nombre', 'erp' => $p->nombre, 'siigo' => $sg['name'] ?? '—'];
+            }
+            if (abs($localPrecio - $siigoPrecio) > 0.01) {
+                $difs[] = ['campo' => 'precio', 'erp' => $localPrecio, 'siigo' => $siigoPrecio];
+            }
+            if ((bool) $p->activo !== (bool) ($sg['active'] ?? true)) {
+                $difs[] = ['campo' => 'activo', 'erp' => $p->activo, 'siigo' => (bool) ($sg['active'] ?? true)];
+            }
+            if ($localBrand && $siigoBrand && mb_strtolower(trim($localBrand)) !== mb_strtolower(trim($siigoBrand))) {
+                $difs[] = ['campo' => 'marca', 'erp' => $localBrand, 'siigo' => $siigoBrand];
+            }
+
+            if (empty($difs)) {
+                unset($siigoProductos[$p->siigo_id]);  // match limpio · no es zombie
+                continue;
+            }
+
+            $filas[] = [
+                'producto_id'   => $p->id,
+                'referencia'    => $p->referencia,
+                'nombre'        => $p->nombre,
+                'siigo_id'      => $p->siigo_id,
+                'siigo_code'    => $p->siigo_code,
+                'siigo_sync_at' => optional($p->siigo_sync_at)->format('Y-m-d H:i'),
+                'diferencias'   => $difs,
+            ];
+            unset($siigoProductos[$p->siigo_id]);
+        }
+
+        // 3. Lo que queda en $siigoProductos son zombies SIIGO (no están en el ERP).
+        foreach ($siigoProductos as $sg) {
+            $zombiesSiigo[] = [
+                'siigo_id'   => $sg['id'],
+                'siigo_code' => $sg['code'] ?? '—',
+                'nombre'     => $sg['name'] ?? '—',
+                'active'     => (bool) ($sg['active'] ?? true),
+            ];
+        }
+
+        return response()->json([
+            'ok'              => true,
+            'parcial'         => $avisoParcial,   // null si se trajo el catálogo completo
+            'generado_at'     => now()->format('Y-m-d H:i:s'),
+            'total_siigo'     => count($siigoProductos) + count($filas),  // antes de unset
+            'total_locales'   => $locales->count(),
+            'con_diferencias' => count($filas),
+            'huerfanos_local' => $huerfanosLocal,
+            'zombies_siigo'   => array_slice($zombiesSiigo, 0, 100),  // tope para payload
+            'filas'           => $filas,
+        ]);
+    }
+
     /** F8 · bitácora extendida con filtros + paginación. */
     public function logs(Request $r): JsonResponse
     {
@@ -388,6 +670,26 @@ class SiigoController extends Controller implements HasMiddleware
                 'total' => $rows->total(),
             ],
         ]);
+    }
+
+    /**
+     * UBIC-10 · Descarga el Excel de "Saldos iniciales de inventario" con el
+     * layout nativo de SIIGO. Aracely lo pega en la pantalla
+     * /initial-balance-inventory de SIIGO. Opción B: segura, sin push automático.
+     *
+     * Filtros: `?categorias=venta,garantia` (default = venta). Solo gerencia.
+     */
+    public function descargarSaldosIniciales(Request $r)
+    {
+        abort_unless(\App\Auth\Permisos::esRoot($r->user()), 403, 'Solo gerencia descarga saldos iniciales.');
+
+        $cats = array_filter(explode(',', (string) $r->query('categorias', 'venta')));
+        if (empty($cats)) $cats = ['venta'];
+
+        $svc = app(\App\Modules\Siigo\Services\ExportSaldosInicialesService::class);
+        $path = $svc->generar($cats);
+        $filename = 'saldos_iniciales_siigo_'.now('America/Bogota')->format('Ymd_His').'.xlsx';
+        return response()->download($path, $filename)->deleteFileAfterSend(true);
     }
 
     /** KPIs del día (queries directas · sin cache · corren en <100 ms). */
@@ -479,6 +781,153 @@ class SiigoController extends Controller implements HasMiddleware
                 'hace' => $l->created_at?->diffForHumans(),
             ])
             ->all();
+    }
+
+    /**
+     * PROD-15 · Productos con falla PERMANENTE · agrupa los logs fallidos de
+     * los últimos 7 días por producto_id. Si un producto acumuló ≥3 fallas,
+     * cuenta como falla permanente y se muestra en un card de alerta en el
+     * panel. Esto evita que Aracely tenga que revisar producto por producto
+     * para detectar los que la cola rindió pero SIIGO siguió rechazando.
+     *
+     * Agrupar en lugar de listar por log evita contar 3 veces el mismo
+     * producto que falló 3 veces seguidas.
+     */
+    /**
+     * UBIC-7 · Estado del setup de Facturación Electrónica para el wizard.
+     * Resuelve el semáforo del card al tope de /app/siigo con los 3 pasos:
+     *   1. DIAN · trámite legalmente offline (único cada 2 años).
+     *   2. SIIGO · sincronización interna automática (nuestro Pull trae el estado).
+     *   3. ERP · marcar default + mapear ubicaciones facturadoras.
+     *
+     * Devuelve totales + lista de ubicaciones de venta sin resolución para que
+     * el wizard pinte una checklist operativa en vez de solo "falta algo".
+     */
+    private function estadoSetupFacturacionElectronica(): array
+    {
+        $totResoluciones = \App\Modules\Siigo\Models\SiigoCatalogo::where('tipo', 'resolutions-fv')->count();
+        $defaultId = (int) setting('siigo.resolucion_fv_default_id', 0);
+        $hayDefault = $defaultId > 0 && \App\Modules\Siigo\Models\SiigoCatalogo::where('tipo', 'resolutions-fv')
+            ->where('codigo', (string) $defaultId)->exists();
+
+        $ubicVenta = \App\Modules\Dropi\Models\InventarioUbicacion::where('activa', true)
+            ->where('disponible_para_venta', true)
+            ->get(['id', 'codigo', 'nombre', 'siigo_resolution_id', 'siigo_resolution_prefix']);
+        $ubicSinResol = $ubicVenta->whereNull('siigo_resolution_id')->values();
+
+        // Semáforo: verde si todo listo, ámbar si parcial, rojo si vacío.
+        $estado = match (true) {
+            $totResoluciones === 0 => 'rojo',           // DIAN/SIIGO no entregó aún.
+            $ubicSinResol->isNotEmpty() => 'amber',     // Falta mapear ubicaciones.
+            ! $hayDefault => 'amber',                   // Falta marcar default.
+            default => 'verde',
+        };
+
+        return [
+            'estado' => $estado,
+            'total_resoluciones' => $totResoluciones,
+            'hay_default' => $hayDefault,
+            'default_resolution_id' => $defaultId ?: null,
+            'ubicaciones_venta_total' => $ubicVenta->count(),
+            'ubicaciones_sin_resolucion' => $ubicSinResol->map(fn ($u) => [
+                'id' => $u->id, 'codigo' => $u->codigo, 'nombre' => $u->nombre,
+            ])->all(),
+        ];
+    }
+
+    /**
+     * INV-A3 · lista los movimientos kardex contables (traslado/merma/sobrante/
+     * ajuste_toma_fisica/reversas) que todavía no tienen siigo_journal_id,
+     * agrupados por antigüedad. Permite ver backlog y actuar.
+     */
+    private function movsPendientesSiigo(): array
+    {
+        $tiposContables = [
+            'traslado_salida', 'traslado_entrada',
+            'traslado_reversa_salida', 'traslado_reversa_entrada',
+            'merma', 'faltante', 'sobrante', 'ajuste_toma_fisica',
+        ];
+        $q = \App\Modules\Dropi\Models\InventarioMovimiento::query()
+            ->whereIn('tipo', $tiposContables)
+            ->whereNull('siigo_journal_id')
+            ->where('costo_unit', '>', 0);
+
+        $total = (clone $q)->count();
+        if ($total === 0) return ['total' => 0, 'por_antiguedad' => [], 'ejemplos' => []];
+
+        $hoy = (clone $q)->where('created_at', '>=', now()->subDay())->count();
+        $semana = (clone $q)->where('created_at', '>=', now()->subWeek())->count();
+        $mes = (clone $q)->where('created_at', '>=', now()->subMonth())->count();
+
+        $ejemplos = $q->orderBy('created_at')->with('ubicacion:id,codigo,nombre')
+            ->limit(10)->get(['id', 'tipo', 'cantidad', 'costo_unit', 'ubicacion_id', 'created_at'])
+            ->map(fn ($m) => [
+                'id' => $m->id, 'tipo' => $m->tipo,
+                'ubicacion' => $m->ubicacion?->codigo ?? '—',
+                'valor' => round(abs($m->cantidad) * $m->costo_unit, 2),
+                'hace' => $m->created_at?->diffForHumans(),
+            ])->all();
+
+        return [
+            'total' => $total,
+            'por_antiguedad' => [
+                'hoy' => $hoy,
+                'esta_semana' => $semana - $hoy,
+                'este_mes' => $mes - $semana,
+                'mas_viejos' => $total - $mes,
+            ],
+            'ejemplos' => $ejemplos,
+        ];
+    }
+
+    private function fallasPermanentes(): array
+    {
+        $umbral = 3;
+        $desde = now()->subDays(7);
+
+        // JSON_EXTRACT portable (MySQL 5.7+). Si no hay producto_id en detalle,
+        // el log viene de otra fuente (reconciliar, etc.) y lo saltamos.
+        $rows = DB::table('siigo_sync_log')
+            ->selectRaw("JSON_UNQUOTE(JSON_EXTRACT(detalle, '$.producto_id')) as producto_id,
+                         COUNT(*) as intentos,
+                         MAX(created_at) as ultima_falla,
+                         MAX(id) as ultimo_log_id,
+                         MAX(mensaje) as ultimo_mensaje")
+            ->where('estado', 'fallido')
+            ->where('created_at', '>=', $desde)
+            ->whereNotNull(DB::raw("JSON_EXTRACT(detalle, '$.producto_id')"))
+            ->groupByRaw("JSON_UNQUOTE(JSON_EXTRACT(detalle, '$.producto_id'))")
+            ->havingRaw('COUNT(*) >= ?', [$umbral])
+            ->orderByRaw('MAX(created_at) DESC')
+            ->limit(30)
+            ->get();
+
+        if ($rows->isEmpty()) {
+            return [];
+        }
+
+        // Join con la tabla de productos para traer referencia + nombre y
+        // decidir qué productos siguen vivos (los soft-deleteados ya no urgen).
+        $ids = $rows->pluck('producto_id')->map(fn ($x) => (int) $x)->filter()->all();
+        $productos = Producto::whereIn('id', $ids)
+            ->get(['id', 'referencia', 'nombre', 'activo', 'siigo_id'])
+            ->keyBy('id');
+
+        return $rows->map(function ($r) use ($productos) {
+            $pid = (int) $r->producto_id;
+            $p = $productos[$pid] ?? null;
+            return [
+                'producto_id'   => $pid,
+                'referencia'    => $p?->referencia ?? '— (eliminado)',
+                'nombre'        => $p?->nombre ?? '—',
+                'siigo_id'      => $p?->siigo_id,
+                'intentos'      => (int) $r->intentos,
+                'ultima_falla'  => $r->ultima_falla ? \Carbon\Carbon::parse($r->ultima_falla)->diffForHumans() : null,
+                'ultimo_log_id' => (int) $r->ultimo_log_id,
+                'ultimo_mensaje' => $r->ultimo_mensaje,
+                'ya_no_existe'  => $p === null,
+            ];
+        })->values()->all();
     }
 
     private function serializarLog(SiigoSyncLog $l): array

@@ -42,6 +42,6 @@ class ImportOCController extends Controller implements HasMiddleware
             $msg .= " · " . count($resultado['errores']) . " errores";
         }
 
-        return redirect()->to('/admin/ordenes-compra')->with('mensaje', $msg);
+        return redirect()->to('/app/compras')->with('mensaje', $msg);
     }
 }

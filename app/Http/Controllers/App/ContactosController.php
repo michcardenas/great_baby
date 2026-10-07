@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Contacto;
 use App\Modules\Cartera\Enums\EstadoFactura;
 use App\Modules\Cartera\Models\FacturaVenta;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controllers\HasMiddleware;
 use Illuminate\Routing\Controllers\Middleware;
@@ -18,7 +19,7 @@ class ContactosController extends Controller implements HasMiddleware
     {
         return [
             new Middleware(function (Request $r, \Closure $next) {
-                abort_unless($r->user()?->esAracely(), 403);
+                abort_unless($r->user()?->esContable(), 403);  // A1/A3 FIX · unificado con sidebar (Contador/Gerente)
                 return $next($r);
             }),
         ];
@@ -156,7 +157,19 @@ class ContactosController extends Controller implements HasMiddleware
                 ],
                 'siigo_id' => $contacto->siigo_id,
                 'siigo_sync_at' => $contacto->siigo_sync_at?->toIso8601String(),
+                // Cartera de clientes · quién atiende la cuenta.
+                'vendedor_id' => $contacto->vendedor_id,
+                'vendedor' => $contacto->vendedor?->name,
             ],
+            // Sólo gerencia reasigna. Un Vendedor entra acá con `ver.contactos`
+            // y si pudiera cambiar este campo se quedaría la cuenta —y la
+            // comisión— de un compañero.
+            'puede_asignar_vendedor' => \App\Auth\Permisos::esRoot(request()->user()),
+            'vendedores' => \App\Auth\Permisos::esRoot(request()->user())
+                ? \App\Models\User::whereHas('roles', fn ($q) => $q->where('name', 'Vendedor'))
+                    ->orderBy('name')->get(['id', 'name'])
+                    ->map(fn ($u) => ['id' => $u->id, 'nombre' => $u->name])
+                : [],
             'facturas' => $facturas->map(fn ($f) => [
                 'id' => $f->id,
                 'numero' => $f->numero,
@@ -174,5 +187,117 @@ class ContactosController extends Controller implements HasMiddleware
                 'facturas_count' => (int) FacturaVenta::where('contacto_id', $contacto->id)->count(),
             ],
         ]);
+    }
+
+    /**
+     * Crear o editar un contacto.
+     *
+     * Vivía sólo en el panel Filament. Al dejar `/admin` para Dropi el ERP se
+     * quedaba sin forma de dar de alta un cliente o un proveedor, que es de lo
+     * primero que se hace cuando entra una cuenta nueva.
+     */
+    public function form(Request $r, ?Contacto $contacto = null): Response
+    {
+        return Inertia::render('Cartera/Contactos/Form', [
+            'contacto' => $contacto?->exists ? [
+                'id' => $contacto->id,
+                'tipo_documento' => $contacto->tipo_documento,
+                'numero_documento' => $contacto->numero_documento,
+                'nombre_completo' => $contacto->nombre_completo,
+                'razon_social' => $contacto->razon_social,
+                'email' => $contacto->email,
+                'telefono' => $contacto->telefono,
+                'direccion' => $contacto->direccion,
+                'ciudad' => $contacto->ciudad,
+                'departamento' => $contacto->departamento,
+                'es_cliente' => (bool) $contacto->es_cliente,
+                'es_cliente_b2b' => (bool) $contacto->es_cliente_b2b,
+                'es_proveedor' => (bool) $contacto->es_proveedor,
+                'es_empleado' => (bool) $contacto->es_empleado,
+                'regimen_iva' => $contacto->regimen_iva,
+                'lista_precios_id' => $contacto->lista_precios_id,
+                'activo' => (bool) $contacto->activo,
+            ] : null,
+            'listas' => \App\Modules\Catalogo\Models\ListaPrecios::orderBy('nombre')
+                ->get(['id', 'nombre'])
+                ->map(fn ($l) => ['id' => $l->id, 'nombre' => $l->nombre]),
+        ]);
+    }
+
+    public function guardar(Request $r, ?Contacto $contacto = null): RedirectResponse
+    {
+        $existe = $contacto?->exists ?? false;
+
+        $datos = $r->validate([
+            'tipo_documento' => ['required', 'in:CC,CE,NIT,PP'],
+            'numero_documento' => ['required', 'string', 'max:30',
+                \Illuminate\Validation\Rule::unique('contactos', 'numero_documento')->ignore($contacto?->id)],
+            'nombre_completo' => ['required', 'string', 'max:180'],
+            'razon_social' => ['nullable', 'string', 'max:180'],
+            'email' => ['nullable', 'email', 'max:120'],
+            'telefono' => ['nullable', 'string', 'max:30'],
+            'direccion' => ['nullable', 'string', 'max:200'],
+            'ciudad' => ['nullable', 'string', 'max:80'],
+            'departamento' => ['nullable', 'string', 'max:80'],
+            'es_cliente' => ['boolean'],
+            'es_cliente_b2b' => ['boolean'],
+            'es_proveedor' => ['boolean'],
+            'es_empleado' => ['boolean'],
+            'regimen_iva' => ['nullable', 'in:responsable,no_responsable'],
+            'lista_precios_id' => ['nullable', 'integer', 'exists:listas_precios,id'],
+            'activo' => ['boolean'],
+        ], [
+            'numero_documento.unique' => 'Ya existe un contacto con ese documento.',
+        ]);
+
+        // Un cliente B2B sin lista de precios no se puede facturar ni se le
+        // puede armar un pedido: el armador del vendedor lo filtra justamente
+        // por `lista_precios_id`. Mejor avisar acá que dejarlo invisible.
+        if (! empty($datos['es_cliente_b2b']) && empty($datos['lista_precios_id'])) {
+            return back()->withInput()->with('error',
+                'Un cliente B2B necesita lista de precios: sin ella no aparece para armarle pedidos.');
+        }
+
+        if ($existe) {
+            $contacto->update($datos);
+        } else {
+            $contacto = Contacto::create($datos);
+        }
+
+        return redirect('/app/contactos/'.$contacto->id)->with('success',
+            $existe ? 'Contacto actualizado.' : 'Contacto creado.');
+    }
+
+    /**
+     * Asigna (o libera) el vendedor dueño de la cuenta.
+     *
+     * Vacío = cliente libre: lo toma el primer vendedor que le venda. Esto
+     * decide quién puede levantarle pedidos y, por lo tanto, de quién es la
+     * comisión, así que queda reservado a gerencia.
+     */
+    public function asignarVendedor(Request $r, Contacto $contacto): \Illuminate\Http\RedirectResponse
+    {
+        abort_unless(\App\Auth\Permisos::esRoot($r->user()), 403,
+            'Sólo gerencia reasigna la cartera de clientes.');
+
+        $datos = $r->validate([
+            'vendedor_id' => ['nullable', 'integer', 'exists:users,id'],
+        ]);
+
+        $vendedorId = $datos['vendedor_id'] ?? null;
+
+        // Que no se le asigne la cuenta a alguien que no es vendedor: quedaría
+        // bloqueada para todos (nadie podría levantarle un pedido).
+        if ($vendedorId !== null) {
+            $u = \App\Models\User::find($vendedorId);
+            abort_unless($u?->hasRole('Vendedor'), 422,
+                'Ese usuario no tiene el rol Vendedor.');
+        }
+
+        $contacto->forceFill(['vendedor_id' => $vendedorId])->save();
+
+        return back()->with('success', $vendedorId
+            ? 'Cuenta asignada a ' . \App\Models\User::find($vendedorId)->name . '.'
+            : 'Cuenta liberada: la toma el primer vendedor que le venda.');
     }
 }

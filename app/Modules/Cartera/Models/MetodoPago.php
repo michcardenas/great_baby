@@ -16,6 +16,9 @@ class MetodoPago extends Model
     protected $fillable = [
         'codigo', 'nombre', 'tipo', 'requiere_referencia', 'requiere_banco',
         'requiere_comprobante', 'cuenta_puc', 'activo', 'orden',
+        // A qué tipo de pago de SIIGO entra el recibo cuando se cobra con este
+        // método. Sin esto todos los cobros caían en el mismo tipo global.
+        'siigo_payment_type_id', 'siigo_payment_type_nombre',
     ];
 
     protected $casts = [
@@ -24,6 +27,7 @@ class MetodoPago extends Model
         'requiere_comprobante' => 'boolean',
         'activo' => 'boolean',
         'orden' => 'integer',
+        'siigo_payment_type_id' => 'integer',
     ];
 
     public const TIPOS = [

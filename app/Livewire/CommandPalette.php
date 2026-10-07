@@ -47,7 +47,7 @@ class CommandPalette extends Component
                         'icono' => '🧾',
                         'titulo' => $f->numero_siigo ? "{$f->numero} · SIIGO {$f->numero_siigo}" : $f->numero,
                         'sub' => 'Total: $' . number_format((float) $f->total, 0, ',', '.') . ' · ' . ($f->contacto?->nombreDisplay() ?? '—'),
-                        'url' => "/admin/facturas-venta/{$f->id}",
+                        'url' => "/app/facturas/{$f->id}",
                     ]);
 
                 $contactos = Contacto::where(function ($qq) use ($like) {
@@ -62,7 +62,7 @@ class CommandPalette extends Component
                         'icono' => '👤',
                         'titulo' => $c->nombreDisplay() ?? $c->nombre_completo,
                         'sub' => ($c->tipo_documento ?? '') . ' ' . ($c->numero_documento ?? '') . ' · ' . ($c->email ?? '—'),
-                        'url' => "/admin/contactos/{$c->id}",
+                        'url' => "/app/contactos/{$c->id}",
                     ]);
             }
 
@@ -96,7 +96,7 @@ class CommandPalette extends Component
                     'icono' => '🏷️',
                     'titulo' => ($v->producto?->nombre ?? '—') . ' · ' . ($v->color_nombre ?? '') . ($v->talla ? " T{$v->talla}" : ''),
                     'sub' => 'Código: ' . ($v->codigo_barras ?? '—'),
-                    'url' => '/admin/variantes',
+                    'url' => '/app/catalogo/productos',
                 ]);
 
             $resultados = collect()

@@ -17,7 +17,7 @@ class SiigoSyncCommand extends Command
     {
         $cfg = SiigoConfig::current();
         if (! $cfg->activo || ! $cfg->username) {
-            $this->warn('SIIGO no está configurado o inactivo. Configura credenciales en /admin/integracion-siigo');
+            $this->warn('SIIGO no está configurado o inactivo. Configura credenciales en /app/siigo');
             return self::SUCCESS;
         }
 

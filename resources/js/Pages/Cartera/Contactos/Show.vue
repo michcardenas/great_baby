@@ -1,7 +1,8 @@
 <script setup>
-import { Head, Link } from '@inertiajs/vue3';
+import { ref } from 'vue';
+import { Head, Link, router } from '@inertiajs/vue3';
 import { useMoney } from '@/composables/useMoney';
-import { ArrowLeft, User, Phone, Mail, MapPin, FileText, TrendingUp, Wallet, FilePlus, CreditCard } from 'lucide-vue-next';
+import { ArrowLeft, User, Phone, Mail, MapPin, FileText, TrendingUp, Wallet, FilePlus, CreditCard, Briefcase } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import KpiCard from '@/Components/KpiCard.vue';
 
@@ -9,7 +10,21 @@ const props = defineProps({
     contacto: { type: Object, required: true },
     facturas: { type: Array, required: true },
     metricas: { type: Object, required: true },
+    // Cartera de clientes · sólo gerencia reasigna.
+    puede_asignar_vendedor: { type: Boolean, default: false },
+    vendedores: { type: Array, default: () => [] },
 });
+
+const vendedorSel = ref(props.contacto.vendedor_id ?? '');
+const guardandoVendedor = ref(false);
+
+const guardarVendedor = () => {
+    if (guardandoVendedor.value) return;
+    guardandoVendedor.value = true;
+    router.post(`/app/contactos/${props.contacto.id}/vendedor`,
+        { vendedor_id: vendedorSel.value === '' ? null : Number(vendedorSel.value) },
+        { preserveScroll: true, onFinish: () => (guardandoVendedor.value = false) });
+};
 
 const { money: fmtCOP } = useMoney();
 
@@ -61,13 +76,20 @@ const abrirWA = () => {
                     </div>
                 </div>
                 <div class="flex flex-wrap gap-2">
-                    <!-- H5+H6 · CTAs directas a Emitir factura y Registrar pago (target admin Filament) -->
-                    <a v-if="contacto.roles?.cliente || contacto.roles?.b2b" :href="`/admin/factura-ventas/create?contacto_id=${contacto.id}`" target="_blank" rel="noopener" class="btn-primary text-sm">
-                        <FilePlus class="h-4 w-4"/> Emitir factura
-                    </a>
-                    <a v-if="contacto.roles?.cliente || contacto.roles?.b2b" :href="`/app/cartera/pagos?contacto_id=${contacto.id}&nuevo=1`" class="btn-primary bg-brand-600 text-sm">
+                    <Link :href="`/app/contactos/${contacto.id}/editar`" class="btn-ghost border border-surface-300 dark:border-surface-700 text-sm min-h-11">
+                        <User class="h-4 w-4"/> Editar
+                    </Link>
+                    <!-- La factura sale del pedido aprobado, no a mano: así el
+                         inventario y la contabilidad quedan cuadrados. El botón
+                         lleva a la bandeja, que es el camino real. -->
+                    <Link v-if="contacto.roles?.cliente || contacto.roles?.b2b"
+                          href="/app/facturacion/bandeja" class="btn-primary text-sm min-h-11">
+                        <FilePlus class="h-4 w-4"/> Facturar un pedido
+                    </Link>
+                    <Link v-if="contacto.roles?.cliente || contacto.roles?.b2b"
+                          href="/app/pagos" class="btn-primary bg-brand-600 text-sm min-h-11">
                         <CreditCard class="h-4 w-4"/> Registrar pago
-                    </a>
+                    </Link>
                     <button v-if="contacto.telefono" @click="abrirWA" class="btn-primary bg-emerald-600 hover:bg-emerald-700 text-sm">
                         <Phone class="h-4 w-4"/> WhatsApp
                     </button>
@@ -93,6 +115,35 @@ const abrirWA = () => {
                         </div>
                         <div v-if="contacto.siigo_id" class="text-xs text-surface-500">
                             SIIGO: <span class="font-mono">{{ contacto.siigo_id }}</span>
+                        </div>
+                    </div>
+
+                    <!-- Cartera de clientes: quién atiende la cuenta. Decide
+                         quién puede levantarle pedidos y de quién es la
+                         comisión, por eso sólo lo cambia gerencia. -->
+                    <div class="mt-4 pt-3 border-t border-surface-200 dark:border-surface-800">
+                        <div class="text-xs uppercase tracking-wider text-surface-500 mb-2 flex items-center gap-1.5">
+                            <Briefcase class="h-3.5 w-3.5"/> Vendedor de la cuenta
+                        </div>
+
+                        <template v-if="puede_asignar_vendedor">
+                            <select v-model="vendedorSel" class="input w-full text-sm min-h-11">
+                                <option value="">— Cliente libre —</option>
+                                <option v-for="v in vendedores" :key="v.id" :value="v.id">{{ v.nombre }}</option>
+                            </select>
+                            <p class="text-xs text-surface-500 mt-1">
+                                Sin vendedor, la cuenta queda libre y la toma el primero que le venda.
+                            </p>
+                            <button @click="guardarVendedor"
+                                    :disabled="guardandoVendedor || String(vendedorSel) === String(contacto.vendedor_id ?? '')"
+                                    class="btn-primary w-full mt-2 text-sm disabled:opacity-40">
+                                {{ guardandoVendedor ? 'Guardando…' : 'Guardar vendedor' }}
+                            </button>
+                        </template>
+
+                        <div v-else class="text-sm">
+                            <span v-if="contacto.vendedor" class="font-semibold">{{ contacto.vendedor }}</span>
+                            <span v-else class="text-surface-500 italic">Cliente libre</span>
                         </div>
                     </div>
                 </div>

@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Models\NotificacionErp;
 use App\Modules\Cartera\Models\FacturaVenta;
+use App\Modules\Siigo\Models\SiigoSyncLog;
 use App\Modules\Siigo\Services\SiigoEmisionService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -40,26 +41,49 @@ class ReintentarEmisionDian implements ShouldQueue
         }
 
         $svc->emitir($factura);
+        $fresh = $factura->fresh();
+
+        // A2 FIX · panel CONT-C2 lee de siigo_sync_log. Antes este Job solo
+        //   escribía NotificacionErp → facturas B2B invisibles al reporte de
+        //   discrepancias. Ahora quedan trazadas igual que NC/asientos/pagos.
+        SiigoSyncLog::create([
+            'recurso' => 'facturas_venta',
+            'estado' => 'ok',
+            'mensaje' => "Factura {$factura->numero} timbrada · SIIGO " . ($fresh?->numero_siigo ?? '—'),
+            'detalle' => [
+                'factura_id' => $factura->id,
+                'numero' => $factura->numero,
+                'cufe' => substr((string) $fresh?->cufe, 0, 60),
+            ],
+        ]);
 
         NotificacionErp::crear([
             'tipo' => 'timbrado_ok',
             'titulo' => "Factura {$factura->numero} timbrada en reintento",
-            'mensaje' => "SIIGO nº {$factura->fresh()->numero_siigo} · CUFE " . substr((string) $factura->fresh()->cufe, 0, 20) . '…',
+            'mensaje' => "SIIGO nº {$fresh?->numero_siigo} · CUFE " . substr((string) $fresh?->cufe, 0, 20) . '…',
             'color' => 'success',
             'icono' => 'heroicon-o-check-badge',
-            'url' => '/admin/facturas-venta',
+            'url' => '/app/facturas',
         ]);
     }
 
     public function failed(\Throwable $e): void
     {
+        // A2 FIX · dejar rastro en siigo_sync_log para CONT-C2.
+        SiigoSyncLog::create([
+            'recurso' => 'facturas_venta',
+            'estado' => 'fallido',
+            'mensaje' => mb_substr($e->getMessage(), 0, 500),
+            'detalle' => ['factura_id' => $this->facturaId],
+        ]);
+
         NotificacionErp::crear([
             'tipo' => 'timbrado_rechazado',
             'titulo' => "Emisión DIAN falló tras 4 intentos",
             'mensaje' => "Factura #{$this->facturaId}: " . $e->getMessage(),
             'color' => 'danger',
             'icono' => 'heroicon-o-x-circle',
-            'url' => '/admin/facturas-venta',
+            'url' => '/app/facturas',
         ]);
     }
 }

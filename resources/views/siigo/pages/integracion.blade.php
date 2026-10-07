@@ -4,16 +4,28 @@
         $logs = $this->getLogs();
     @endphp
 
+    @php
+        // El estado tiene que decir si SIIGO responde, no si la casilla está
+        // marcada. Antes esta tarjeta leía `activo` y mostraba «Activa» en
+        // verde mientras cada llamada moría con HTTP 401.
+        [$tono, $rotulo, $detalle] = match (true) {
+            ! $config->activo => ['#6b7280', '⏸️ Inactiva', 'El interruptor está apagado: el ERP no intenta hablar con SIIGO.'],
+            $config->ultimo_auth_ok === false => ['#ef4444', '⛔ Sin conexión', $config->ultimo_auth_error ?: 'SIIGO rechazó las credenciales.'],
+            $config->ultimo_auth_ok === true => ['#10b981', '✅ Conectada', 'Última autenticación correcta '.($config->ultimo_auth_at?->diffForHumans() ?? '')],
+            default => ['#f59e0b', '❔ Sin probar', 'Todavía no se intentó autenticar. Usá «Probar conexión».'],
+        };
+        $fondo = $tono.'1a';
+    @endphp
+
     {{-- Estado de la integración --}}
     <x-filament::section>
         <x-slot name="heading">Estado de la integración</x-slot>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;">
-            <div style="padding:.75rem;border-radius:.5rem;background:{{ $config->activo ? 'rgba(16,185,129,.1)' : 'rgba(107,114,128,.1)' }};">
+            <div style="padding:.75rem;border-radius:.5rem;background:{{ $fondo }};border-left:3px solid {{ $tono }};">
                 <div style="font-size:.7rem;color:#9ca3af;text-transform:uppercase;">Estado</div>
-                <div style="font-weight:700;font-size:1.05rem;color:{{ $config->activo ? '#10b981' : '#6b7280' }};">
-                    {{ $config->activo ? '✅ Activa' : '⏸️ Inactiva' }}
-                </div>
-                <div style="font-size:.75rem;color:#9ca3af;margin-top:.25rem;">Ambiente: {{ $config->ambiente }}</div>
+                <div style="font-weight:700;font-size:1.05rem;color:{{ $tono }};">{{ $rotulo }}</div>
+                <div style="font-size:.75rem;color:#9ca3af;margin-top:.25rem;">{{ $detalle }}</div>
+                <div style="font-size:.7rem;color:#9ca3af;margin-top:.25rem;">Ambiente: {{ $config->ambiente }}</div>
             </div>
             <div style="padding:.75rem;border-radius:.5rem;background:rgba(59,130,246,.1);">
                 <div style="font-size:.7rem;color:#9ca3af;text-transform:uppercase;">Última sync catálogos</div>

@@ -20,6 +20,16 @@ class PagoVentaObserver
     {
         (new RegistrarAsientoContable())->pago($pago);
 
+        // Bajar el saldo de la factura.
+        //
+        // Era el único de los cuatro handlers que NO lo hacía: `updated`,
+        // `deleted` y `restored` sí llamaban `recalcular()`. Resultado: cobrar
+        // un pago dejaba la factura con el saldo completo y el estado sin
+        // tocar, así que el cliente seguía debiendo en el ERP después de pagar
+        // y `cartera:cobrar` le mandaba WhatsApp por una deuda ya saldada.
+        // Sólo se corregía de rebote si alguien editaba el pago después.
+        $pago->factura?->recalcular();
+
         // F10 · voucher SIIGO (recibo de caja aplicado a la factura).
         // Skip si el pago no tiene monto_aplicado > 0 (parcial sin aplicar).
         if ((float) $pago->monto_aplicado <= 0) return;

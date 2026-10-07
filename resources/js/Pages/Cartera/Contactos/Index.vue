@@ -60,9 +60,9 @@ const wa = (t) => t ? `https://wa.me/${(t.startsWith('57') ? t : '57' + t).repla
                     <p class="text-sm text-surface-500 mt-1">Clientes, B2B, proveedores, empleados y vendedores Dropi.</p>
                 </div>
                 <!-- H4 · CTA "Nuevo contacto" directo desde Index -->
-                <a href="/admin/contactos/create" target="_blank" rel="noopener" class="btn-primary">
+                <Link href="/app/contactos/nuevo" class="btn-primary min-h-11">
                     <Plus class="h-4 w-4"/> Nuevo contacto
-                </a>
+                </Link>
             </div>
 
             <!-- Tabs -->

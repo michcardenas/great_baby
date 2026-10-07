@@ -56,12 +56,52 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     Route::get('/facturas', [\App\Http\Controllers\App\FacturasController::class, 'index'])->name('app.facturas.index');
     Route::get('/facturas/{factura}', [\App\Http\Controllers\App\FacturasController::class, 'show'])->name('app.facturas.show');
 
+    // Rol Facturador · bandeja de pedidos listos para facturar en SIIGO.
+    Route::get('/facturacion/bandeja', [\App\Http\Controllers\App\FacturacionController::class, 'bandeja'])->middleware('throttle:30,1')->name('app.facturacion.bandeja');
+    Route::get('/facturacion/preview/{pedido}', [\App\Http\Controllers\App\FacturacionController::class, 'preview'])->name('app.facturacion.preview');
+    Route::post('/facturacion/facturar/{pedido}', [\App\Http\Controllers\App\FacturacionController::class, 'facturar'])->middleware('throttle:10,1')->name('app.facturacion.facturar');
+
+    // Acciones SIIGO sobre facturas (anular/mail/PDF/XML/errores DIAN).
+    Route::post('/facturas/{factura}/siigo/anular', [\App\Http\Controllers\App\FacturasSiigoAccionesController::class, 'anular'])->middleware('throttle:10,1')->name('app.facturas.siigo.anular');
+    Route::post('/facturas/{factura}/siigo/reenviar-mail', [\App\Http\Controllers\App\FacturasSiigoAccionesController::class, 'reenviarMail'])->middleware('throttle:20,1')->name('app.facturas.siigo.reenviar-mail');
+    Route::get('/facturas/{factura}/siigo/pdf', [\App\Http\Controllers\App\FacturasSiigoAccionesController::class, 'pdf'])->middleware('throttle:30,1')->name('app.facturas.siigo.pdf');
+    Route::get('/facturas/{factura}/siigo/xml', [\App\Http\Controllers\App\FacturasSiigoAccionesController::class, 'xml'])->middleware('throttle:30,1')->name('app.facturas.siigo.xml');
+    Route::get('/facturas/{factura}/siigo/errores-dian', [\App\Http\Controllers\App\FacturasSiigoAccionesController::class, 'erroresDian'])->middleware('throttle:30,1')->name('app.facturas.siigo.errores-dian');
+
     // Cartera · Contactos
     Route::get('/contactos', [\App\Http\Controllers\App\ContactosController::class, 'index'])->name('app.contactos.index');
+    // Alta y edición de contactos · antes sólo existían en el panel Filament.
+    Route::get('/contactos/nuevo', [\App\Http\Controllers\App\ContactosController::class, 'form'])->name('app.contactos.nuevo');
+    Route::post('/contactos', [\App\Http\Controllers\App\ContactosController::class, 'guardar'])->name('app.contactos.crear');
+    Route::get('/contactos/{contacto}/editar', [\App\Http\Controllers\App\ContactosController::class, 'form'])->name('app.contactos.editar');
+    Route::post('/contactos/{contacto}', [\App\Http\Controllers\App\ContactosController::class, 'guardar'])->name('app.contactos.actualizar');
     Route::get('/contactos/{contacto}', [\App\Http\Controllers\App\ContactosController::class, 'show'])->name('app.contactos.show');
+    // Cartera de clientes · gerencia asigna o libera la cuenta.
+    Route::post('/contactos/{contacto}/vendedor', [\App\Http\Controllers\App\ContactosController::class, 'asignarVendedor'])
+        ->name('app.contactos.vendedor');
 
     // Cartera · Pagos
+    // Maestro de métodos de pago y comisiones de vendedores · vivían sólo en
+    // el panel Filament, que quedó reservado para Dropi.
+    Route::get('/cartera/metodos-pago', [\App\Http\Controllers\App\MetodosPagoController::class, 'index'])->name('app.metodos-pago.index');
+    Route::get('/cartera/metodos-pago/tipos-siigo', [\App\Http\Controllers\App\MetodosPagoController::class, 'tiposSiigo'])
+        ->middleware('throttle:30,1')->name('app.metodos-pago.tipos-siigo');
+    Route::post('/cartera/metodos-pago', [\App\Http\Controllers\App\MetodosPagoController::class, 'guardar'])->name('app.metodos-pago.crear');
+    Route::post('/cartera/metodos-pago/{metodo}', [\App\Http\Controllers\App\MetodosPagoController::class, 'guardar'])->name('app.metodos-pago.actualizar');
+    Route::delete('/cartera/metodos-pago/{metodo}', [\App\Http\Controllers\App\MetodosPagoController::class, 'eliminar'])->name('app.metodos-pago.eliminar');
+
+    Route::get('/cartera/comisiones', [\App\Http\Controllers\App\ComisionesController::class, 'index'])->name('app.comisiones.index');
+    Route::post('/cartera/comisiones/calcular', [\App\Http\Controllers\App\ComisionesController::class, 'calcular'])->name('app.comisiones.calcular');
+    Route::post('/cartera/comisiones/{comision}/estado', [\App\Http\Controllers\App\ComisionesController::class, 'cambiarEstado'])->name('app.comisiones.estado');
+    Route::post('/cartera/comisiones/config', [\App\Http\Controllers\App\ComisionesController::class, 'guardarConfig'])->name('app.comisiones.config.crear');
+    Route::post('/cartera/comisiones/config/{config}', [\App\Http\Controllers\App\ComisionesController::class, 'guardarConfig'])->name('app.comisiones.config.actualizar');
+    Route::delete('/cartera/comisiones/config/{config}', [\App\Http\Controllers\App\ComisionesController::class, 'eliminarConfig'])->name('app.comisiones.config.eliminar');
+
     Route::get('/pagos', [\App\Http\Controllers\App\PagosController::class, 'index'])->name('app.pagos.index');
+    // Registrar plata entrando · antes sólo existía en el panel Filament.
+    Route::get('/pagos/facturas-pendientes', [\App\Http\Controllers\App\PagosController::class, 'facturasPendientes'])
+        ->middleware('throttle:60,1')->name('app.pagos.facturas');
+    Route::post('/pagos', [\App\Http\Controllers\App\PagosController::class, 'guardar'])->name('app.pagos.guardar');
 
     // Cartera · Crédito y cobranza
     Route::get('/credito', [\App\Http\Controllers\App\CreditoController::class, 'index'])->name('app.credito.index');
@@ -102,6 +142,8 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     // productos y encola 1 push SIIGO por cada uno. Sin throttle, un script
     // podía saturar la cola y agotar el rate limit SIIGO (60/min).
     Route::post('/catalogo/productos-bulk-edit', [\App\Http\Controllers\App\ProductosController::class, 'bulkEdit'])->middleware('throttle:10,1')->name('app.catalogo.productos.bulk-edit');
+    // PROD-13 · bulk push a SIIGO · throttle idéntico a bulk-edit (10/min, 500/lote).
+    Route::post('/catalogo/productos-bulk-push-siigo', [\App\Http\Controllers\App\ProductosController::class, 'bulkPushSiigo'])->middleware('throttle:10,1')->name('app.catalogo.productos.bulk-push-siigo');
     Route::get('/catalogo/productos-papelera', [\App\Http\Controllers\App\ProductosController::class, 'papelera'])->name('app.catalogo.productos.papelera');
     Route::post('/catalogo/productos-papelera/{id}/restaurar', [\App\Http\Controllers\App\ProductosController::class, 'restaurar'])->name('app.catalogo.productos.restaurar');
     // FASE D3 · Forzar push manual a SIIGO · FASE F3.A17 throttle 20/min
@@ -151,6 +193,9 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     Route::get('/cartera/pagos-proveedor', [\App\Http\Controllers\App\PagosProveedorController::class, 'index'])->name('app.cartera.pagos-proveedor');
     Route::post('/cartera/pagos-proveedor', [\App\Http\Controllers\App\PagosProveedorController::class, 'crear'])->middleware('throttle:30,1');
     Route::post('/cartera/pagos-proveedor/{pagoProveedor}/reenviar-siigo', [\App\Http\Controllers\App\PagosProveedorController::class, 'reenviarSiigo'])->middleware('throttle:20,1');
+    // COMP-B5 · pago nace pendiente; confirmar dispara el push a SIIGO.
+    Route::post('/cartera/pagos-proveedor/{pagoProveedor}/confirmar', [\App\Http\Controllers\App\PagosProveedorController::class, 'confirmar'])->middleware('throttle:30,1')->name('app.cartera.pagos-proveedor.confirmar');
+    Route::post('/cartera/pagos-proveedor/{pagoProveedor}/anular', [\App\Http\Controllers\App\PagosProveedorController::class, 'anular'])->middleware('throttle:20,1')->name('app.cartera.pagos-proveedor.anular');
     // QA-FIX #11 · preview retenciones desde el motor real.
     Route::post('/api/retenciones/preview', [\App\Http\Controllers\App\PagosProveedorController::class, 'previewRetenciones'])->middleware('throttle:120,1');
     Route::get('/compras/recepcion/nueva', [\App\Http\Controllers\App\ComprasGestionController::class, 'recepcionForm'])->name('app.compras.recepcion.nueva');
@@ -190,8 +235,41 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     // Sprint 3 · A.4 · anular en curso + eliminar borrador vacío.
     Route::post('/inventario/conteos/{id}/anular', [\App\Http\Controllers\App\InventarioGestionController::class, 'conteoAnular'])->middleware('throttle:20,1')->name('app.inventario.conteo.anular');
     Route::delete('/inventario/conteos/{id}', [\App\Http\Controllers\App\InventarioGestionController::class, 'conteoEliminar'])->middleware('throttle:20,1')->name('app.inventario.conteo.eliminar');
+    // UBIC-2 · CRUD Ubicaciones (bodegas / puntos de venta).
+    Route::get('/inventario/ubicaciones', [\App\Http\Controllers\App\InventarioUbicacionesController::class, 'index'])->middleware('throttle:60,1')->name('app.inventario.ubicaciones');
+    Route::post('/inventario/ubicaciones', [\App\Http\Controllers\App\InventarioUbicacionesController::class, 'guardar'])->middleware('throttle:30,1')->name('app.inventario.ubicacion.guardar');
+    // UBIC-4 · sync resoluciones DIAN desde SIIGO (document-types tipo FV).
+    Route::post('/inventario/ubicaciones/sync-resoluciones', [\App\Http\Controllers\App\InventarioUbicacionesController::class, 'sincronizarResoluciones'])->middleware('throttle:5,1')->name('app.inventario.ubicacion.sync-resoluciones');
+    // UBIC-6 · marca una resolución SIIGO como default para auto-asignación.
+    Route::post('/inventario/ubicaciones/resolucion-default', [\App\Http\Controllers\App\InventarioUbicacionesController::class, 'marcarResolucionDefault'])->middleware('throttle:10,1')->name('app.inventario.ubicacion.resolucion-default');
+    // UBIC-8 · crear admin bodega sin salir del CRUD de ubicaciones.
+    Route::post('/inventario/ubicaciones/admin-bodega', [\App\Http\Controllers\App\InventarioUbicacionesController::class, 'crearAdminBodega'])->middleware('throttle:10,1')->name('app.inventario.ubicacion.admin-bodega');
+    // UBIC-9 · botón manual "Enviar a SIIGO" (crear o re-enviar warehouse).
+    Route::post('/inventario/ubicaciones/{id}/enviar-siigo', [\App\Http\Controllers\App\InventarioUbicacionesController::class, 'enviarASiigo'])->middleware('throttle:20,1')->name('app.inventario.ubicacion.enviar-siigo');
+    Route::post('/inventario/ubicaciones/{id}/toggle', [\App\Http\Controllers\App\InventarioUbicacionesController::class, 'toggleActiva'])->middleware('throttle:30,1')->name('app.inventario.ubicacion.toggle');
+    Route::delete('/inventario/ubicaciones/{id}', [\App\Http\Controllers\App\InventarioUbicacionesController::class, 'eliminar'])->middleware('throttle:30,1')->name('app.inventario.ubicacion.eliminar');
     Route::get('/inventario/alertas', [\App\Http\Controllers\App\InventarioGestionController::class, 'alertasIndex'])->middleware('throttle:60,1')->name('app.inventario.alertas');
     Route::post('/inventario/alertas', [\App\Http\Controllers\App\InventarioGestionController::class, 'alertaGuardar'])->middleware('throttle:30,1')->name('app.inventario.alerta.guardar');
+    // INV-B2 · Import masivo Excel + plantilla descargable.
+    Route::get('/inventario/plantilla-masiva.xlsx', [\App\Http\Controllers\App\InventarioGestionController::class, 'plantillaMasivaExcel'])->middleware('throttle:30,1')->name('app.inventario.plantilla-masiva');
+    Route::post('/inventario/conteos/{id}/importar', [\App\Http\Controllers\App\InventarioGestionController::class, 'conteoImportarMasivo'])->middleware('throttle:20,1')->name('app.inventario.conteo.importar');
+    Route::post('/inventario/traslados/{id}/importar', [\App\Http\Controllers\App\InventarioGestionController::class, 'trasladoImportarMasivo'])->middleware('throttle:20,1')->name('app.inventario.traslado.importar');
+    Route::post('/inventario/alertas/importar', [\App\Http\Controllers\App\InventarioGestionController::class, 'alertasImportarMasivo'])->middleware('throttle:20,1')->name('app.inventario.alerta.importar');
+    // INV-B1 · Buscador inteligente global en Inventario/Logística.
+    Route::get('/inventario/buscador', [\App\Http\Controllers\App\InventarioGestionController::class, 'buscadorInteligente'])->middleware('throttle:120,1')->name('app.inventario.buscador');
+
+    // COMP-B1 · Devoluciones a proveedor (wizard Vue + push a NC compra SIIGO).
+    Route::get('/compras/devoluciones', [\App\Http\Controllers\App\DevolucionProveedorController::class, 'index'])->name('app.compras.devoluciones.index');
+    Route::get('/compras/devoluciones/nueva', [\App\Http\Controllers\App\DevolucionProveedorController::class, 'create'])->name('app.compras.devoluciones.crear');
+    Route::get('/compras/devoluciones/items/buscar', [\App\Http\Controllers\App\DevolucionProveedorController::class, 'buscarItems'])->middleware('throttle:120,1')->name('app.compras.devoluciones.items.buscar');
+    Route::get('/compras/devoluciones/{id}', [\App\Http\Controllers\App\DevolucionProveedorController::class, 'show'])->where('id', '[0-9]+')->name('app.compras.devoluciones.show');
+    Route::post('/compras/devoluciones', [\App\Http\Controllers\App\DevolucionProveedorController::class, 'guardar'])->middleware('throttle:30,1')->name('app.compras.devoluciones.guardar');
+    Route::post('/compras/devoluciones/{id}/items', [\App\Http\Controllers\App\DevolucionProveedorController::class, 'itemGuardar'])->where('id', '[0-9]+')->middleware('throttle:60,1')->name('app.compras.devoluciones.item.guardar');
+    Route::delete('/compras/devoluciones/{id}/items/{itemId}', [\App\Http\Controllers\App\DevolucionProveedorController::class, 'itemEliminar'])->where(['id' => '[0-9]+', 'itemId' => '[0-9]+'])->middleware('throttle:60,1')->name('app.compras.devoluciones.item.eliminar');
+    Route::get('/compras/devoluciones/{id}/preview-asiento', [\App\Http\Controllers\App\DevolucionProveedorController::class, 'previewAsiento'])->where('id', '[0-9]+')->middleware('throttle:60,1')->name('app.compras.devoluciones.preview');
+    Route::post('/compras/devoluciones/{id}/confirmar', [\App\Http\Controllers\App\DevolucionProveedorController::class, 'confirmar'])->where('id', '[0-9]+')->middleware('throttle:20,1')->name('app.compras.devoluciones.confirmar');
+    Route::post('/compras/devoluciones/{id}/reenviar-siigo', [\App\Http\Controllers\App\DevolucionProveedorController::class, 'reenviarSiigo'])->where('id', '[0-9]+')->middleware('throttle:20,1')->name('app.compras.devoluciones.reenviar-siigo');
+    Route::delete('/compras/devoluciones/{id}', [\App\Http\Controllers\App\DevolucionProveedorController::class, 'descartar'])->where('id', '[0-9]+')->middleware('throttle:20,1')->name('app.compras.devoluciones.descartar');
     Route::delete('/inventario/alertas/{id}', [\App\Http\Controllers\App\InventarioGestionController::class, 'alertaEliminar'])->middleware('throttle:30,1')->name('app.inventario.alerta.eliminar');
     Route::get('/inventario/buscar-variantes', [\App\Http\Controllers\App\InventarioGestionController::class, 'buscarVariantes'])->middleware('throttle:60,1')->name('app.inventario.buscar.variantes');
     // Re-audit M5 SEG-A1 · throttle:30,1 en agregados pesados. Sin él, un
@@ -200,10 +278,33 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     // consulta agregados.
     Route::get('/contabilidad', [\App\Http\Controllers\App\ContabilidadController::class, 'index'])->middleware('throttle:30,1')->name('app.contabilidad.index');
     Route::get('/contabilidad/panel', [\App\Http\Controllers\App\ContabilidadExtrasController::class, 'panel'])->middleware('throttle:30,1')->name('app.contabilidad.panel');
+    // CONT-C1 · Dashboard único de documentos pendientes de SIIGO.
+    Route::get('/contabilidad/pendientes-siigo', [\App\Http\Controllers\App\ContabilidadPendientesSiigoController::class, 'index'])->middleware('throttle:30,1')->name('app.contabilidad.pendientes-siigo');
+
+    // CONT-C2/C3/C4 · Discrepancias ERP ↔ SIIGO + ver journal + reintentar.
+    Route::get('/contabilidad/discrepancias-siigo', [\App\Http\Controllers\App\ContabilidadDiscrepanciasController::class, 'index'])->middleware('throttle:30,1')->name('app.contabilidad.discrepancias-siigo');
+    Route::get('/contabilidad/asientos-manuales/{asiento}/ver-siigo', [\App\Http\Controllers\App\ContabilidadDiscrepanciasController::class, 'verSiigo'])->middleware('throttle:30,1')->name('app.contabilidad.asiento.ver-siigo');
+    // CONT-C5 · Validación mapeo PUC → SIIGO (diagnóstico antes del push).
+    Route::get('/contabilidad/validacion-puc-siigo', [\App\Http\Controllers\App\ValidacionPucSiigoController::class, 'index'])->middleware('throttle:30,1')->name('app.contabilidad.validacion-puc-siigo');
     Route::get('/contabilidad/reportes', [\App\Http\Controllers\App\ContabilidadExtrasController::class, 'reportes'])->name('app.contabilidad.reportes');
+    // CONT-C8 · Export CSV con gate esRoot (ver controller).
+    Route::get('/contabilidad/reportes/exportar-csv', [\App\Http\Controllers\App\ContabilidadExtrasController::class, 'exportarCsv'])->middleware('throttle:10,1')->name('app.contabilidad.reportes.exportar-csv');
     Route::get('/contabilidad/reporte-detalle', [\App\Http\Controllers\App\ContabilidadExtrasController::class, 'reporteDetalle'])->middleware('throttle:60,1')->name('app.contabilidad.detalle');
+    // Reportes que genera SIIGO (no el ERP) · sirven para contrastar la
+    // contabilidad local contra la oficial.
+    Route::post('/contabilidad/siigo/balance-prueba', [\App\Http\Controllers\App\ContabilidadExtrasController::class, 'siigoBalancePrueba'])->middleware('throttle:10,1')->name('app.contabilidad.siigo.balance-prueba');
+    Route::get('/contabilidad/siigo/cuentas-por-pagar', [\App\Http\Controllers\App\ContabilidadExtrasController::class, 'siigoCuentasPorPagar'])->middleware('throttle:20,1')->name('app.contabilidad.siigo.cuentas-por-pagar');
+    Route::get('/contabilidad/siigo/conciliacion', [\App\Http\Controllers\App\ContabilidadExtrasController::class, 'conciliacionFacturas'])->middleware('throttle:20,1')->name('app.contabilidad.siigo.conciliacion');
 
     // Plantillas de documento WYSIWYG (Aracely)
+    // Roles y permisos · el admin crea el rol, marca qué ve y elige quién lo tiene.
+    Route::get('/roles', [\App\Http\Controllers\App\RolesController::class, 'index'])->name('app.roles.index');
+    Route::get('/roles/nuevo', [\App\Http\Controllers\App\RolesController::class, 'form'])->name('app.roles.nuevo');
+    Route::post('/roles', [\App\Http\Controllers\App\RolesController::class, 'guardar'])->middleware('throttle:30,1')->name('app.roles.crear');
+    Route::get('/roles/{rol}', [\App\Http\Controllers\App\RolesController::class, 'form'])->whereNumber('rol')->name('app.roles.editar');
+    Route::post('/roles/{rol}', [\App\Http\Controllers\App\RolesController::class, 'guardar'])->whereNumber('rol')->middleware('throttle:30,1')->name('app.roles.guardar');
+    Route::delete('/roles/{rol}', [\App\Http\Controllers\App\RolesController::class, 'eliminar'])->whereNumber('rol')->middleware('throttle:10,1')->name('app.roles.eliminar');
+
     Route::get('/plantillas', [\App\Http\Controllers\App\PlantillasController::class, 'index'])->name('app.plantillas.index');
     Route::post('/plantillas', [\App\Http\Controllers\App\PlantillasController::class, 'guardar'])->name('app.plantillas.guardar');
     Route::delete('/plantillas/{plantilla}', [\App\Http\Controllers\App\PlantillasController::class, 'eliminar'])->name('app.plantillas.eliminar');
@@ -251,10 +352,19 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     Route::get('/siigo', [\App\Http\Controllers\App\SiigoController::class, 'index'])->name('app.siigo.index');
     // F8 · panel de control del sync SIIGO
     Route::post('/siigo/kill-switch', [\App\Http\Controllers\App\SiigoController::class, 'toggleKillSwitch'])->name('app.siigo.kill-switch');
+    // Credenciales + prueba de conexión · vivían en la pantalla de Filament,
+    // que se retiró al dejar /admin sólo para Dropi.
+    Route::post('/siigo/credenciales', [\App\Http\Controllers\App\SiigoController::class, 'guardarCredenciales'])->name('app.siigo.credenciales');
+    Route::post('/siigo/probar-conexion', [\App\Http\Controllers\App\SiigoController::class, 'probarConexion'])->name('app.siigo.probar');
     Route::post('/siigo/logs/{log}/reintentar', [\App\Http\Controllers\App\SiigoController::class, 'reintentar'])->name('app.siigo.reintentar');
     Route::get('/siigo/logs', [\App\Http\Controllers\App\SiigoController::class, 'logs'])->name('app.siigo.logs');
     // Visor en vivo · trae lo que SIIGO tiene (comprobación bidireccional del CRUD).
     Route::get('/siigo/verificar/producto/{producto}', [\App\Http\Controllers\App\SiigoController::class, 'verificarProducto'])->name('app.siigo.verificar.producto');
+    // UBIC-10 · Descargar el Excel de saldos iniciales con layout nativo SIIGO.
+    Route::get('/siigo/saldos-iniciales.xlsx', [\App\Http\Controllers\App\SiigoController::class, 'descargarSaldosIniciales'])->middleware('throttle:10,1')->name('app.siigo.saldos-iniciales');
+    // PROD-14 · reporte global de discrepancias ERP↔SIIGO.
+    Route::get('/siigo/discrepancias', [\App\Http\Controllers\App\SiigoController::class, 'discrepancias'])->name('app.siigo.discrepancias');
+    Route::get('/siigo/discrepancias/calcular', [\App\Http\Controllers\App\SiigoController::class, 'discrepanciasCalcular'])->middleware('throttle:5,1')->name('app.siigo.discrepancias.calcular');
     // Reconciliar · dispara pull completo SIIGO→ERP + detección de zombies.
     Route::post('/siigo/reconciliar', [\App\Http\Controllers\App\SiigoController::class, 'reconciliar'])->name('app.siigo.reconciliar');
     Route::get('/siigo/reconciliar/estado', [\App\Http\Controllers\App\SiigoController::class, 'reconciliarEstado'])->name('app.siigo.reconciliar.estado');
@@ -265,6 +375,15 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     Route::post('/siigo/importar-por-code', [\App\Http\Controllers\App\SiigoController::class, 'importarPorCode'])->name('app.siigo.importar-code');
     // Sincronizar catálogos SIIGO (taxes, account-groups, warehouses, price-lists, etc).
     Route::post('/siigo/sincronizar-catalogos', [\App\Http\Controllers\App\SiigoController::class, 'sincronizarCatalogos'])->name('app.siigo.sync-catalogos');
+    // Catálogo /v1/document-types (FC/FV/NC/ND/RP/DS/CC/RC) para alimentar los
+    // selectores de settings `siigo.doc_type_*` en el panel Reglas tras conectar
+    // la cuenta real del cliente. GET devuelve agrupado por type; POST re-sincroniza.
+    Route::get('/siigo/document-types', [\App\Http\Controllers\App\SiigoController::class, 'documentTypes'])->name('app.siigo.document-types');
+    Route::post('/siigo/document-types/sync', [\App\Http\Controllers\App\SiigoController::class, 'documentTypesSync'])->middleware('throttle:5,1')->name('app.siigo.document-types.sync');
+    // Catálogo /v1/taxes agrupado por tipo (IVA, Retefuente, ReteICA, etc.)
+    // Alimenta los selectores de settings `siigo.tax_id_*` en el panel Reglas.
+    Route::get('/siigo/taxes', [\App\Http\Controllers\App\SiigoController::class, 'taxes'])->name('app.siigo.taxes');
+    Route::post('/siigo/taxes/sync', [\App\Http\Controllers\App\SiigoController::class, 'taxesSync'])->middleware('throttle:5,1')->name('app.siigo.taxes.sync');
     // Plan de cuentas (PUC) en Vue · reutiliza ImportadorPlanCuentas + PlanCuenta existentes
     Route::get('/contabilidad/plan-cuentas', [\App\Http\Controllers\App\PlanCuentasController::class, 'index'])->name('app.contabilidad.plan-cuentas');
     Route::post('/contabilidad/plan-cuentas', [\App\Http\Controllers\App\PlanCuentasController::class, 'guardar'])->name('app.contabilidad.plan-cuentas.guardar');
@@ -298,6 +417,9 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     Route::post('/rrhh/empleados', [\App\Http\Controllers\App\RrhhController::class, 'empleadoCrear'])->name('app.rrhh.empleado.crear');
     Route::put('/rrhh/empleados/{empleado}/induccion', [\App\Http\Controllers\App\RrhhController::class, 'empleadoInduccion'])->name('app.rrhh.empleado.induccion');
 
+    // LOG-J9 · Marketing (préstamos de productos a bodega)
+    Route::get('/marketing', [\App\Http\Controllers\App\MarketingPrestamosController::class, 'index'])->name('app.marketing.index');
+
     // M8 · Marketing
     Route::get('/marketing/parrilla', [\App\Http\Controllers\App\MarketingController::class, 'parrilla'])->name('app.marketing.parrilla');
     Route::post('/marketing/parrilla', [\App\Http\Controllers\App\MarketingController::class, 'postCrear'])->name('app.marketing.post.crear');
@@ -321,6 +443,26 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     Route::post('/pedidos-b2b/{pedido}/aprobar', [\App\Http\Controllers\App\PedidosB2BController::class, 'aprobar'])->name('app.pedidos-b2b.aprobar');
     Route::post('/pedidos-b2b/{pedido}/rechazar', [\App\Http\Controllers\App\PedidosB2BController::class, 'rechazar'])->name('app.pedidos-b2b.rechazar');
     Route::post('/pedidos-b2b/{pedido}/facturar', [\App\Http\Controllers\App\PedidosB2BController::class, 'facturar'])->name('app.pedidos-b2b.facturar');
+    // LOG-J7 · gate duro: no se despacha sin factura (raíz inventario negativo que reportó Don Jorge).
+    Route::post('/pedidos-b2b/{pedido}/despachar', [\App\Http\Controllers\App\PedidosB2BController::class, 'despachar'])->middleware('throttle:30,1')->name('app.pedidos-b2b.despachar');
+
+    // LOG-J5 · Cola Don Jorge · reemplaza el Excel manual de alistamiento.
+    Route::get('/logistica/cola-jorge', [\App\Http\Controllers\App\ColaJorgeController::class, 'index'])->name('app.cola-jorge.index');
+    Route::post('/logistica/cola-jorge/{pedido}/asignar', [\App\Http\Controllers\App\ColaJorgeController::class, 'asignar'])->middleware('throttle:60,1')->name('app.cola-jorge.asignar');
+    Route::post('/logistica/cola-jorge/{pedido}/iniciar', [\App\Http\Controllers\App\ColaJorgeController::class, 'iniciar'])->middleware('throttle:60,1')->name('app.cola-jorge.iniciar');
+    Route::post('/logistica/cola-jorge/{pedido}/finalizar', [\App\Http\Controllers\App\ColaJorgeController::class, 'finalizar'])->middleware('throttle:60,1')->name('app.cola-jorge.finalizar');
+    // LOG-J5-fix · resolver novedad del alistamiento (gerencia/admin de bodega).
+    Route::post('/logistica/cola-jorge/{pedido}/resolver-novedad', [\App\Http\Controllers\App\ColaJorgeController::class, 'resolverNovedad'])->middleware('throttle:30,1')->name('app.cola-jorge.resolver-novedad');
+    // LOG-J6 · hoja de picking imprimible con Rack · Sección · Nivel.
+    Route::get('/logistica/cola-jorge/{pedido}/picking', [\App\Http\Controllers\App\ColaJorgeController::class, 'imprimir'])->name('app.cola-jorge.picking');
+
+    // LOG-J1 + Miracle port · Panel de Gestión Comercial del Vendedor.
+    Route::get('/vendedor', [\App\Http\Controllers\App\VendedorPedidoController::class, 'index'])->name('app.vendedor.index');
+    Route::get('/vendedor/ventas-por-cliente', [\App\Http\Controllers\App\VendedorPedidoController::class, 'ventasPorCliente'])->name('app.vendedor.ventas-por-cliente');
+    Route::get('/vendedor/contado-credito', [\App\Http\Controllers\App\VendedorPedidoController::class, 'contadoCredito'])->name('app.vendedor.contado-credito');
+    Route::get('/vendedor/seguimiento', [\App\Http\Controllers\App\VendedorPedidoController::class, 'seguimiento'])->name('app.vendedor.seguimiento');
+    Route::get('/vendedor/pedido-nuevo/{contactoId}', [\App\Http\Controllers\App\VendedorPedidoController::class, 'nuevo'])->name('app.vendedor.nuevo');
+    Route::post('/vendedor/pedido-nuevo/{contactoId}', [\App\Http\Controllers\App\VendedorPedidoController::class, 'confirmar'])->middleware('throttle:30,1')->name('app.vendedor.confirmar');
 
     // CRM
     Route::get('/crm', [\App\Http\Controllers\App\CrmController::class, 'index'])->name('app.crm.index');
@@ -389,8 +531,10 @@ Route::middleware(['web', 'auth:cliente'])->prefix('portal')->group(function () 
 });
 
 
-// Fallback para middleware auth que redirige a route('login') → mandamos al login de Filament
-Route::get('/login', fn () => redirect('/admin/login'))->name('login');
+// Fallback para middleware auth que redirige a route('login') → mandamos al
+//   ÚNICO login real (Vue en /app/login). El login de Filament fue borrado
+//   para no tener dos puertas de entrada que confundían al equipo.
+Route::get('/login', fn () => redirect('/app/login'))->name('login');
 
 // Fix Livewire assets con hash bajo PHP built-in server (dev)
 Route::get('/livewire-{hash}/livewire.js', function () {
@@ -400,14 +544,37 @@ Route::get('/livewire-{hash}/livewire.min.js.map', function () {
     return response()->file(public_path('vendor/livewire/livewire.js.map'), ['Content-Type' => 'application/json']);
 })->where('hash', '.*');
 
-// Auto-login DEV — SOLO local + APP_DEBUG=true + IP localhost.
-// Triple guard evita "prod con APP_ENV=local mal copiado = admin gratis".
-if (app()->environment('local') && config('app.debug') === true) {
-    Route::get('/dev-login', function () {
-        // Usar REMOTE_ADDR directo (bypasea cualquier TrustProxies futuro que respete X-Forwarded-For).
+// Auto-login DEV — entra como el usuario 1 sin contraseña.
+//
+// Las guardas de antes (`APP_ENV=local` + `APP_DEBUG=true` + REMOTE_ADDR local)
+// no alcanzaban para subir esto a un servidor:
+//   · el `.env` del repo trae APP_ENV=local y APP_DEBUG=true, así que copiarlo
+//     al servidor ya pasaba dos de las tres;
+//   · detrás de nginx→php-fpm el REMOTE_ADDR es 127.0.0.1 (el proxy, no el
+//     visitante), así que la tercera fallaba ABIERTA: admin gratis para
+//     cualquiera que supiera la URL.
+//
+// Ahora pide dos cosas que un servidor real no tiene:
+//   1. `DEV_LOGIN=true` explícito, que NO está en `.env.example` ni en el
+//      `.env` del repo: hay que escribirlo a mano con intención.
+//   2. Que el dominio con que se entra sea local. El Host lo pone el navegador,
+//      no el proxy, así que `erp.greatbaby.com` nunca pasa aunque el
+//      REMOTE_ADDR sea 127.0.0.1.
+if (app()->environment('local') && config('app.debug') === true && env('DEV_LOGIN') === true) {
+    Route::get('/dev-login', function (\Illuminate\Http\Request $r) {
+        $host = strtolower((string) $r->getHost());
+        $esHostLocal = in_array($host, ['localhost', '127.0.0.1', '::1', '[::1]'], true)
+            || str_ends_with($host, '.localhost')
+            || str_ends_with($host, '.test');
+        abort_unless($esHostLocal, 403, 'dev-login solo desde un dominio local.');
+
+        // REMOTE_ADDR directo (bypasea cualquier TrustProxies que respete
+        // X-Forwarded-For). Se mantiene como cinturón además del Host.
         $ip = $_SERVER['REMOTE_ADDR'] ?? '';
         abort_unless(in_array($ip, ['127.0.0.1', '::1'], true), 403, 'dev-login solo desde localhost');
+
         \Illuminate\Support\Facades\Auth::loginUsingId(1);
+
         return redirect('/admin');
     });
 }
