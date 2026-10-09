@@ -65,7 +65,7 @@ class ProductoPayloadBuilder
         }
 
         return array_filter(array_merge([
-            'code' => $this->sanitizarCode($p->referencia, "producto {$p->id}"),
+            'code' => self::sanitizarCode($p->referencia, "producto {$p->id}"),
             'name' => $this->limpiarNombre($p->nombre ?? $p->referencia),
             'account_group' => $this->resolverAccountGroup($p),
             'type' => $p->tipo_siigo ?: 'Product',
@@ -152,7 +152,7 @@ class ProductoPayloadBuilder
         ], fn ($x) => $x !== null && $x !== '');
 
         return array_filter(array_merge([
-            'code' => $this->sanitizarCode($v->codigo_barras, "variante {$v->id}"),
+            'code' => self::sanitizarCode($v->codigo_barras, "variante {$v->id}"),
             'name' => $this->limpiarNombre(implode(' - ', $partesNombre)),
             'account_group' => $this->resolverAccountGroup($p),
             'type' => $p->tipo_siigo ?: 'Product',
@@ -288,7 +288,16 @@ class ProductoPayloadBuilder
      * C3 · si queda vacío, throw explícito para no dejar el POST silenciarse
      * con `parameter_required` de Siigo.
      */
-    private function sanitizarCode(?string $raw, string $ctx): string
+    /**
+     * Codigo con el que un producto o variante existe en SIIGO.
+     *
+     * Es publico y estatico a proposito: cualquier payload que tenga que
+     * REFERENCIAR un producto ya publicado —por ejemplo la linea de un
+     * asiento de inventario— necesita exactamente este mismo codigo. Si cada
+     * lado lo calculara a su manera, SIIGO responderia «Invalid code» y el
+     * motivo seria invisible.
+     */
+    public static function sanitizarCode(?string $raw, string $ctx): string
     {
         $c = trim((string) $raw);
         $c = str_replace(["'", ' '], ['', '-'], $c);

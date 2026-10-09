@@ -165,7 +165,7 @@ const guardar = () => {
                     <button @click="addItem" class="btn-ghost text-xs"><Plus class="h-3 w-3"/> Agregar ítem</button>
                 </div>
                 <div class="overflow-x-auto">
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-[10px] text-surface-500 uppercase">
                             <tr>
                                 <th class="text-left p-1">Descripción</th>

@@ -8,6 +8,8 @@ import {
 import axios from 'axios';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import { useMoney } from '@/composables/useMoney';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
+import { mensajeDeError } from '@/composables/useMensajeError';
 
 const props = defineProps({
     filtros: { type: Object, required: true },
@@ -20,6 +22,10 @@ const props = defineProps({
     // no lo entrega aún, el modal muestra "Sin importaciones previas".
     ultimasImports: { type: Array, default: () => [] },
 });
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
 
 const { money } = useMoney();
 
@@ -85,8 +91,16 @@ const filtrar = () => {
 const eliminar = (p) => {
     // FASE F2.A3 · quitar del array de seleccionados si estaba marcado
     seleccionados.value = seleccionados.value.filter(id => id !== p.id);
-    if (! confirm(`¿Eliminar producto ${p.referencia}?\n\nSolo se permite si no tiene movimientos de kardex.`)) return;
-    router.delete(`/app/catalogo/productos/${p.id}`, { preserveScroll: true });
+    modalConfirm.value = {
+        titulo: `¿Eliminar producto ${p.referencia}?`,
+        mensaje: `Solo se permite si no tiene movimientos de kardex.`,
+        color: 'rose',
+        textoConfirmar: 'Eliminar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            router.delete(`/app/catalogo/productos/${p.id}`, { preserveScroll: true });
+        },
+    };
 };
 
 // FASE C2 UI · Selección masiva
@@ -169,7 +183,7 @@ const enviarBulkPushSiigo = async () => {
         // No necesitamos reload inmediato · los siigo_sync_at se actualizan a
         // medida que la cola procesa; el usuario puede revisar el semáforo.
     } catch (e) {
-        showFlash({ type: 'error', message: 'Error: ' + (e.response?.data?.message || e.message) });
+        showFlash({ type: 'error', message: mensajeDeError(e, 'No pude enviar los productos a SIIGO') });
     } finally {
         bulkCargando.value = false;
     }
@@ -190,7 +204,7 @@ const enviarBulk = async (accion, valor = null) => {
         cerrarBulkModal();
         router.reload({ only: ['productos', 'kpis'] });
     } catch (e) {
-        showFlash({ type: 'error', message: 'Error: ' + (e.response?.data?.message || e.message) });
+        showFlash({ type: 'error', message: mensajeDeError(e, 'No pude aplicar el cambio masivo') });
     } finally {
         bulkCargando.value = false;
     }
@@ -226,7 +240,7 @@ const confirmarImportar = async () => {
             }, 1500);
         }
     } catch (e) {
-        resultadoImport.value = { ok: false, mensaje: e.response?.data?.mensaje || e.message };
+        resultadoImport.value = { ok: false, mensaje: mensajeDeError(e, 'No pude importar el archivo') };
     } finally {
         importandoDeSiigo.value = false;
     }
@@ -269,22 +283,30 @@ const deshaciendoSync = ref(false);
 let pollingTimer = null;
 
 const deshacerUltimaSync = async () => {
-    if (! confirm(`¿Deshacer la última sincronización?\n\nSe marcarán como inactivos los ${resumenSync.value?.nuevos || 0} productos nuevos que trajo del sandbox.\nSe PROTEGEN automáticamente los que tienen movimientos o fueron editados.\n\nEsta acción es REVERSIBLE (soft-delete).`)) return;
-    deshaciendoSync.value = true;
-    try {
-        const { data } = await axios.post('/app/siigo/reconciliar/deshacer', { confirmar: true });
-        if (data.ok) {
-            showFlash({ type: 'success', message: '🗑 Sync revertida · lista actualizada.' });
-            resumenSync.value = null;
-            router.reload({ only: ['productos', 'kpis'] });
-        } else {
-            showFlash({ type: 'error', message: '⚠ ' + (data.mensaje || 'No se pudo deshacer') });
-        }
-    } catch (e) {
-        showFlash({ type: 'error', message: 'Error: ' + (e.response?.data?.mensaje || e.message) });
-    } finally {
-        deshaciendoSync.value = false;
-    }
+    modalConfirm.value = {
+        titulo: `¿Deshacer la última sincronización?`,
+        mensaje: `Se marcarán como inactivos los ${resumenSync.value?.nuevos || 0} productos nuevos que trajo del sandbox.\nSe PROTEGEN automáticamente los que tienen movimientos o fueron editados.\n\nEsta acción es REVERSIBLE (soft-delete).`,
+        color: 'amber',
+        textoConfirmar: 'Deshacer',
+        onConfirmar: async () => {
+            modalConfirm.value = null;
+            deshaciendoSync.value = true;
+            try {
+                const { data } = await axios.post('/app/siigo/reconciliar/deshacer', { confirmar: true });
+                if (data.ok) {
+                    showFlash({ type: 'success', message: '🗑 Sync revertida · lista actualizada.' });
+                    resumenSync.value = null;
+                    router.reload({ only: ['productos', 'kpis'] });
+                } else {
+                    showFlash({ type: 'error', message: '⚠ ' + (data.mensaje || 'No se pudo deshacer') });
+                }
+            } catch (e) {
+                showFlash({ type: 'error', message: mensajeDeError(e, 'No pude deshacer la sincronizacion') });
+            } finally {
+                deshaciendoSync.value = false;
+            }
+        },
+    };
 };
 
 const consultarEstadoSync = async () => {
@@ -344,7 +366,7 @@ const confirmarImportarExcel = async () => {
         }
         router.reload({ only: ['productos', 'kpis'] });
     } catch (e) {
-        showFlash({ type: 'error', message: 'Error importando: ' + (e.response?.data?.message || e.message) });
+        showFlash({ type: 'error', message: mensajeDeError(e, 'No pude importar el Excel') });
     } finally {
         importandoExcel.value = false;
     }
@@ -385,7 +407,7 @@ const sincronizarTodo = async () => {
         }
     } catch (e) {
         sincronizandoTodo.value = false;
-        showFlash({ type: 'error', message: 'Error: ' + (e.response?.data?.mensaje || e.message) });
+        showFlash({ type: 'error', message: mensajeDeError(e, 'No pude sincronizar con SIIGO') });
     }
 };
 
@@ -581,7 +603,7 @@ onUnmounted(() => { if (typeof stopNav === 'function') stopNav(); });
                                 <Link href="/app/bandeja" class="text-xs text-sky-600 hover:underline">Ver todas →</Link>
                             </div>
                             <div class="p-0 overflow-x-auto">
-                                <table v-if="(ultimasImports || []).length" class="w-full text-sm">
+                                <table v-tabla-movil v-if="(ultimasImports || []).length" class="w-full text-sm">
                                     <thead class="text-[11px] text-surface-500 uppercase bg-surface-50">
                                         <tr>
                                             <th class="text-left px-3 py-2">Archivo</th>
@@ -771,7 +793,7 @@ onUnmounted(() => { if (typeof stopNav === 'function') stopNav(); });
             </div>
 
             <div class="card overflow-hidden">
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-[10px] uppercase text-surface-500 border-b bg-surface-50 dark:bg-surface-900">
                         <tr>
                             <th class="p-2 w-8">
@@ -935,5 +957,6 @@ onUnmounted(() => { if (typeof stopNav === 'function') stopNav(); });
                 </div>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

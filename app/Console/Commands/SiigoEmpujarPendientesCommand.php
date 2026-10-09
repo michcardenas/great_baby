@@ -25,7 +25,7 @@ class SiigoEmpujarPendientesCommand extends Command
 {
     protected $signature = 'siigo:empujar-pendientes
                             {--dry-run : Sólo muestra qué se encolaría}
-                            {--tipo= : Un solo tipo (facturas, notas-credito, notas-debito, recepciones, pagos-cliente, pagos-proveedor, asientos, movimientos, devoluciones)}
+                            {--tipo= : Un solo tipo (productos, facturas, notas-credito, notas-debito, recepciones, pagos-cliente, pagos-proveedor, asientos, movimientos, devoluciones)}
                             {--limite=200 : Máximo de documentos por tipo}';
 
     protected $description = 'Reencola a SIIGO todo documento que quedó sin enviar';
@@ -52,9 +52,15 @@ class SiigoEmpujarPendientesCommand extends Command
             'compras_recepciones', 'siigo_id', \App\Modules\Siigo\Jobs\PushRecepcionASiigo::class,
             "estado = 'confirmada'",
         ],
+        // Sólo los pagos cuya factura ya está en SIIGO. Sin esa condición, un
+        // recibo de una factura no electrónica —que nunca va a subir— se
+        // reencolaba todos los días para volver a fallar. Medido el
+        // 2026-10-09: las 23 facturas sin `siigo_id` eran TODAS no
+        // electrónicas, y 3 pagos llevaban días dando vueltas en ese bucle.
         'pagos-cliente' => [
             'pagos_venta', 'siigo_id', \App\Modules\Siigo\Jobs\PushVoucherASiigo::class,
-            'deleted_at IS NULL',
+            'deleted_at IS NULL AND factura_id IN '
+                .'(SELECT id FROM facturas_venta WHERE siigo_id IS NOT NULL AND siigo_id <> \'\')',
         ],
         'pagos-proveedor' => [
             'pagos_proveedor', 'siigo_voucher_id', \App\Modules\Siigo\Jobs\PushPagoProveedorASiigo::class,
@@ -89,14 +95,28 @@ class SiigoEmpujarPendientesCommand extends Command
         $limite = max(1, (int) $this->option('limite'));
         $soloTipo = $this->option('tipo');
 
-        if ($soloTipo && ! isset(self::FUENTES[$soloTipo])) {
-            $this->error("Tipo desconocido: {$soloTipo}. Opciones: ".implode(', ', array_keys(self::FUENTES)));
+        // `productos` no está en FUENTES —se maneja aparte, ver abajo— pero
+        // sí es un tipo válido.
+        $tipos = array_merge(['productos'], array_keys(self::FUENTES));
+        if ($soloTipo && ! in_array($soloTipo, $tipos, true)) {
+            $this->error("Tipo desconocido: {$soloTipo}. Opciones: ".implode(', ', $tipos));
             return self::FAILURE;
         }
 
         if (! $dryRun && ! SiigoConfig::pushAutoActivo()) {
             $this->warn('El envío automático a SIIGO está apagado (FEATURE_SIIGO_PUSH_AUTO).');
             $this->warn('Los jobs se encolarían y se auto-omitirían. Activalo primero o usá --dry-run.');
+            return self::FAILURE;
+        }
+
+        // Con la llave muerta no se encola: el middleware los aplazaría cada 5
+        // minutos hasta que se les acabe el plazo de 12 horas, y lo único que
+        // se consigue es churn en la tabla `jobs`. Corre solo todos los días a
+        // las 04:15, así que apenas la credencial vuelva a servir los recoge
+        // la pasada siguiente sin que nadie haga nada.
+        if (! $dryRun && SiigoConfig::current()->credencialMuerta()) {
+            $this->warn('SIIGO está rechazando la credencial; no se encola nada.');
+            $this->warn('Pegá la llave vigente en /app/siigo y volvé a correr esto (o esperá la pasada de las 04:15).');
             return self::FAILURE;
         }
 
@@ -138,6 +158,13 @@ class SiigoEmpujarPendientesCommand extends Command
             $filas[] = [$tipo, $tabla, $pendientes, $dryRun ? '(dry-run)' : $encolados, class_basename($job)];
         }
 
+        // Productos · van aparte porque no encajan en la tabla de arriba: su
+        // job recibe dos argumentos y la condición de «pendiente» cruza dos
+        // tablas (un granular está en SIIGO cuando lo están sus variantes).
+        if (! $soloTipo || $soloTipo === 'productos') {
+            $filas[] = $this->empujarProductos($dryRun, $limite, $cola, $totalEncolados);
+        }
+
         $this->table(['Tipo', 'Tabla', 'Pendientes', 'Encolados', 'Job'], $filas);
 
         if ($dryRun) {
@@ -149,6 +176,63 @@ class SiigoEmpujarPendientesCommand extends Command
         $this->line('Procesalos con: php artisan queue:work --queue='.$cola);
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Productos que deberían estar en SIIGO y no están.
+     *
+     * Hueco encontrado el 2026-10-09: esta red de seguridad cubría documentos
+     * pero **no productos**, y los productos eran 1029 de los 1115 trabajos
+     * caídos. Un producto que no logró subir se queda sin `siigo_id` para
+     * siempre: ningún observer lo reintenta porque el observer dispara al
+     * guardar, y nadie vuelve a guardarlo.
+     *
+     * Y arrastra al resto. Los asientos de inventario fallaban literalmente
+     * con «el producto X del movimiento N todavía no está en SIIGO,
+     * sincronizalo primero»: sin el producto no hay asiento, no hay factura y
+     * no hay devolución.
+     *
+     * Un granular está en SIIGO cuando lo están sus variantes —cada una viaja
+     * como producto propio—, así que cuenta como pendiente si le falta el id
+     * a él o a cualquiera de ellas.
+     *
+     * @return array{0: string, 1: string, 2: int|string, 3: int|string, 4: string}
+     */
+    private function empujarProductos(bool $dryRun, int $limite, string $cola, int &$totalEncolados): array
+    {
+        $job = \App\Modules\Siigo\Jobs\PushProductoASiigo::class;
+
+        if (! \Schema::hasTable('productos') || ! \Schema::hasColumn('productos', 'siigo_id')) {
+            return ['productos', 'productos', '—', '—', 'no aplica en este esquema'];
+        }
+
+        $ids = \App\Modules\Dropi\Models\Producto::query()
+            ->where('activo', true)
+            ->where(fn ($q) => $q
+                ->whereNull('siigo_id')->orWhere('siigo_id', '')
+                ->orWhereHas('variantes', fn ($v) => $v->whereNull('siigo_id')->orWhere('siigo_id', '')))
+            ->orderBy('id')
+            ->limit($limite)
+            ->pluck('id');
+
+        $encolados = 0;
+        if (! $dryRun) {
+            foreach ($ids as $id) {
+                try {
+                    // `crear` y no `actualizar`: por definición no tienen id allá.
+                    // El propio job revisa de nuevo antes de llamar a SIIGO, así
+                    // que si alguno subió mientras tanto no se duplica.
+                    $job::dispatch((int) $id, 'crear')->onQueue($cola);
+                    $encolados++;
+                } catch (\Throwable $e) {
+                    $this->warn("  productos#{$id}: ".$e->getMessage());
+                }
+            }
+        }
+
+        $totalEncolados += $encolados;
+
+        return ['productos', 'productos', $ids->count(), $dryRun ? '(dry-run)' : $encolados, class_basename($job)];
     }
 
     /** El esquema varía entre instalaciones; no asumimos que la columna exista. */

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\App;
 use App\Http\Controllers\Controller;
 use App\Models\Contacto;
 use App\Modules\Cartera\Actions\ConsultarCredito;
+use App\Modules\Portal\Actions\CrearPedidoCliente;
 use App\Modules\Catalogo\Models\PrecioVariante;
 use App\Modules\Dropi\Models\ProductoVariante;
 use App\Modules\Portal\Models\PedidoCliente;
@@ -262,6 +263,35 @@ class VendedorPedidoController extends Controller implements HasMiddleware
             ])
             ->values();
 
+        // Productos AGREGADOS con precio en la lista del cliente.
+        //
+        // Son los que no se desglosan por variante —colores surtidos— y hasta
+        // el 2026-10-08 no tenían dónde guardar su precio, así que ni siquiera
+        // llegaban a este catálogo: el vendedor no podía ofrecerlos. Van en la
+        // misma lista que las variantes, con `variante_id` nulo, que es como
+        // los distingue el pedido.
+        $agregados = \App\Modules\Catalogo\Models\PrecioProducto::query()
+            ->where('lista_id', $cliente->lista_precios_id)
+            ->vigentes()
+            ->with(['producto' => fn ($q) => $q->select('id', 'referencia', 'nombre', 'impuesto_id', 'activo', 'desglose_stock')
+                ->with('impuesto:id,porcentaje')])
+            ->whereHas('producto', fn ($q) => $q->where('activo', true)->where('desglose_stock', false))
+            ->get()
+            ->map(fn ($pp) => [
+                'variante_id' => null,
+                'producto_id' => $pp->producto_id,
+                'sku' => $pp->producto?->referencia,
+                'ref' => $pp->producto?->referencia,
+                'nombre' => $pp->producto?->nombre,
+                'color' => 'colores surtidos',
+                'talla' => null,
+                'precio' => (float) $pp->precio,
+                'iva_pct' => (float) ($pp->producto?->impuesto?->porcentaje ?? 0),
+            ])
+            ->values();
+
+        $variantes = $variantes->concat($agregados)->values();
+
         // Semáforo rápido · para que el vendedor sepa en terreno si el pedido
         //   del cliente va a quedar retenido antes de armarlo.
         $credito = ConsultarCredito::run($cliente->id);
@@ -290,7 +320,11 @@ class VendedorPedidoController extends Controller implements HasMiddleware
     {
         $data = $r->validate([
             'items' => ['required', 'array', 'min:1', 'max:200'],
-            'items.*.variante_id' => ['required', 'integer', 'exists:producto_variantes,id'],
+            // Una línea es de variante (producto granular) O de producto
+            // (agregado, colores surtidos), nunca las dos. Antes sólo aceptaba
+            // variantes y por eso el vendedor no podía pedir un agregado.
+            'items.*.variante_id' => ['nullable', 'integer', 'exists:producto_variantes,id', 'required_without:items.*.producto_id'],
+            'items.*.producto_id' => ['nullable', 'integer', 'exists:productos,id', 'required_without:items.*.variante_id'],
             'items.*.cantidad' => ['required', 'integer', 'min:1', 'max:9999'],
             'notas' => ['nullable', 'string', 'max:1000'],
         ]);
@@ -298,126 +332,26 @@ class VendedorPedidoController extends Controller implements HasMiddleware
         $cliente = Contacto::whereKey($contactoId)->whereNotNull('lista_precios_id')->firstOrFail();
         $this->autorizarCuenta($cliente, $r);
 
-        $listaId = (int) $cliente->lista_precios_id;
-        $vendedor = $r->user();
-
-        $varianteIds = collect($data['items'])->pluck('variante_id')->unique();
-        $precios = PrecioVariante::whereIn('variante_id', $varianteIds)
-            ->where('lista_id', $listaId)
-            ->where(function ($w) {
-                $w->whereNull('vigente_hasta')->orWhere('vigente_hasta', '>=', now()->toDateString());
-            })
-            ->pluck('precio', 'variante_id');
-
-        $variantes = ProductoVariante::with(['producto' => fn ($q) => $q->select('id', 'referencia', 'nombre', 'impuesto_id')
-                ->with('impuesto:id,porcentaje')])
-            ->whereIn('id', $varianteIds)
-            ->get()->keyBy('id');
-
-        // LOG-J2 reusado · semáforo cartera para decidir si entra retenido.
-        $credito = ConsultarCredito::run($cliente->id);
-        $totalEstimado = collect($data['items'])->sum(fn ($i) =>
-            (int) $i['cantidad'] * (float) ($precios[$i['variante_id']] ?? 0));
-        $motivos = [];
-        if ($credito['tiene_mora_critica']) {
-            $motivos[] = "mora crítica ({$credito['dias_mora_max']} días)";
-        }
-        if ($credito['facturas_vencidas'] > 0) {
-            $motivos[] = "{$credito['facturas_vencidas']} factura(s) vencida(s)";
-        }
-        $cupo = (float) ($credito['cupo'] ?? 0);
-        if ($cupo > 0 && ($credito['saldo_cartera'] + $totalEstimado) > $cupo) {
-            $excedido = round(($credito['saldo_cartera'] + $totalEstimado) - $cupo, 2);
-            $motivos[] = 'cupo excedido en $' . number_format($excedido, 0);
-        }
-        $retenido = ! empty($motivos);
-
-        $pedido = DB::transaction(function () use ($data, $cliente, $listaId, $precios, $variantes, $vendedor, $retenido, $motivos) {
-            $numero = $this->siguienteNumero();
-
-            // El primer vendedor que le vende a una cuenta libre se la queda.
-            //   Así los 8 arrancan pudiendo trabajar (hoy ningún cliente tiene
-            //   vendedor) y la cartera se va armando sola con el trabajo real,
-            //   sin que gerencia tenga que repartir 400 clientes a mano.
-            //   Gerencia levanta pedidos sin apropiarse de nada.
-            if ($cliente->vendedor_id === null && ! $vendedor->esAracely()) {
-                $cliente->forceFill(['vendedor_id' => $vendedor->id])->save();
-            }
-
-            // LOG-J4 · ruteo auto ciudad → bodega.
-            $ubicOrigen = \App\Modules\Portal\Models\ReglaRuteoCiudad::resolver($cliente->ciudad);
-
-            $ped = PedidoCliente::create([
-                'numero' => $numero,
-                'contacto_id' => $cliente->id,
-                'vendedor_id' => $vendedor->id,
-                'ubicacion_origen_id' => $ubicOrigen,
-                'lista_precios_id' => $listaId,
-                'estado' => $retenido ? 'retenido' : 'enviado',
-                'motivo_retencion' => $retenido ? implode(' · ', $motivos) : null,
-                'notas_cliente' => $data['notas'] ?? null,
-                'notas_internas' => 'Pedido levantado por vendedor en terreno · ' . $vendedor->name,
-                'enviado_at' => now(),
-                'subtotal' => 0, 'iva' => 0, 'total' => 0,
-            ]);
-
-            $subtotal = 0; $iva = 0; $lineasValidas = 0;
-            foreach ($data['items'] as $it) {
-                $var = $variantes[$it['variante_id']] ?? null;
-                $precio = (float) ($precios[$it['variante_id']] ?? 0);
-                if (! $var || $precio <= 0) continue;
-
-                $cantidad = (int) $it['cantidad'];
-                $ivaPct = (float) ($var->producto?->impuesto?->porcentaje ?? 0);
-                $lineaSub = round($precio * $cantidad, 2);
-                $lineaIva = round($lineaSub * ($ivaPct / 100), 2);
-                $lineasValidas++;
-
-                PedidoClienteItem::create([
-                    'pedido_id' => $ped->id,
-                    'variante_id' => $var->id,
-                    'producto_id' => $var->producto_id,
-                    'sku_snapshot' => $var->codigo_barras ?: ($var->producto?->referencia . '-' . $var->id),
-                    'descripcion_snapshot' => trim(($var->producto?->nombre ?? '') . ' · ' . ($var->color_nombre ?? '') . ' ' . ($var->talla ?? '')),
-                    'cantidad' => $cantidad,
-                    'precio_unitario' => $precio,
-                    'iva_porcentaje' => $ivaPct,
-                    'subtotal' => $lineaSub,
-                    'iva_valor' => $lineaIva,
-                    'total' => round($lineaSub + $lineaIva, 2),
-                ]);
-
-                $subtotal += $lineaSub;
-                $iva += $lineaIva;
-            }
-
-            abort_if($lineasValidas === 0, 422, 'Ninguna línea válida (sin precio en esta lista).');
-
-            $ped->update([
-                'subtotal' => round($subtotal, 2),
-                'iva' => round($iva, 2),
-                'total' => round($subtotal + $iva, 2),
-            ]);
-
-            return $ped;
-        });
-
-        // Alerta Gerencia si quedó retenido (misma lógica LOG-J3).
-        if ($pedido->estado === 'retenido') {
-            \App\Models\NotificacionErp::crear([
-                'tipo' => 'pedido_retenido_cartera',
-                'titulo' => "Pedido {$pedido->numero} RETENIDO · levantado por {$vendedor->name}",
-                'mensaje' => $pedido->motivo_retencion ?: 'Semáforo cartera lo bloqueó.',
-                'color' => 'warning',
-                'icono' => 'heroicon-o-pause-circle',
-                'url' => "/app/pedidos-b2b/{$pedido->id}",
-            ]);
-        }
+        // Las reglas del pedido viven en una sola parte.
+        //
+        // Acá había una segunda copia completa de lo que ya hacía el portal:
+        // precios por lista, semáforo de cartera (LOG-J2), ruteo por ciudad
+        // (LOG-J4), consecutivo, items y aviso a gerencia. Dos copias de la
+        // misma norma terminan separándose sin que nadie lo note —la del
+        // vendedor ya no aceptaba productos agregados, por ejemplo— y el
+        // pedido que levanta el vendedor en la calle tiene que valer
+        // exactamente lo mismo que el que arma el cliente en el portal.
+        $pedido = app(CrearPedidoCliente::class)->ejecutar(
+            cliente: $cliente,
+            items: $data['items'],
+            notas: $data['notas'] ?? null,
+            vendedorId: $r->user()->id,
+        );
 
         return redirect()->route('app.vendedor.index')->with(
             $pedido->estado === 'retenido' ? 'warning' : 'success',
-            "Pedido {$pedido->numero} registrado para {$cliente->razon_social}."
-            . ($pedido->estado === 'retenido' ? ' RETENIDO por cartera.' : '')
+            "Pedido {$pedido->numero} registrado para {$cliente->nombre_completo}."
+            .($pedido->estado === 'retenido' ? " RETENIDO por cartera: {$pedido->motivo_retencion}." : '')
         );
     }
 

@@ -81,7 +81,7 @@ const promedio = computed(() => props.clientes.length ? totalGeneral.value / pro
                     <h3 class="font-semibold">Ranking de clientes por ventas</h3>
                 </div>
                 <div class="overflow-x-auto">
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-xs uppercase text-surface-500 bg-surface-50 dark:bg-surface-900 border-b border-surface-200 dark:border-surface-800">
                             <tr>
                                 <th class="p-3 text-left" style="width:60px">#</th>

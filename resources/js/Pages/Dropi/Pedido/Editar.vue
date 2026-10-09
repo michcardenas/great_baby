@@ -163,7 +163,7 @@ const guardarReal = () => {
 
             <div class="card p-4">
                 <div class="text-xs uppercase tracking-widest font-bold text-brand-600 mb-2">Ítems ({{ pedido.items.length }})</div>
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-xs text-surface-500 dark:text-surface-400 uppercase">
                         <tr>
                             <th class="text-left p-2">SKU</th>

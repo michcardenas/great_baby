@@ -272,7 +272,7 @@ const tipoLabel = (v) => props.tipos.find(t => t.valor === v)?.label || v;
                     Todavía no hay métodos de pago cargados.
                 </div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-xs uppercase text-surface-500 bg-surface-50 dark:bg-surface-900 border-b border-surface-200 dark:border-surface-800">
                             <tr>
                                 <th class="p-3 text-left">Método</th>

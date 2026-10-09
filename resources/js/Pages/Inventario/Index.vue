@@ -81,7 +81,7 @@ const badgeEstado = (e) => ({
             <div v-if="tabAct==='stock'" class="card overflow-hidden">
                 <div v-if="!stock.length" class="text-center py-12 text-surface-500 text-sm">Aún no hay movimientos de inventario registrados.</div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full min-w-[700px] text-sm">
+                    <table v-tabla-movil class="w-full min-w-[700px] text-sm">
                         <thead class="bg-surface-50 dark:bg-surface-900"><tr class="text-surface-500 text-xs uppercase">
                             <th class="text-left px-4 py-2">Ref</th>
                             <th class="text-left">Producto</th>
@@ -108,7 +108,7 @@ const badgeEstado = (e) => ({
             <div v-if="tabAct==='traslados'" class="card overflow-hidden">
                 <div v-if="!traslados.length" class="text-center py-12 text-surface-500 text-sm">Sin traslados registrados.</div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full min-w-[700px] text-sm">
+                    <table v-tabla-movil class="w-full min-w-[700px] text-sm">
                         <thead class="bg-surface-50 dark:bg-surface-900"><tr class="text-surface-500 text-xs uppercase">
                             <th class="text-left px-4 py-2">Origen</th>
                             <th class="text-left">→ Destino</th>
@@ -137,7 +137,7 @@ const badgeEstado = (e) => ({
             <div v-if="tabAct==='tomas'" class="card overflow-hidden">
                 <div v-if="!tomas.length" class="text-center py-12 text-surface-500 text-sm">Sin tomas físicas.</div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full min-w-[600px] text-sm">
+                    <table v-tabla-movil class="w-full min-w-[600px] text-sm">
                         <thead class="bg-surface-50 dark:bg-surface-900"><tr class="text-surface-500 text-xs uppercase">
                             <th class="text-left px-4 py-2">Bodega</th>
                             <th class="text-left">Alcance</th>
@@ -165,7 +165,7 @@ const badgeEstado = (e) => ({
                     <div class="mt-2">Sin alertas de stock activas. Todo dentro de los umbrales.</div>
                 </div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full min-w-[700px] text-sm">
+                    <table v-tabla-movil class="w-full min-w-[700px] text-sm">
                         <thead class="bg-surface-50 dark:bg-surface-900"><tr class="text-surface-500 text-xs uppercase">
                             <th class="text-left px-4 py-2">Producto</th>
                             <th class="text-left">Talla</th>

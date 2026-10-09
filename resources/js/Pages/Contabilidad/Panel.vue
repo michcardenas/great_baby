@@ -122,7 +122,7 @@ const signoBalance = computed(() => {
                 <div class="card p-4">
                     <div class="text-xs uppercase font-bold text-brand-600 mb-2">Top 10 cuentas movidas</div>
                     <div v-if="!topCuentas.length" class="text-center py-6 text-surface-500 text-sm">Sin cuentas movidas en el rango.</div>
-                    <table v-else class="w-full text-sm">
+                    <table v-tabla-movil v-else class="w-full text-sm">
                         <thead class="text-[10px] text-surface-500 uppercase border-b">
                             <tr><th class="text-left p-2">Cuenta</th><th class="text-right p-2">Débito</th><th class="text-right p-2">Crédito</th><th class="text-right p-2">Movs</th></tr>
                         </thead>
@@ -142,7 +142,7 @@ const signoBalance = computed(() => {
                 <div class="card p-4">
                     <div class="text-xs uppercase font-bold text-brand-600 mb-2">Por origen del asiento</div>
                     <div v-if="!porOrigen.length" class="text-center py-6 text-surface-500 text-sm">Sin asientos con origen en el rango.</div>
-                    <table v-else class="w-full text-sm">
+                    <table v-tabla-movil v-else class="w-full text-sm">
                         <thead class="text-[10px] text-surface-500 uppercase border-b">
                             <!-- Re-audit M5 R4 FUNC-A1 · label corregido: la métrica es
                                  SUM(debe) por origen = monto documento (partida doble

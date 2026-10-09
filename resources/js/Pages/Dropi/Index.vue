@@ -97,7 +97,7 @@ const { badge } = usePedidoBadge();
             <!-- Pedidos -->
             <div v-if="tabAct==='pedidos'" class="card overflow-hidden">
                 <div class="overflow-x-auto">
-                    <table class="w-full min-w-[900px] text-sm">
+                    <table v-tabla-movil class="w-full min-w-[900px] text-sm">
                         <thead class="bg-surface-50 dark:bg-surface-900"><tr class="text-surface-500 dark:text-surface-400 text-xs uppercase">
                             <th class="text-left px-4 py-2">Guía</th>
                             <th class="text-left">Cliente</th>

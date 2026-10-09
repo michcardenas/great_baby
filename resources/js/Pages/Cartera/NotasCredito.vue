@@ -4,12 +4,17 @@ import { Head, router } from '@inertiajs/vue3';
 import { FileMinus, Plus, Search, Cloud, CloudOff, RefreshCw, X } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import { useMoney } from '@/composables/useMoney';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
 
 const props = defineProps({
     filtros: { type: Object, required: true },
     notas: { type: Object, required: true },
     kpis: { type: Object, required: true },
 });
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
 
 const { money } = useMoney();
 const q = ref(props.filtros.q);
@@ -70,12 +75,20 @@ const guardar = () => {
 
 const reintentando = ref(null);
 const reenviar = (nc) => {
-    if (! confirm(`¿Reenviar NC ${nc.numero} a SIIGO?`)) return;
-    reintentando.value = nc.id;
-    router.post(`/app/cartera/notas-credito/${nc.id}/reenviar-siigo`, {}, {
-        preserveScroll: true,
-        onFinish: () => { reintentando.value = null; },
-    });
+    modalConfirm.value = {
+        titulo: `¿Reenviar NC ${nc.numero} a SIIGO?`,
+        mensaje: 'Se encola un envío manual a SIIGO con esta nota crédito.',
+        color: 'sky',
+        textoConfirmar: 'Reenviar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            reintentando.value = nc.id;
+            router.post(`/app/cartera/notas-credito/${nc.id}/reenviar-siigo`, {}, {
+                preserveScroll: true,
+                onFinish: () => { reintentando.value = null; },
+            });
+        },
+    };
 };
 </script>
 
@@ -126,7 +139,7 @@ const reenviar = (nc) => {
 
             <!-- Tabla -->
             <div class="card overflow-hidden">
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-[10px] uppercase text-surface-500 border-b bg-surface-50 dark:bg-surface-900">
                         <tr>
                             <th class="text-left p-2">NC</th>
@@ -210,5 +223,6 @@ const reenviar = (nc) => {
                 </div>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

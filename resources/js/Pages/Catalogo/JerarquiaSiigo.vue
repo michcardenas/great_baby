@@ -3,6 +3,7 @@ import { ref, reactive, computed } from 'vue';
 import { Head, router } from '@inertiajs/vue3';
 import { Layers, Plus, Pencil, Trash2, X } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
 
 const props = defineProps({
     lineas: { type: Array, required: true },
@@ -10,6 +11,10 @@ const props = defineProps({
     subgrupos: { type: Array, required: true },
     clases: { type: Array, required: true },
 });
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
 
 const tab = ref('linea');
 const modal = ref(null); // 'linea' | 'grupo' | 'subgrupo' | 'clase'
@@ -45,8 +50,16 @@ const guardar = () => {
 };
 
 const eliminar = (tipo, id) => {
-    if (! confirm(`¿Eliminar ${tipo}?\n\nSolo se permite si no tiene descendientes.`)) return;
-    router.delete(`/app/catalogo/jerarquia-siigo/${tipo}/${id}`, { preserveScroll: true });
+    modalConfirm.value = {
+        titulo: `¿Eliminar ${tipo}?`,
+        mensaje: `Solo se permite si no tiene descendientes.`,
+        color: 'rose',
+        textoConfirmar: 'Eliminar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            router.delete(`/app/catalogo/jerarquia-siigo/${tipo}/${id}`, { preserveScroll: true });
+        },
+    };
 };
 
 const tabs = [
@@ -92,7 +105,7 @@ const tabs = [
                         <Plus class="h-3 w-3"/> Nueva línea
                     </button>
                 </div>
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-[10px] uppercase text-surface-500 border-b bg-surface-50 dark:bg-surface-900">
                         <tr>
                             <th class="text-left p-2 w-24">Código</th>
@@ -126,7 +139,7 @@ const tabs = [
                         <Plus class="h-3 w-3"/> Nuevo grupo
                     </button>
                 </div>
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-[10px] uppercase text-surface-500 border-b bg-surface-50 dark:bg-surface-900">
                         <tr>
                             <th class="text-left p-2">Línea</th>
@@ -162,7 +175,7 @@ const tabs = [
                         <Plus class="h-3 w-3"/> Nuevo subgrupo
                     </button>
                 </div>
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-[10px] uppercase text-surface-500 border-b bg-surface-50 dark:bg-surface-900">
                         <tr>
                             <th class="text-left p-2">Ruta (Línea/Grupo)</th>
@@ -196,7 +209,7 @@ const tabs = [
                         <Plus class="h-3 w-3"/> Nueva clase
                     </button>
                 </div>
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-[10px] uppercase text-surface-500 border-b bg-surface-50 dark:bg-surface-900">
                         <tr>
                             <th class="text-left p-2">Ruta (Línea/Grupo/Subgrupo)</th>
@@ -280,5 +293,6 @@ const tabs = [
                 </div>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

@@ -5,6 +5,7 @@ import {
     ListTree, Plus, Upload, Download, Search, Pencil, Trash2, X, ArrowLeft,
 } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
 
 const props = defineProps({
     filtros: { type: Object, required: true },
@@ -12,6 +13,10 @@ const props = defineProps({
     kpis: { type: Object, required: true },
     cuentas: { type: Object, required: true },
 });
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
 
 // Filtros reactivos con debounce en el buscador.
 const q = ref(props.filtros.q);
@@ -65,8 +70,16 @@ const guardar = () => {
 };
 
 const eliminar = (c) => {
-    if (! confirm(`¿Eliminar la cuenta ${c.codigo} · ${c.nombre}?\n\nSolo se permite si NO tiene subcuentas.`)) return;
-    router.delete(`/app/contabilidad/plan-cuentas/${c.id}`, { preserveScroll: true });
+    modalConfirm.value = {
+        titulo: `¿Eliminar la cuenta ${c.codigo} · ${c.nombre}?`,
+        mensaje: `Solo se permite si NO tiene subcuentas.`,
+        color: 'rose',
+        textoConfirmar: 'Eliminar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            router.delete(`/app/contabilidad/plan-cuentas/${c.id}`, { preserveScroll: true });
+        },
+    };
 };
 
 // Importar Excel/CSV
@@ -180,7 +193,7 @@ const colorClase = (clase) => ({
 
             <!-- Tabla -->
             <div class="card overflow-hidden">
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-[10px] text-surface-500 uppercase border-b bg-surface-50 dark:bg-surface-900">
                         <tr>
                             <th class="text-left p-2 w-24">Código</th>
@@ -303,5 +316,6 @@ const colorClase = (clase) => ({
                 </div>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

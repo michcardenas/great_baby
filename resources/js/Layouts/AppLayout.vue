@@ -95,6 +95,17 @@ const mostrarToast = (mensaje, tono = 'success') => {
     }, tono === 'success' ? 4000 : 8000);
 };
 
+/*
+ * Avisos que manda cualquier pantalla con `avisar()` (composables/useAviso.js).
+ *
+ * Es el reemplazo del `alert()` nativo, que dentro del iframe de la app de
+ * escritorio no aparece: la persona apretaba «subir imagen», fallaba, y no
+ * veía nada. Acá reusa la misma cola de toasts que los avisos del servidor.
+ */
+useEventListener(typeof window !== 'undefined' ? window : null, 'gb:aviso', (e) => {
+    mostrarToast(e.detail?.mensaje || '', e.detail?.tono || 'info');
+});
+
 watch(
     () => page.props.flash,
     (flash) => {

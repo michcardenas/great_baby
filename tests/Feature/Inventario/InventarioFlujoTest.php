@@ -24,6 +24,18 @@ use App\Modules\Inventario\Models\TrasladoItem;
 use App\Modules\Inventario\Services\StockService;
 
 beforeEach(function () {
+    /*
+     * Varias acciones de inventario (traslados, conteos) exigen un usuario con
+     * permiso: se llaman siempre desde una pantalla con sesión, nunca desde un
+     * job. Las pruebas corrían sin autenticar y fallaban con «No autenticado»,
+     * que no era lo que querían probar.
+     */
+    $this->seed(\Database\Seeders\PermisosSeeder::class);
+    $rol = \Spatie\Permission\Models\Role::firstOrCreate(['name' => 'Aracely', 'guard_name' => 'web']);
+    $this->operador = \App\Models\User::factory()->create();
+    $this->operador->assignRole($rol);
+    $this->actingAs($this->operador);
+
     $this->bodegaA = InventarioUbicacion::create([
         'codigo' => 'BOD-A', 'nombre' => 'Bodega A',
         'categoria' => CategoriaUbicacion::Venta, 'activa' => true,
@@ -61,9 +73,13 @@ it('reserva stock y baja el disponible', function () {
     $contacto = \App\Models\Contacto::create([
         'tipo_documento' => 'CC', 'numero_documento' => '12345', 'nombre_completo' => 'Cliente T', 'es_cliente' => true,
     ]);
+    // La factura tiene que cuadrar (total = subtotal - descuento + impuestos):
+    // el modelo lo valida y sin `subtotal` reventaba por «desbalanceada»,
+    // tapando lo que la prueba realmente quería verificar.
     $factura = FacturaVenta::create([
         'numero' => 'FV-TEST-' . uniqid(), 'contacto_id' => $contacto->id, 'fecha_emision' => now(),
-        'fecha_vencimiento' => now()->addDays(30), 'total' => 100000, 'saldo' => 100000,
+        'fecha_vencimiento' => now()->addDays(30),
+        'subtotal' => 100000, 'total' => 100000, 'saldo' => 100000,
     ]);
 
     $reserva = ReservarStock::run(
@@ -89,7 +105,8 @@ it('rechaza reserva si no hay stock disponible', function () {
     ]);
     $factura = FacturaVenta::create([
         'numero' => 'FV-TEST-' . uniqid(), 'contacto_id' => $contacto->id, 'fecha_emision' => now(),
-        'fecha_vencimiento' => now()->addDays(30), 'total' => 100000, 'saldo' => 100000,
+        'fecha_vencimiento' => now()->addDays(30),
+        'subtotal' => 100000, 'total' => 100000, 'saldo' => 100000,
     ]);
 
     ReservarStock::run($this->variante->id, $this->bodegaA->id, 150, $factura);
@@ -137,16 +154,22 @@ it('rechaza traslado si stock origen insuficiente', function () {
 })->throws(InvalidArgumentException::class, 'Stock insuficiente');
 
 it('cierra toma física con diferencias y genera asientos', function () {
+    // `estado` explícito: la base tiene default 'borrador', pero el modelo
+    // recién creado todavía no lo leyó y en memoria queda nulo. El código real
+    // trae la toma con findOrFail, así que esto reproduce esa situación.
     $toma = TomaFisica::create([
         'numero' => TomaFisica::siguienteNumero(),
         'ubicacion_id' => $this->bodegaA->id,
         'fecha_conteo' => now(),
+        'estado' => EstadoTomaFisica::Borrador,
     ]);
     PrepararTomaFisica::run($toma);
 
     $item = $toma->fresh()->items->firstWhere('variante_id', $this->variante->id);
     // Fix auditor #6: costo_unit debe poblarse desde precio_proveedor (3000), no null.
-    expect($item->saldo_sistema)->toBe(100)
+    // Las cantidades vienen con cast `decimal`, así que Eloquent las devuelve
+    // como texto ('100.0000'): se comparan por valor, no por tipo.
+    expect((float) $item->saldo_sistema)->toBe(100.0)
         ->and((float) $item->costo_unit)->toBe(3000.0);
 
     // Faltante: contado 90 (dif -10)
@@ -162,14 +185,17 @@ it('cierra toma física con diferencias y genera asientos', function () {
 
     // Kardex debe reflejar el ajuste
     // BUG-INV · tipo unificado con la whitelist del InventarioMovimientoObserver.
-    expect(InventarioMovimiento::where('tipo', 'ajuste_toma_fisica')
-        ->where('variante_id', $this->variante->id)->sum('cantidad'))->toBe(-10);
+    expect((float) InventarioMovimiento::where('tipo', 'ajuste_toma_fisica')
+        ->where('variante_id', $this->variante->id)->sum('cantidad'))->toBe(-10.0);
 
-    // Asientos contables: 5195 debe 30k + 1435 haber 30k
+    // Asientos del faltante: 5299 debe 30k / 1435 haber 30k.
+    // La prueba esperaba 5195, que es «transportes y fletes» y no tiene nada
+    // que ver con una baja de inventario; el código ya se había corregido a
+    // 5299 y la prueba se quedó con la cuenta vieja.
     $movs = MovimientoContable::where('origen_type', TomaFisica::class)->get();
     expect($movs)->toHaveCount(2)
-        ->and($movs->firstWhere('cuenta_puc', '5195')->debe + 0)->toBe(30000.0)
-        ->and($movs->firstWhere('cuenta_puc', '1435')->haber + 0)->toBe(30000.0);
+        ->and((float) $movs->firstWhere('cuenta_puc', '5299')->debe)->toBe(30000.0)
+        ->and((float) $movs->firstWhere('cuenta_puc', '1435')->haber)->toBe(30000.0);
 });
 
 it('dispara alertas cuando el saldo cruza el mínimo', function () {
@@ -182,8 +208,9 @@ it('dispara alertas cuando el saldo cruza el mínimo', function () {
         'activa' => true,
     ]);
 
-    // Saldo 100 > mínimo 50 → no dispara
-    expect(VerificarAlertasStock::run())->toBe(0);
+    // `run()` devuelve un resumen ['disparadas','resueltas','procesadas'],
+    // no un entero: la prueba comparaba el arreglo completo contra un número.
+    expect(VerificarAlertasStock::run()['disparadas'])->toBe(0);
 
     // Bajamos a 40
     InventarioMovimiento::create([
@@ -191,18 +218,18 @@ it('dispara alertas cuando el saldo cruza el mínimo', function () {
         'tipo' => 'egreso', 'cantidad' => -60, 'created_at' => now(),
     ]);
 
-    $disparadas = VerificarAlertasStock::run();
+    $disparadas = VerificarAlertasStock::run()['disparadas'];
     expect($disparadas)->toBe(1)
         ->and(AlertaStockDisparada::where('tipo', 'minimo')->where('resuelta', false)->count())->toBe(1);
 
     // Correr de nuevo NO duplica
-    expect(VerificarAlertasStock::run())->toBe(0);
+    expect(VerificarAlertasStock::run()['disparadas'])->toBe(0);
 
     // Baja a 20 → dispara reorden también
     InventarioMovimiento::create([
         'variante_id' => $this->variante->id, 'ubicacion_id' => $this->bodegaA->id,
         'tipo' => 'egreso', 'cantidad' => -20, 'created_at' => now(),
     ]);
-    expect(VerificarAlertasStock::run())->toBe(1)
+    expect(VerificarAlertasStock::run()['disparadas'])->toBe(1)
         ->and(AlertaStockDisparada::where('tipo', 'reorden')->where('resuelta', false)->count())->toBe(1);
 });

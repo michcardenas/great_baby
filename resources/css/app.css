@@ -50,4 +50,59 @@
     .badge-danger  { @apply badge bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300; }
     .badge-info    { @apply badge bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300; }
     .badge-gray    { @apply badge bg-surface-100 text-surface-800 dark:bg-surface-800 dark:text-surface-300; }
+
+    /*
+     * Tabla sin filas · lo marca resources/js/directivas/tablaMovil.js
+     *
+     * Una tabla con encabezado y nada debajo parece rota: no se sabe si el
+     * filtro no encontró nada o si el sistema falló. El mensaje viaja en el
+     * atributo, así que cada tabla puede traer el suyo con `data-vacia`.
+     */
+    [data-tabla-vacia]::after {
+        content: attr(data-tabla-vacia);
+        @apply block px-4 py-10 text-center text-sm text-surface-500 dark:text-surface-400;
+    }
+
+    /*
+     * Tablas en celular · va de la mano con resources/js/directivas/tablaMovil.js
+     *
+     * La directiva copia el nombre de cada columna dentro de su celda y marca
+     * la tabla como apilable. Debajo de 768px cada fila pasa a ser una tarjeta
+     * con «etiqueta a la izquierda, valor a la derecha», en vez de obligar a
+     * arrastrar la tabla de lado perdiendo de vista cuál fila es cuál.
+     *
+     * Arriba de 768px no aplica nada de esto: la tabla se ve igual que siempre.
+     */
+    @media (max-width: 767px) {
+        table[data-apilable="si"] {
+            @apply block w-full;
+            /* Varias tablas traen min-w-[900px] para forzar el scroll lateral. */
+            min-width: 0 !important;
+        }
+        table[data-apilable="si"] thead { @apply hidden; }
+        table[data-apilable="si"] tbody { @apply block; }
+
+        table[data-apilable="si"] tbody tr {
+            @apply block py-2 border-b border-surface-200 dark:border-surface-800;
+        }
+        table[data-apilable="si"] tbody tr:last-child { @apply border-b-0; }
+
+        table[data-apilable="si"] tbody td {
+            @apply flex items-center justify-between gap-3 w-full text-right px-3 py-1.5 border-0;
+        }
+        table[data-apilable="si"] tbody td::before {
+            content: attr(data-label);
+            @apply shrink-0 text-left text-[11px] uppercase tracking-wide
+                   text-surface-500 dark:text-surface-400;
+            max-width: 45%;
+        }
+        /* Columnas sin nombre (la del check de selección) no llevan etiqueta. */
+        table[data-apilable="si"] tbody td[data-label=""]::before,
+        table[data-apilable="si"] tbody td:not([data-label])::before { content: none; }
+
+        /* Filas que no encajan con el encabezado: «sin resultados» y similares. */
+        table[data-apilable="si"] tbody tr[data-sin-etiquetas] td {
+            @apply block text-center;
+        }
+    }
 }

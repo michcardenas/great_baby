@@ -212,9 +212,9 @@ const fmtTime = (s) => {
                 <!-- Escáner (2 cols) -->
                 <div :class="['card p-5 bg-gradient-to-br from-slate-900 to-slate-800 border-brand-700 transition-all duration-300 lg:col-span-2', flashClass]">
                     <div class="flex items-center justify-between mb-3">
-                        <div class="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-brand-500">
+                        <h1 class="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-brand-500">
                             <Scan class="h-4 w-4"/> Estación de Empaque
-                        </div>
+                        </h1>
                         <div class="flex items-center gap-2">
                             <div class="text-sm text-slate-400 font-mono">{{ hora }}</div>
                             <button @click="toggleMute" class="p-1.5 border border-brand-700/50 rounded hover:bg-brand-950" :title="mute ? 'Activar sonidos' : 'Silenciar'">

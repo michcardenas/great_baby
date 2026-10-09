@@ -68,7 +68,7 @@ const badgeEstado = (e) => ({
 
             <div class="card overflow-x-auto">
                 <div class="p-4 border-b border-surface-200 dark:border-surface-800 font-semibold">Ítems</div>
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-xs text-surface-500 dark:text-surface-400 uppercase border-b border-surface-200 dark:border-surface-800">
                         <tr>
                             <th class="text-left p-3">Descripción</th>
@@ -105,7 +105,7 @@ const badgeEstado = (e) => ({
                 <div class="p-4 border-b border-surface-200 dark:border-surface-800 font-semibold flex items-center gap-2">
                     <CheckCircle class="h-4 w-4 text-emerald-500"/> Pagos aplicados
                 </div>
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-xs text-surface-500 dark:text-surface-400 uppercase border-b border-surface-200 dark:border-surface-800">
                         <tr>
                             <th class="text-left p-3">Fecha</th>

@@ -145,18 +145,60 @@ class Producto extends Model implements AuditableContract, HasMedia
     }
 
     /**
-     * C-F3 FIX ALTO auditor · Observer que inserta el kardex inicial cuando se crea
-     * un producto agregado con stock_directo > 0 desde Filament. Sin esto, el
-     * campo del form guardaba el número pero NO generaba movimiento → los
-     * reportes mostraban 0. Es de raíz: cualquier flujo (Filament, API, comando
-     * genérico Producto::create) queda cubierto.
+     * ¿Quién escribe el kardex del stock inicial?
      *
-     * El importador F7 (CargarInventarioClienteExcel) crea sus propios movs
-     * con marker específico → este observer detecta y NO duplica.
+     * Por defecto lo escribe el observer de abajo. Los importadores que ya
+     * escriben su propio movimiento —y que además saben en qué bodega y en qué
+     * posición va— lo apagan con `sinKardexAutomatico()`.
+     *
+     * No es una optimización: el stock de un producto agregado se calcula
+     * sumando el kardex (`StockService::saldoFisicoProducto`), así que dos
+     * movimientos por la misma mercancía la duplican, y el del observer queda
+     * en «la primera ubicación activa», que no es la que eligió quien importó.
+     */
+    protected static bool $omitirKardexInicial = false;
+
+    /**
+     * Corre `$fn` sin que la creación de productos genere kardex automático.
+     *
+     * @template T
+     *
+     * @param  callable():T  $fn
+     * @return T
+     */
+    public static function sinKardexAutomatico(callable $fn)
+    {
+        $previo = self::$omitirKardexInicial;
+        self::$omitirKardexInicial = true;
+
+        try {
+            return $fn();
+        } finally {
+            self::$omitirKardexInicial = $previo;
+        }
+    }
+
+    /**
+     * C-F3 FIX ALTO auditor · Observer que inserta el kardex inicial cuando se crea
+     * un producto agregado con stock_directo > 0 desde un formulario. Sin esto, el
+     * campo guardaba el número pero NO generaba movimiento → los reportes
+     * mostraban 0. Es de raíz: cualquier flujo (pantalla de catálogo, API,
+     * comando genérico Producto::create) queda cubierto.
+     *
+     * Los importadores de Excel escriben su propio movimiento, en la bodega y la
+     * posición que se eligieron en la pantalla, así que lo apagan con
+     * `Producto::sinKardexAutomatico()`. Antes este docblock decía que el
+     * observer «detecta y no duplica», pero no podía: corre en `created`, o sea
+     * antes de que el importador escriba su marker, así que lo único que miraba
+     * era su propio marker y nunca encontraba nada. En una base nueva cada
+     * referencia importada entraba dos veces —la mitad del stock en la bodega
+     * equivocada— y no se notó porque en la base de dev los 134 productos ya
+     * existían y `updateOrCreate` solo los actualizaba.
      */
     protected static function booted(): void
     {
         static::created(function (Producto $p) {
+            if (self::$omitirKardexInicial) return;
             if ($p->desglose_stock || (int) $p->stock_directo <= 0) return;
 
             $bodega = \App\Modules\Dropi\Models\InventarioUbicacion::query()

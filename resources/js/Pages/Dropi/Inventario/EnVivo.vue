@@ -45,7 +45,7 @@ const buscar = () => {
 
             <!-- U21 · columna Variante sticky en scroll horizontal + fondo sólido para dark mode. -->
             <div class="card overflow-x-auto">
-                <table class="w-full text-xs border-collapse">
+                <table v-tabla-movil class="w-full text-xs border-collapse">
                     <thead class="text-[10px] uppercase text-surface-500 dark:text-surface-400 border-b border-surface-200 dark:border-surface-800 sticky top-0 z-20 bg-white dark:bg-surface-900">
                         <tr>
                             <th class="text-left p-2 min-w-[220px] sticky left-0 z-30 bg-white dark:bg-surface-900 shadow-[2px_0_0_0_rgba(0,0,0,0.05)]">Variante</th>

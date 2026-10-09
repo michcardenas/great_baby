@@ -2,6 +2,7 @@
 import { ref } from 'vue';
 import { Head, Link, router } from '@inertiajs/vue3';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
 import { ArrowLeft, FileText, AlertTriangle, CheckCircle2, Send, Mail, Receipt } from 'lucide-vue-next';
 
 const props = defineProps({
@@ -19,16 +20,40 @@ const confirmando = ref(false);
 
 const bloqueado = (props.advertencias ?? []).some(a => a.tipo === 'danger');
 
-const facturar = () => {
-    if (bloqueado) return;
-    if (! window.confirm(`¿Confirmar facturación de ${props.pedido.numero} por ${money(props.pedido.total)}?\n\nEnvío DIAN: ${sendDian.value ? 'SÍ' : 'NO'}\nEnvío mail: ${sendMail.value ? 'SÍ' : 'NO'}\n\nEsto emite la factura electrónica REAL en SIIGO.`)) return;
+/*
+ * Confirmación de la emisión REAL a la DIAN.
+ *
+ * Era un `window.confirm()` del navegador. Dos problemas: es la acción más
+ * irreversible del sistema —una factura electrónica radicada no se borra, se
+ * anula con nota crédito— y merece algo mejor que un cuadro gris del sistema
+ * operativo; y además el confirm nativo queda BLOQUEADO en vistas embebidas,
+ * así que el botón no hacía nada y no se veía ningún error.
+ */
+const modal = ref(null);
+
+const emitir = () => {
     confirmando.value = true;
+    modal.value = null;
     router.post(`/app/facturacion/facturar/${props.pedido.id}`, {
         send_dian: sendDian.value,
         send_mail: sendMail.value,
     }, {
         onFinish: () => { confirmando.value = false; },
     });
+};
+
+const facturar = () => {
+    if (bloqueado) return;
+    modal.value = {
+        titulo: `¿Emitir la factura de ${props.pedido.numero}?`,
+        mensaje: `Son ${money(props.pedido.total)} para ${props.contacto?.razon_social || props.contacto?.nombre_completo || 'el cliente'}.\n\n`
+            + `· Se radica en la DIAN: ${sendDian.value ? 'SÍ, ahora mismo' : 'no por ahora'}\n`
+            + `· Se le envía por correo: ${sendMail.value ? 'SÍ' : 'no'}\n\n`
+            + 'Una factura electrónica radicada no se puede borrar: para deshacerla hay que emitir una nota crédito.',
+        color: 'amber',
+        textoConfirmar: 'Sí, emitir en SIIGO',
+        onConfirmar: emitir,
+    };
 };
 </script>
 
@@ -108,7 +133,7 @@ const facturar = () => {
                     </h3>
                 </div>
                 <div class="overflow-x-auto">
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-xs uppercase text-surface-500 bg-surface-50 dark:bg-surface-900">
                             <tr>
                                 <th class="p-3 text-left">SKU</th>
@@ -211,5 +236,7 @@ const facturar = () => {
             </div>
 
         </div>
+
+        <AppConfirmModal :cfg="modal" @cerrar="modal = null"/>
     </AppLayout>
 </template>

@@ -34,7 +34,7 @@ const badge = (e) => ({
             </div>
 
             <div class="card overflow-hidden">
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-xs text-surface-500 uppercase border-b bg-surface-50">
                         <tr>
                             <th class="text-left p-2 w-32">Número</th>

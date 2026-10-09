@@ -6,6 +6,7 @@ import AppLayout from '@/Layouts/AppLayout.vue';
 import { useMoney } from '@/composables/useMoney';
 import { fechaCorta } from '@/composables/useFecha';
 import { useEscClose } from '@/composables/useEscClose';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
 
 const props = defineProps({ orden: { type: Object, required: true } });
 
@@ -61,14 +62,37 @@ const siigoBadge = (e) => ({
 }[e] || { cls: 'bg-surface-100', label: '—', icon: Cloud });
 
 // COMP-B8 · reenvío manual a SIIGO desde la OC/Show.
+//
+// Solo se pregunta cuando la recepción YA está en SIIGO, que es el caso en el
+// que reenviar puede dejar el documento duplicado allá. Si todavía no subió,
+// el reenvío es inofensivo y va directo. Antes esto era un confirm() nativo,
+// que queda bloqueado dentro del iframe de la app de escritorio.
 const reenviando = ref(null);
+const modalConfirm = ref(null);
 const reenviarRecepcion = (rec) => {
-    if (rec.siigo_id && ! confirm(`La recepción ${rec.numero} ya está sincronizada con SIIGO (${rec.siigo_number || rec.siigo_id}). ¿Reenviar igual?`)) return;
-    reenviando.value = rec.id;
-    router.post(`/app/compras/recepcion/${rec.id}/reenviar-siigo`, {}, {
-        preserveScroll: true,
-        onFinish: () => reenviando.value = null,
-    });
+    const enviar = () => {
+        reenviando.value = rec.id;
+        router.post(`/app/compras/recepcion/${rec.id}/reenviar-siigo`, {}, {
+            preserveScroll: true,
+            onFinish: () => reenviando.value = null,
+        });
+    };
+
+    if (! rec.siigo_id) {
+        enviar();
+        return;
+    }
+
+    modalConfirm.value = {
+        titulo: `¿Reenviar la recepción ${rec.numero}?`,
+        mensaje: `Ya está sincronizada con SIIGO (${rec.siigo_number || rec.siigo_id}). Reenviarla encola un push manual nuevo.`,
+        color: 'amber',
+        textoConfirmar: 'Reenviar igual',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            enviar();
+        },
+    };
 };
 </script>
 
@@ -115,7 +139,7 @@ const reenviarRecepcion = (rec) => {
             <div class="card p-4">
                 <div class="text-xs uppercase tracking-widest font-bold text-brand-600 mb-3">Ítems ({{ orden.items.length }})</div>
                 <div class="overflow-x-auto">
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-[10px] text-surface-500 uppercase border-b">
                             <tr>
                                 <th class="text-left p-2">Descripción</th>
@@ -233,5 +257,6 @@ const reenviarRecepcion = (rec) => {
                 </div>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

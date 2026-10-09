@@ -3,8 +3,13 @@ import { ref } from 'vue';
 import { Head, Link, router } from '@inertiajs/vue3';
 import { ArrowLeft, ShieldCheck, CheckCircle, XCircle, Truck, Lock } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
 
 const props = defineProps({ ticket: { type: Object, required: true } });
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
 
 const modalDecidir = ref(false);
 const decision = ref('aprobar');
@@ -22,8 +27,16 @@ const decidir = () => {
     });
 };
 const iniciarReposicion = () => {
-    if (!confirm('Iniciar reposición al cliente por valor $0 (según contrato)?')) return;
-    router.post(`/app/garantias/${props.ticket.id}/reposicion`);
+    modalConfirm.value = {
+        titulo: '¿Iniciar la reposición al cliente?',
+        mensaje: 'Se genera por valor $0, según contrato.',
+        color: 'emerald',
+        textoConfirmar: 'Iniciar reposición',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            router.post(`/app/garantias/${props.ticket.id}/reposicion`);
+        },
+    };
 };
 const cerrar = () => {
     router.post(`/app/garantias/${props.ticket.id}/cerrar`, { notas: notasCierre.value }, {
@@ -144,5 +157,6 @@ const badge = (e) => ({
                 </div>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

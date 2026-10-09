@@ -3,6 +3,7 @@
 namespace App\Modules\Siigo\Jobs;
 
 use App\Modules\Cartera\Models\PagoVenta;
+use App\Modules\Siigo\Exceptions\PagoSinFacturaEnSiigo;
 use App\Modules\Siigo\Exceptions\SiigoRateLimitedException;
 use App\Modules\Siigo\Models\SiigoConfig;
 use App\Modules\Siigo\Models\SiigoSyncLog;
@@ -11,6 +12,8 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
+use DateTimeInterface;
+use App\Modules\Siigo\Jobs\Middleware\EsperarCredencialSiigo;
 use Illuminate\Queue\Middleware\RateLimited;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Queue\SerializesModels;
@@ -27,7 +30,6 @@ class PushVoucherASiigo implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public int $tries = 5;
     public int $timeout = 60;
     public bool $manual = false;
 
@@ -47,9 +49,32 @@ class PushVoucherASiigo implements ShouldQueue
         ];
     }
 
+    /**
+     * El techo es el reloj, no el contador de intentos.
+     *
+     * Con `tries = 5` pelado, una credencial vencida mandaba el documento a
+     * `failed_jobs` en minutos y de ahi no sale solo: el 2026-10-08 fueron
+     * 1008 trabajos, el catalogo entero. `EsperarCredencialSiigo` lo devuelve
+     * a la cola mientras la llave este muerta, y `release()` gasta intento,
+     * asi que el limite tiene que ser temporal. 12 horas alcanzan para que
+     * alguien pegue la llave nueva en /app/siigo sin perder la cola.
+     *
+     * Los rechazos de verdad siguen acotados por `$maxExceptions`.
+     */
+    public function retryUntil(): DateTimeInterface
+    {
+        return now()->addHours(12);
+    }
+
+    /** Un rechazo real de SIIGO corta a los 5, como antes. */
+    public int $maxExceptions = 5;
+
     public function middleware(): array
     {
         return [
+            // Primero de todos: con la credencial muerta no tiene sentido ni
+            // pedir turno al rate limiter.
+            new EsperarCredencialSiigo(),
             new RateLimited('siigo-api'),
             (new WithoutOverlapping("siigo:pago:{$this->pagoId}"))
                 ->releaseAfter(60)->expireAfter(180),
@@ -89,6 +114,13 @@ class PushVoucherASiigo implements ShouldQueue
         } catch (SiigoRateLimitedException $e) {
             $delay = $e->retryAfter + random_int(0, min(10, (int) ($e->retryAfter * 0.2)));
             $this->release($delay);
+        } catch (PagoSinFacturaEnSiigo $e) {
+            // Su factura no es electrónica: no va a SIIGO ni hoy ni nunca, así
+            // que el recibo tampoco. Antes esto se trataba como fallo, gastaba
+            // intentos y caía en `failed_jobs`; al día siguiente la red de
+            // seguridad lo reencolaba para que muriera igual. Queda como
+            // omitido, que es lo que de verdad pasó.
+            $this->log('omitido', 0, "[sin-factura-electronica] {$e->getMessage()}");
         }
     }
 

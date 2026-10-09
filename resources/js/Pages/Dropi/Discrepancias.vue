@@ -97,7 +97,7 @@ const guardarAjuste = () => {
                 <div class="text-xs uppercase tracking-widest font-bold text-red-600 mb-3">Pedidos sin movimiento en wallet</div>
                 <div v-if="!pedidosSinCobro.length" class="text-center py-6 text-emerald-600 text-sm">✅ Todo cuadra — cada pedido pagado tiene su cobro registrado.</div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-xs text-surface-500 dark:text-surface-400 uppercase border-b border-surface-200 dark:border-surface-800">
                             <tr>
                                 <th class="text-left p-2">Guía</th>
@@ -134,7 +134,7 @@ const guardarAjuste = () => {
                 <div class="text-xs uppercase tracking-widest font-bold text-amber-600 mb-3">Movimientos wallet SIN pedido asociado</div>
                 <div v-if="!movimientosHuerfanos.length" class="text-center py-6 text-surface-500 text-sm">Sin movimientos huérfanos.</div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-xs text-surface-500 dark:text-surface-400 uppercase border-b border-surface-200 dark:border-surface-800">
                             <tr>
                                 <th class="text-left p-2">Fecha</th>

@@ -22,7 +22,7 @@ const fmtTime = (s) => {
             <div class="text-3xl">📦</div>
             <div class="text-sm mt-2">Aún no hay empaques hoy</div>
         </div>
-        <div v-else class="overflow-x-auto"><table class="w-full min-w-[420px] text-sm">
+        <div v-else class="overflow-x-auto"><table v-tabla-movil class="w-full min-w-[420px] text-sm">
             <thead>
                 <tr class="text-surface-500 dark:text-surface-400 text-xs uppercase border-b border-surface-200 dark:border-surface-800">
                     <th class="text-left py-2 w-10">#</th>

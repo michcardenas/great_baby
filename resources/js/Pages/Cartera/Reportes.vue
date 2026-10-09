@@ -40,7 +40,7 @@ const { money } = useMoney();
                 <div class="card p-4">
                     <div class="text-xs uppercase font-bold text-brand-600 mb-2 flex items-center gap-2"><Users class="h-3 w-3"/>Top 20 morosos</div>
                     <div v-if="!topMorosos.length" class="text-center py-4 text-emerald-600 text-sm">✅ Sin morosos</div>
-                    <table v-else class="w-full text-sm">
+                    <table v-tabla-movil v-else class="w-full text-sm">
                         <thead class="text-[10px] uppercase text-surface-500 border-b">
                             <tr><th class="text-left p-2">Cliente</th><th class="text-right p-2">Facturas</th><th class="text-right p-2">Saldo</th></tr>
                         </thead>
@@ -60,7 +60,7 @@ const { money } = useMoney();
                 <div class="card p-4">
                     <div class="text-xs uppercase font-bold text-brand-600 mb-2">Consignaciones últimos 30 días</div>
                     <div v-if="!consignaciones.length" class="text-center py-4 text-surface-500 text-sm">Sin pagos</div>
-                    <table v-else class="w-full text-sm">
+                    <table v-tabla-movil v-else class="w-full text-sm">
                         <thead class="text-[10px] uppercase text-surface-500 border-b">
                             <tr><th class="text-left p-2">Medio</th><th class="text-right p-2">N°</th><th class="text-right p-2">Total</th></tr>
                         </thead>

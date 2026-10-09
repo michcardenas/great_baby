@@ -38,60 +38,66 @@ class MarketingPrestamosController extends Controller implements HasMiddleware
 
     public function index(Request $r): Response
     {
-        // Las ubicaciones del equipo marketing: usamos la categoría
-        //   ReservaProveedor como contenedor ("préstamo activo · no vende")
-        //   y marcamos con prefijo de código 'MKT-' para no mezclarlas con
-        //   reservas reales a proveedores.
-        $misBodegas = InventarioUbicacion::query()
-            ->where('activa', true)
-            ->where(function ($q) {
-                $q->where('codigo', 'like', 'MKT-%')
-                  ->orWhere('categoria', CategoriaUbicacion::ReservaProveedor);
-            })
-            ->orderBy('codigo')
-            ->get(['id', 'codigo', 'nombre', 'ciudad'])
-            ->toArray();
-
+        $misBodegas = $this->almacenesMarketing()->get(['id', 'codigo', 'nombre', 'ciudad'])->toArray();
         $ids = array_column($misBodegas, 'id');
 
-        // Traslados abiertos (lo que todavía está prestado · estado 'borrador'
-        //   o 'ejecutado' sin devolución registrada). Lista cronológica.
+        /*
+         * Movimientos de/hacia los almacenes de Marketing.
+         *
+         * El mapeo de antes mandaba `origen_id`, `destino_id`, `solicitante` y
+         * `fecha_ejecucion`, mientras la tabla pintaba `origen`, `destino`,
+         * `solicitado_por`, `fecha`, `motivo` e `items_count`: casi ninguna
+         * columna coincidía y la pantalla mostraba filas en blanco con una
+         * flecha en el medio.
+         *
+         * Y el `estado` viajaba como objeto del enum, así que el
+         * `in_array($p['estado'], ['borrador', 'ejecutado'])` que repartía
+         * entre abiertos y cerrados **nunca** daba verdadero: todo caía en
+         * «Devueltos» con chip verde y «Prestado ahora» marcaba 0 siempre.
+         * De paso, 'ejecutado' ni siquiera es un estado del enum
+         * (borrador · en_transito · recibido · anulado).
+         */
         $prestamos = Traslado::query()
-            ->where(function ($q) use ($ids) {
-                $q->whereIn('destino_id', $ids)
-                  ->orWhereIn('origen_id', $ids);
-            })
-            ->with('solicitante:id,name')
-            ->orderByDesc('created_at')
-            ->limit(100)
+            ->where(fn ($q) => $q->whereIn('destino_id', $ids)->orWhereIn('origen_id', $ids))
             // `solicitante` es la RELACIÓN belongsTo(User,'solicitado_por'),
             // no una columna · pedirla en el select tumbaba la pantalla con
             // "Unknown column 'solicitante'".
-            ->get(['id', 'numero', 'origen_id', 'destino_id', 'estado',
-                   'solicitado_por', 'fecha_ejecucion', 'observaciones', 'created_at'])
+            ->with(['solicitante:id,name', 'origen:id,codigo', 'destino:id,codigo'])
+            ->withCount('items')
+            ->orderByDesc('created_at')
+            ->limit(100)
+            ->get(['id', 'numero', 'origen_id', 'destino_id', 'estado', 'motivo',
+                   'solicitado_por', 'fecha_solicitud', 'fecha_ejecucion', 'observaciones', 'created_at'])
             ->map(fn ($t) => [
                 'id' => $t->id,
                 'numero' => $t->numero,
-                'origen_id' => $t->origen_id,
-                'destino_id' => $t->destino_id,
-                'estado' => $t->estado,
-                'solicitante' => $t->solicitante?->name,
-                'fecha_ejecucion' => $t->fecha_ejecucion?->format('Y-m-d'),
+                'origen' => $t->origen?->codigo,
+                'destino' => $t->destino?->codigo,
+                'motivo' => $t->motivo,
+                'items_count' => (int) $t->items_count,
+                'solicitado_por' => $t->solicitante?->name,
+                'estado' => $t->estado?->value,
+                'estado_label' => $t->estado?->label(),
+                'fecha' => $t->fecha_solicitud?->format('Y-m-d') ?? $t->created_at?->format('Y-m-d'),
+                'ejecutado_at' => $t->fecha_ejecucion?->format('Y-m-d'),
                 'observaciones' => $t->observaciones,
-                'created_at' => $t->created_at?->format('Y-m-d H:i'),
+                // Hacia el almacén de Marketing = salida de bodega (préstamo);
+                // desde el almacén = devolución.
+                'es_prestamo' => in_array($t->destino_id, $ids, true),
             ])
             ->toArray();
 
-        $abiertos = array_values(array_filter($prestamos, fn ($p) => in_array($p['estado'], ['borrador', 'ejecutado'])));
-        $cerrados = array_values(array_filter($prestamos, fn ($p) => ! in_array($p['estado'], ['borrador', 'ejecutado'])));
+        $vivos = ['borrador', 'en_transito', 'recibido'];
 
-        // Bodegas comerciales a las que marketing puede pedir prestado.
-        $bodegasComerciales = InventarioUbicacion::query()
-            ->where('activa', true)
-            ->where('categoria', CategoriaUbicacion::Venta)
-            ->orderBy('codigo')
-            ->get(['id', 'codigo', 'nombre'])
-            ->toArray();
+        // En curso: lo que pidió y todavía no volvió a bodega. La devolución
+        // es un traslado aparte, así que lo que cierra el ciclo es que la
+        // mercancía ya no esté en el almacén — y eso lo dice el kardex, no la
+        // lista de traslados. Por eso debajo va «lo que tengo ahora».
+        $abiertos = array_values(array_filter(
+            $prestamos,
+            fn ($p) => $p['es_prestamo'] && in_array($p['estado'], $vivos, true)
+        ));
+        $cerrados = array_values(array_filter($prestamos, fn ($p) => ! in_array($p, $abiertos, true)));
 
         return Inertia::render('Marketing/Panel', [
             'mis_bodegas' => $misBodegas,
@@ -100,8 +106,150 @@ class MarketingPrestamosController extends Controller implements HasMiddleware
                 'cerrados' => array_slice($cerrados, 0, 20),
                 'total_abiertos' => count($abiertos),
             ],
-            'bodegas_comerciales' => $bodegasComerciales,
+            // Lo que de verdad sigue en poder de Marketing: el saldo del
+            // kardex en sus almacenes. Es la única cuenta que no depende de
+            // emparejar cada préstamo con su devolución, cosa que el modelo
+            // no guarda en ningún lado.
+            'en_mi_almacen' => $this->enMiAlmacen($ids),
+            'bodegas_comerciales' => $this->bodegasComerciales()->get(['id', 'codigo', 'nombre'])->toArray(),
             'es_super' => (bool) $r->user()?->esAracely(),
         ]);
+    }
+
+    /**
+     * Saldo vivo en los almacenes de Marketing, por producto.
+     *
+     * @param  list<int>  $ids
+     * @return list<array{nombre: string, sku: string, cantidad: int}>
+     */
+    private function enMiAlmacen(array $ids): array
+    {
+        if (! $ids) return [];
+
+        return \App\Modules\Dropi\Models\InventarioMovimiento::query()
+            ->whereIn('ubicacion_id', $ids)
+            ->with(['variante:id,sku,producto_id,color,talla', 'variante.producto:id,nombre',
+                    'producto:id,referencia,nombre'])
+            ->get(['id', 'variante_id', 'producto_id', 'cantidad'])
+            ->groupBy(fn ($m) => $m->variante_id ? 'v:'.$m->variante_id : 'p:'.$m->producto_id)
+            ->map(function ($movs) {
+                $m = $movs->first();
+                $v = $m->variante;
+
+                return [
+                    'nombre' => $v?->producto?->nombre ?? $m->producto?->nombre ?? '—',
+                    'sku' => $v?->sku ?? $m->producto?->referencia ?? '—',
+                    'detalle' => trim(($v?->color ?? '').' '.($v?->talla ?? '')) ?: null,
+                    'cantidad' => (int) $movs->sum('cantidad'),
+                ];
+            })
+            ->filter(fn ($f) => $f['cantidad'] > 0)
+            ->sortByDesc('cantidad')
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Solicitud de préstamo (o de devolución) hecha por Marketing.
+     *
+     * Hasta el 2026-10-09 el panel tenía dos botones de "acciones rápidas" que
+     * apuntaban los dos a `/app/inventario/traslados` — pantalla que para el
+     * rol Marketing responde **403**. Debajo, un texto le pedía a la persona
+     * que fuera allá y eligiera a mano origen, destino y motivo. O sea: la
+     * única acción del panel no se podía hacer, y el rol entero quedaba mirando
+     * una lista de préstamos que nadie podía originar desde ahí.
+     *
+     * No se arregla abriéndole Inventario: esa pantalla lista los traslados de
+     * toda la empresa y Marketing no tiene por qué verlos. Se arregla acá, que
+     * es justo lo que decía el diseño del módulo — Marketing crea la solicitud
+     * en borrador y bodega la surte y la ejecuta.
+     *
+     * El traslado nace sin ítems a propósito: Marketing pide "los bodies de
+     * verano para las fotos del viernes" en las observaciones, y quien tiene la
+     * mercancía al frente decide qué referencias entran.
+     */
+    public function prestamoCrear(Request $r): \Illuminate\Http\RedirectResponse
+    {
+        $data = $r->validate([
+            'origen_id' => ['required', 'integer', 'exists:inventario_ubicaciones,id'],
+            'destino_id' => ['required', 'integer', 'exists:inventario_ubicaciones,id', 'different:origen_id'],
+            'observaciones' => ['nullable', 'string', 'max:500'],
+        ], [], [
+            'origen_id' => 'bodega de origen',
+            'destino_id' => 'bodega de destino',
+        ]);
+
+        // Una de las dos puntas tiene que ser un almacén de Marketing y la otra
+        // una bodega de venta. Sin esto, el rol podría mover mercancía entre
+        // dos bodegas comerciales, que es precisamente lo que no le toca.
+        $mkt = $this->idsAlmacenesMarketing();
+        $comerciales = $this->idsBodegasComerciales();
+        $origen = (int) $data['origen_id'];
+        $destino = (int) $data['destino_id'];
+
+        $esPrestamo = in_array($origen, $comerciales, true) && in_array($destino, $mkt, true);
+        $esDevolucion = in_array($origen, $mkt, true) && in_array($destino, $comerciales, true);
+
+        abort_unless($esPrestamo || $esDevolucion, 403,
+            'Un préstamo va de una bodega de venta a un almacén de Marketing, o al revés.');
+
+        $t = Traslado::create([
+            'numero' => Traslado::siguienteNumero(),
+            'origen_id' => $origen,
+            'destino_id' => $destino,
+            'motivo' => 'prestamo',
+            'observaciones' => $data['observaciones'] ?? null,
+            'solicitado_por' => $r->user()->id,
+            'fecha_solicitud' => now('America/Bogota')->toDateString(),
+            'estado' => \App\Modules\Inventario\Enums\EstadoTraslado::Borrador,
+        ]);
+
+        return back()->with('success', $esPrestamo
+            ? "Solicitud {$t->numero} creada. Bodega la surte y te avisa."
+            : "Devolución {$t->numero} creada. Llevá la mercancía a bodega para que la reciban.");
+    }
+
+    /**
+     * Qué cuenta como almacén de Marketing y qué como bodega de venta.
+     *
+     * Van acá y no sueltas en cada método porque el panel y la validación de
+     * la solicitud tienen que estar de acuerdo: si una lista ofrece una bodega
+     * que la otra no acepta, el botón se dibuja y al pulsarlo da 403.
+     */
+    private function almacenesMarketing(): \Illuminate\Database\Eloquent\Builder
+    {
+        // Sólo el prefijo `MKT-`. La consulta anterior era
+        // `codigo LIKE 'MKT-%' OR categoria = ReservaProveedor`, y ese OR
+        // anulaba el prefijo que el propio diseño puso «para no mezclarlas con
+        // reservas reales a proveedores»: las ubicaciones MKT- usan esa misma
+        // categoría, así que la condición traía además RES-PROV-01 y
+        // RES-PROV-02 —mercancía apartada para Andina y Kidzworld— y el panel
+        // las mostraba como «mis almacenes». Con el préstamo ya funcionando,
+        // eso dejaría a Marketing pidiendo mercancía contra la reserva de un
+        // proveedor.
+        return InventarioUbicacion::query()
+            ->where('activa', true)
+            ->where('codigo', 'like', 'MKT-%')
+            ->orderBy('codigo');
+    }
+
+    private function bodegasComerciales(): \Illuminate\Database\Eloquent\Builder
+    {
+        return InventarioUbicacion::query()
+            ->where('activa', true)
+            ->where('categoria', CategoriaUbicacion::Venta)
+            ->orderBy('codigo');
+    }
+
+    /** @return list<int> */
+    private function idsAlmacenesMarketing(): array
+    {
+        return $this->almacenesMarketing()->pluck('id')->map(fn ($i) => (int) $i)->all();
+    }
+
+    /** @return list<int> */
+    private function idsBodegasComerciales(): array
+    {
+        return $this->bodegasComerciales()->pluck('id')->map(fn ($i) => (int) $i)->all();
     }
 }

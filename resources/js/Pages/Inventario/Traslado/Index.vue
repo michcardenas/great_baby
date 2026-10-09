@@ -5,12 +5,20 @@ import { ArrowLeftRight, Plus, ExternalLink, Ban, Truck, CheckCircle } from 'luc
 import AppLayout from '@/Layouts/AppLayout.vue';
 import { useEscClose } from '@/composables/useEscClose';
 import { useFecha } from '@/composables/useFecha';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
+import AppPromptModal from '@/Components/AppPromptModal.vue';
 
 const props = defineProps({
     traslados: { type: Object, required: true },
     ubicaciones: { type: Array, default: () => [] },
     filtros: { type: Object, default: () => ({}) },
 });
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
+// Pedido de motivo (anulaciones), en vez del prompt() nativo.
+const modalMotivo = ref(null);
 
 const { fechaCorta } = useFecha();
 
@@ -52,34 +60,58 @@ const recibiendo = ref(null);
 const anulando = ref(null);
 
 const enviar = (t) => {
-    if (! confirm(`¿Enviar traslado ${t.numero}?\n\nSale de ${t.origen} · queda EN TRÁNSITO.`)) return;
-    enviando.value = t.id;
-    router.post(`/app/inventario/traslados/${t.id}/enviar`, {}, {
-        preserveScroll: true,
-        onFinish: () => { enviando.value = null; },
-    });
+    modalConfirm.value = {
+        titulo: `¿Enviar traslado ${t.numero}?`,
+        mensaje: `Sale de ${t.origen} · queda EN TRÁNSITO.`,
+        color: 'sky',
+        textoConfirmar: 'Enviar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            enviando.value = t.id;
+            router.post(`/app/inventario/traslados/${t.id}/enviar`, {}, {
+                preserveScroll: true,
+                onFinish: () => { enviando.value = null; },
+            });
+        },
+    };
 };
 
 const recibir = (t) => {
-    if (! confirm(`¿Confirmar recepción del traslado ${t.numero}?\n\nEntra a bodega ${t.destino}. Genera asiento SIIGO automático.`)) return;
-    recibiendo.value = t.id;
-    router.post(`/app/inventario/traslados/${t.id}/recibir`, {}, {
-        preserveScroll: true,
-        onFinish: () => { recibiendo.value = null; },
-    });
+    modalConfirm.value = {
+        titulo: `¿Confirmar recepción del traslado ${t.numero}?`,
+        mensaje: `Entra a bodega ${t.destino}. Genera asiento SIIGO automático.`,
+        color: 'emerald',
+        textoConfirmar: 'Confirmar recepción',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            recibiendo.value = t.id;
+            router.post(`/app/inventario/traslados/${t.id}/recibir`, {}, {
+                preserveScroll: true,
+                onFinish: () => { recibiendo.value = null; },
+            });
+        },
+    };
 };
 
 const anular = (t) => {
-    const motivo = prompt(`Motivo de anulación del traslado ${t.numero}\n(mínimo 10 caracteres):`);
-    if (! motivo || motivo.trim().length < 10) {
-        if (motivo !== null) alert('El motivo debe tener al menos 10 caracteres.');
-        return;
-    }
-    anulando.value = t.id;
-    router.post(`/app/inventario/traslados/${t.id}/anular`, { motivo }, {
-        preserveScroll: true,
-        onFinish: () => { anulando.value = null; },
-    });
+    // Antes era un prompt() nativo: dentro del iframe de la app de escritorio
+    // devuelve null al instante, así que anular no hacía nada y sin aviso.
+    modalMotivo.value = {
+        titulo: `Anular el traslado ${t.numero}`,
+        mensaje: 'Queda registrado quién lo anuló y cuándo. No se puede deshacer.',
+        etiqueta: 'Motivo de la anulación',
+        minimo: 10,
+        color: 'rose',
+        textoConfirmar: 'Anular',
+        onConfirmar: (motivo) => {
+            modalMotivo.value = null;
+            anulando.value = t.id;
+            router.post(`/app/inventario/traslados/${t.id}/anular`, { motivo }, {
+                preserveScroll: true,
+                onFinish: () => { anulando.value = null; },
+            });
+        },
+    };
 };
 
 const puedeEnviar = (t) => t.estado === 'borrador';
@@ -118,7 +150,7 @@ const puedeAnular = (t) => ['borrador', 'en_transito'].includes(t.estado);
             </div>
 
             <div class="card overflow-x-auto">
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-xs text-surface-500 uppercase border-b">
                         <tr>
                             <th class="text-left p-3">Número</th>
@@ -220,5 +252,7 @@ const puedeAnular = (t) => ['borrador', 'en_transito'].includes(t.estado);
                 </div>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
+        <AppPromptModal :cfg="modalMotivo" @cerrar="modalMotivo = null"/>
     </AppLayout>
 </template>

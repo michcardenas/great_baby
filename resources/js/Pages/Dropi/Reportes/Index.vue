@@ -90,7 +90,7 @@ const exportarCsv = (rows, nombre) => {
                         </button>
                     </div>
                     <div v-if="!transportadoras.length" class="text-center py-4 text-surface-500 text-xs">Sin datos</div>
-                    <table v-else class="w-full text-sm">
+                    <table v-tabla-movil v-else class="w-full text-sm">
                         <thead class="text-[10px] text-surface-500 uppercase">
                             <tr>
                                 <th class="text-left p-1">Nombre</th>
@@ -117,7 +117,7 @@ const exportarCsv = (rows, nombre) => {
                         </button>
                     </div>
                     <div v-if="!ciudades.length" class="text-center py-4 text-surface-500 text-xs">Sin datos</div>
-                    <table v-else class="w-full text-sm">
+                    <table v-tabla-movil v-else class="w-full text-sm">
                         <thead class="text-[10px] text-surface-500 uppercase">
                             <tr>
                                 <th class="text-left p-1">Ciudad</th>
@@ -144,7 +144,7 @@ const exportarCsv = (rows, nombre) => {
                         </button>
                     </div>
                     <div v-if="!vendedores.length" class="text-center py-4 text-surface-500 text-xs">Sin datos</div>
-                    <table v-else class="w-full text-sm">
+                    <table v-tabla-movil v-else class="w-full text-sm">
                         <thead class="text-[10px] text-surface-500 uppercase">
                             <tr>
                                 <th class="text-left p-1">Nombre</th>

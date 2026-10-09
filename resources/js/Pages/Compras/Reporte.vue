@@ -107,7 +107,7 @@ const totalCompras = computed(() => props.topProveedores.reduce((s, p) => s + p.
                 <div v-if="!topProveedores.length" class="text-center py-6 text-surface-500 text-sm">
                     Sin compras en el periodo seleccionado.
                 </div>
-                <table v-else class="w-full text-sm">
+                <table v-tabla-movil v-else class="w-full text-sm">
                     <thead class="text-[10px] text-surface-500 uppercase border-b">
                         <tr>
                             <th class="text-left p-2">Proveedor</th>

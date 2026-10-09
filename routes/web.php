@@ -135,6 +135,10 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     Route::get('/catalogo/productos/{producto}', [\App\Http\Controllers\App\ProductosController::class, 'show'])->name('app.catalogo.productos.show');
     Route::post('/catalogo/productos', [\App\Http\Controllers\App\ProductosController::class, 'guardar'])->name('app.catalogo.productos.crear');
     Route::put('/catalogo/productos/{producto}', [\App\Http\Controllers\App\ProductosController::class, 'guardar'])->name('app.catalogo.productos.actualizar');
+    // Precio de venta por lista de un producto agregado. Los granulares lo
+    // llevan por variante; los agregados no tenian donde, y por eso no se
+    // podian vender.
+    Route::put('/catalogo/productos/{producto}/precios', [\App\Http\Controllers\App\ProductosController::class, 'guardarPrecios'])->name('app.catalogo.productos.precios');
     Route::delete('/catalogo/productos/{producto}', [\App\Http\Controllers\App\ProductosController::class, 'eliminar'])->name('app.catalogo.productos.eliminar');
     // FASE C · CRUD robusto
     Route::post('/catalogo/productos/{producto}/clonar', [\App\Http\Controllers\App\ProductosController::class, 'clonar'])->middleware('throttle:10,1')->name('app.catalogo.productos.clonar');
@@ -287,6 +291,9 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
     // CONT-C5 · Validación mapeo PUC → SIIGO (diagnóstico antes del push).
     Route::get('/contabilidad/validacion-puc-siigo', [\App\Http\Controllers\App\ValidacionPucSiigoController::class, 'index'])->middleware('throttle:30,1')->name('app.contabilidad.validacion-puc-siigo');
     Route::get('/contabilidad/reportes', [\App\Http\Controllers\App\ContabilidadExtrasController::class, 'reportes'])->name('app.contabilidad.reportes');
+    // Los dos estados financieros que el hub listaba como «no listo».
+    Route::get('/contabilidad/balance-general', [\App\Http\Controllers\App\ContabilidadExtrasController::class, 'balanceGeneral'])->middleware('throttle:30,1')->name('app.contabilidad.balance-general');
+    Route::get('/contabilidad/estado-resultados', [\App\Http\Controllers\App\ContabilidadExtrasController::class, 'estadoResultados'])->middleware('throttle:30,1')->name('app.contabilidad.estado-resultados');
     // CONT-C8 · Export CSV con gate esRoot (ver controller).
     Route::get('/contabilidad/reportes/exportar-csv', [\App\Http\Controllers\App\ContabilidadExtrasController::class, 'exportarCsv'])->middleware('throttle:10,1')->name('app.contabilidad.reportes.exportar-csv');
     Route::get('/contabilidad/reporte-detalle', [\App\Http\Controllers\App\ContabilidadExtrasController::class, 'reporteDetalle'])->middleware('throttle:60,1')->name('app.contabilidad.detalle');
@@ -419,6 +426,11 @@ Route::middleware(['web', 'auth'])->prefix('app')->group(function () {
 
     // LOG-J9 · Marketing (préstamos de productos a bodega)
     Route::get('/marketing', [\App\Http\Controllers\App\MarketingPrestamosController::class, 'index'])->name('app.marketing.index');
+    // Marketing pide el préstamo desde su propio panel: la pantalla de
+    // traslados de Inventario le responde 403 y además lista los movimientos
+    // de toda la empresa, que no le corresponden.
+    Route::post('/marketing/prestamo', [\App\Http\Controllers\App\MarketingPrestamosController::class, 'prestamoCrear'])
+        ->middleware('throttle:30,1')->name('app.marketing.prestamo.crear');
 
     // M8 · Marketing
     Route::get('/marketing/parrilla', [\App\Http\Controllers\App\MarketingController::class, 'parrilla'])->name('app.marketing.parrilla');

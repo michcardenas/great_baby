@@ -38,6 +38,30 @@ class ReglasController extends Controller implements HasMiddleware
                 'catalogo' => '🏷️ Catálogo',
                 'crm' => '👥 CRM',
                 'contable' => '📚 Contabilidad',
+                // Faltaba: las 24 reglas de SIIGO se pintaban bajo el título
+                // crudo «siigo», que es justo el grupo donde están los tipos de
+                // documento sin los cuales no sale ni una nota crédito.
+                'siigo' => '🔗 SIIGO · documentos y cuentas',
+            ],
+            // Familia de document-type de SIIGO que corresponde a cada regla.
+            // Con esto la pantalla muestra un desplegable con los comprobantes
+            // reales de la cuenta en vez de pedir que alguien escriba un id.
+            'familiasDocumento' => [
+                'siigo.doc_type_compra' => 'FC',
+                'siigo.doc_type_importacion' => 'FC',
+                // La devolución a proveedor no se emite como nota crédito: va
+                // por POST /v1/journals, así que su comprobante es de la
+                // familia CC. El nombre de la regla quedó de antes.
+                'siigo.doc_type_nc_compra' => 'CC',
+                'siigo.doc_type_nota_credito' => 'NC',
+                'siigo.doc_type_nota_debito' => 'ND',
+                'siigo.doc_type_recibo' => 'RC',
+                'siigo.doc_type_egreso' => 'RP',
+                'siigo.doc_type_asiento' => 'CC',
+                'siigo.doc_type_asiento_manual' => 'CC',
+                'siigo.doc_type_gasto' => 'CC',
+                'siigo.doc_type_conciliacion' => 'CC',
+                'siigo.resolucion_fv_default_id' => 'FV',
             ],
         ]);
     }

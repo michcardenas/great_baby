@@ -63,6 +63,32 @@ class SiigoConfig extends Model
     }
 
     /**
+     * ¿La credencial está muerta —vencida, revocada o mal escrita—?
+     *
+     * Vive acá y no suelta en cada sitio porque la usan dos cosas que tienen
+     * que coincidir: el middleware que aplaza los push y el aviso de cola
+     * atascada de `/app/siigo`. Si difieren, la pantalla manda a prender el
+     * worker mientras el problema real es la llave.
+     *
+     * Sólo un `false` explícito cuenta: `null` es «todavía no se probó», y ahí
+     * lo que corresponde es intentar. Y se exige que el último fallo sea de
+     * credencial (401/403/sin configurar): un 500 pasajero de SIIGO también
+     * apaga la casilla, y no es motivo para frenar la cola.
+     */
+    public function credencialMuerta(): bool
+    {
+        if ($this->ultimo_auth_ok !== false) {
+            return false;
+        }
+
+        $error = (string) $this->ultimo_auth_error;
+
+        return str_contains($error, 'HTTP 401')
+            || str_contains($error, 'HTTP 403')
+            || str_contains($error, 'no configuradas');
+    }
+
+    /**
      * F8 · kill-switch efectivo del push automático.
      * Precedencia: valor persistido en BD (`push_auto` no NULL) > env `FEATURE_SIIGO_PUSH_AUTO`.
      * Cache 60s para no golpear la BD en cada job encolado.

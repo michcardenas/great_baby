@@ -60,7 +60,7 @@ const badgeEstado = (e) => {
                     <div class="text-sm mt-2">Sin condiciones registradas.</div>
                 </div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full min-w-[800px] text-sm">
+                    <table v-tabla-movil class="w-full min-w-[800px] text-sm">
                         <thead class="bg-surface-50 dark:bg-surface-900">
                             <tr class="text-surface-500 text-xs uppercase">
                                 <th class="text-left px-4 py-2">Cliente</th>
@@ -114,7 +114,7 @@ const badgeEstado = (e) => {
                     <div class="text-xs mt-1">El schedule diario 9:00 AM las genera automáticamente.</div>
                 </div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full min-w-[800px] text-sm">
+                    <table v-tabla-movil class="w-full min-w-[800px] text-sm">
                         <thead class="bg-surface-50 dark:bg-surface-900">
                             <tr class="text-surface-500 text-xs uppercase">
                                 <th class="text-left px-4 py-2">Enviado</th>
@@ -150,7 +150,7 @@ const badgeEstado = (e) => {
                     <div class="text-sm mt-2">Sin solicitudes de excepción de crédito.</div>
                 </div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full min-w-[900px] text-sm">
+                    <table v-tabla-movil class="w-full min-w-[900px] text-sm">
                         <thead class="bg-surface-50 dark:bg-surface-900">
                             <tr class="text-surface-500 text-xs uppercase">
                                 <th class="text-left px-4 py-2">Creada</th>

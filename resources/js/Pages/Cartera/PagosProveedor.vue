@@ -4,12 +4,17 @@ import { Head, router } from '@inertiajs/vue3';
 import { CreditCard, Plus, Search, X, Calculator } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import { useMoney } from '@/composables/useMoney';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
 
 const props = defineProps({
     filtros: { type: Object, required: true },
     pagos: { type: Object, required: true },
     kpis: { type: Object, required: true },
 });
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
 
 const { money } = useMoney();
 const q = ref(props.filtros.q);
@@ -39,16 +44,32 @@ const postConCsrf = (url) => fetch(url, {
     credentials: 'same-origin',
 });
 const confirmar = async (p) => {
-    if (!window.confirm(`Confirmar pago #${p.id} por $${p.monto_neto.toLocaleString()} y enviarlo a SIIGO?`)) return;
-    trabajando.value = p.id;
-    try { await postConCsrf(`/app/cartera/pagos-proveedor/${p.id}/confirmar`); }
-    finally { trabajando.value = null; setTimeout(() => router.reload({ preserveScroll: true }), 400); }
+    modalConfirm.value = {
+        titulo: `¿Confirmar el pago #${p.id}?`,
+        mensaje: `Se registra por $${p.monto_neto.toLocaleString()} y se envía a SIIGO.`,
+        color: 'emerald',
+        textoConfirmar: 'Confirmar pago',
+        onConfirmar: async () => {
+            modalConfirm.value = null;
+            trabajando.value = p.id;
+            try { await postConCsrf(`/app/cartera/pagos-proveedor/${p.id}/confirmar`); }
+            finally { trabajando.value = null; setTimeout(() => router.reload({ preserveScroll: true }), 400); }
+        },
+    };
 };
 const anular = async (p) => {
-    if (!window.confirm(`Anular pago #${p.id}? No podrás volver atrás.`)) return;
-    trabajando.value = p.id;
-    try { await postConCsrf(`/app/cartera/pagos-proveedor/${p.id}/anular`); }
-    finally { trabajando.value = null; setTimeout(() => router.reload({ preserveScroll: true }), 400); }
+    modalConfirm.value = {
+        titulo: `¿Anular el pago #${p.id}?`,
+        mensaje: 'No vas a poder volver atrás.',
+        color: 'rose',
+        textoConfirmar: 'Anular',
+        onConfirmar: async () => {
+            modalConfirm.value = null;
+            trabajando.value = p.id;
+            try { await postConCsrf(`/app/cartera/pagos-proveedor/${p.id}/anular`); }
+            finally { trabajando.value = null; setTimeout(() => router.reload({ preserveScroll: true }), 400); }
+        },
+    };
 };
 const reenviar = async (p) => {
     trabajando.value = p.id;
@@ -204,7 +225,7 @@ const guardar = () => {
             </div>
 
             <div class="card overflow-hidden">
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-[10px] uppercase text-surface-500 border-b bg-surface-50 dark:bg-surface-900">
                         <tr>
                             <th class="text-left p-2">Fecha</th>
@@ -367,5 +388,6 @@ const guardar = () => {
                 </div>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

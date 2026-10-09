@@ -100,7 +100,7 @@ const tipoColor = (t, cantidad) => {
 
             <!-- Tabla FORMATO SIIGO · 10 columnas contables -->
             <div v-if="variante" class="card overflow-x-auto">
-                <table class="w-full text-xs min-w-[1100px]">
+                <table v-tabla-movil class="w-full text-xs min-w-[1100px]">
                     <thead class="text-[10px] uppercase text-surface-500 border-b bg-surface-50 dark:bg-surface-900">
                         <tr>
                             <th class="text-left p-2">Fecha</th>

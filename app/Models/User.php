@@ -181,15 +181,32 @@ class User extends Authenticatable implements FilamentUser
             return array_values(array_map('intval', $arr));
         }
         // UBIC-8 · AdminBodega hereda sus ubicaciones de responsable_user_id
-        // en inventario_ubicaciones. Si está asignado como responsable de
-        // 1 o más ubicaciones, esas son las que ve.
+        // en inventario_ubicaciones.
+        //
+        // A cargo de una bodega = puede operar TODAS las ubicaciones que
+        // viven dentro de ella (pasillos, estantes, niveles).
+        //
+        // Antes se comparaba contra la ubicación exacta y la tabla era plana,
+        // así que a Jorge lo dejaban responsable de «Bodega Principal Bogotá»
+        // mientras los conteos y traslados ocurren en los racks, que eran
+        // filas sueltas sin relación con esa bodega: podía operar 1 de 64
+        // ubicaciones y todo lo real le daba 403. Desde que existe `bodega_id`
+        // la pertenencia es explícita y el permiso la sigue.
         if ($this->esAdminBodega()) {
             try {
-                $ids = \DB::table('inventario_ubicaciones')
+                $suyas = \DB::table('inventario_ubicaciones')
                     ->where('responsable_user_id', $this->id)
                     ->where('activa', true)
                     ->pluck('id')->map(fn ($x) => (int) $x)->all();
-                if (! empty($ids)) return array_values($ids);
+
+                if (! empty($suyas)) {
+                    $dentro = \DB::table('inventario_ubicaciones')
+                        ->where('activa', true)
+                        ->whereIn('bodega_id', $suyas)
+                        ->pluck('id')->map(fn ($x) => (int) $x)->all();
+
+                    return array_values(array_unique(array_merge($suyas, $dentro)));
+                }
             } catch (\Throwable) {}
         }
         if (function_exists('setting')) {

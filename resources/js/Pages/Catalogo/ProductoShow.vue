@@ -3,17 +3,24 @@ import { ref, reactive, watch, computed, onBeforeUnmount, onMounted } from 'vue'
 import { Head, Link, useForm, router } from '@inertiajs/vue3';
 import {
     Package, ArrowLeft, Save, Info, DollarSign, Ruler, FileText,
-    Cloud, CloudOff, Trash2, Plus, X, Search, Copy,
+    Cloud, CloudOff, Trash2, Plus, X, Search, Copy, AlertTriangle,
 } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import AppConfirmModal from '@/Components/AppConfirmModal.vue';
 import { useMoney } from '@/composables/useMoney';
+import { avisar, avisarError } from '@/composables/useAviso';
+import { mensajeDeError } from '@/composables/useMensajeError';
 const { money } = useMoney();
 
 const props = defineProps({
     historial: { type: Array, default: () => [] },
     producto: { type: Object, default: null },
     catalogos: { type: Object, required: true },
+    // Precio por lista del producto agregado; vacío en los granulares,
+    // que llevan el precio en cada variante.
+    precios_lista: { type: Array, default: () => [] },
+    // Qué le falta al producto para poder venderse y costearse.
+    listo_para_vender: { type: Object, default: () => ({}) },
 });
 
 const esNuevo = !props.producto;
@@ -31,7 +38,12 @@ const form = useForm({
     marca_id: props.producto?.marca_id || null,
     categoria_id: props.producto?.categoria_id || null,
     coleccion_id: props.producto?.coleccion_id || null,
-    linea_id: props.producto?.linea_id || null,
+    // Si el catálogo tiene una sola línea, un producto nuevo ya nace con ella:
+    // un desplegable obligatorio con una única respuesta posible sólo cobra un
+    // clic. En un producto que ya existe no se toca, para no ensuciar el
+    // guardia de cambios sin pedir.
+    linea_id: props.producto?.linea_id
+        || (! props.producto && props.catalogos?.lineas?.length === 1 ? props.catalogos.lineas[0].id : null),
     grupo_id: props.producto?.grupo_id || null,
     subgrupo_id: props.producto?.subgrupo_id || null,
     clase_id: props.producto?.clase_id || null,
@@ -199,14 +211,57 @@ const beforeUnloadHandler = (e) => {
     }
 };
 let removeInertiaGuard = null;
+// Bandera para dejar pasar el viaje que se repite después de confirmar.
+let saliendoSinGuardar = false;
+
+/**
+ * El guardado también es una navegación, y no hay que advertir sobre ella.
+ *
+ * Inertia emite `before` ANTES de marcar el formulario como `processing`, así
+ * que al apretar Guardar la guarda veía «hay cambios y no está procesando» y
+ * cancelaba el viaje. Con el confirm() nativo de antes esto no se veía: dentro
+ * del iframe devolvía falso y el guardado se cancelaba en silencio — apretabas
+ * Guardar y no pasaba nada. Esta bandera marca los viajes que dispara la propia
+ * pantalla.
+ */
+let guardandoAhora = false;
 onMounted(() => {
     window.addEventListener('beforeunload', beforeUnloadHandler);
     // Inertia router.on('before') intercepta clicks en <Link> y router.visit()
+    //
+    // Antes acá iba un confirm() nativo porque Inertia necesita la respuesta
+    // en el acto, y además queda bloqueado dentro del iframe de la app de
+    // escritorio: la navegación se escapaba sin preguntar nada y Aracely
+    // perdía la edición. Ahora se cancela siempre el viaje, se pregunta con
+    // el modal y, si dice que sí, se repite el mismo destino con la guarda
+    // desactivada.
     removeInertiaGuard = router.on('before', (event) => {
-        if (form.isDirty && !form.processing) {
-            const ok = window.confirm('Tenés cambios sin guardar. ¿Salir sin guardar?');
-            if (!ok) event.preventDefault();
+        if (saliendoSinGuardar) {
+            saliendoSinGuardar = false;
+            return;
         }
+        if (guardandoAhora) return;
+        if (!form.isDirty || form.processing) return;
+
+        const visita = event.detail.visit;
+        event.preventDefault();
+        modalConfirm.value = {
+            titulo: 'Tenés cambios sin guardar',
+            mensaje: 'Si salís ahora se pierde lo que editaste en este producto.',
+            color: 'amber',
+            textoConfirmar: 'Salir sin guardar',
+            onConfirmar: () => {
+                modalConfirm.value = null;
+                saliendoSinGuardar = true;
+                router.visit(visita.url, {
+                    method: visita.method,
+                    data: visita.data,
+                    replace: visita.replace,
+                    preserveState: visita.preserveState,
+                    preserveScroll: visita.preserveScroll,
+                });
+            },
+        };
     });
 });
 onBeforeUnmount(() => {
@@ -245,13 +300,39 @@ const agregarSustituto = (p) => {
 const quitarSustituto = (id) => { form.sustitutos = form.sustitutos.filter(s => s.id !== id); };
 
 // Guardar
+/**
+ * Precios por lista del producto agregado.
+ *
+ * Se guardan aparte del formulario principal: son filas de otra tabla y
+ * mezclarlas en el `put` del producto obligaría a tocar la validación de todo
+ * lo demás. Dejar una casilla vacía quita el precio, que es como se deja de
+ * ofrecer el producto a los clientes de esa lista.
+ */
+const precios = ref(JSON.parse(JSON.stringify(props.precios_lista || [])));
+const guardandoPrecios = ref(false);
+const listasConPrecio = computed(() => precios.value.filter(l => Number(l.precio) > 0).length);
+
+const guardarPrecios = () => {
+    if (guardandoPrecios.value || ! props.producto) return;
+    guardandoPrecios.value = true;
+    router.put(`/app/catalogo/productos/${props.producto.id}/precios`, {
+        precios: precios.value.map(l => ({ lista_id: l.lista_id, precio: l.precio === '' ? null : l.precio })),
+    }, {
+        preserveScroll: true,
+        onFinish: () => { guardandoPrecios.value = false; },
+    });
+};
+
 const guardar = () => {
     // Aplanar accesorios y sustitutos para el backend
     const payload = { ...form.data(), accesorios: form.accesorios.map(a => ({ id: a.id, cantidad: a.cantidad })), sustitutos: form.sustitutos.map(s => s.id) };
+    guardandoAhora = true;
+    const liberar = { onFinish: () => { guardandoAhora = false; } };
+
     if (esNuevo) {
-        form.transform(() => payload).post('/app/catalogo/productos');
+        form.transform(() => payload).post('/app/catalogo/productos', liberar);
     } else {
-        form.transform(() => payload).put(`/app/catalogo/productos/${props.producto.id}`);
+        form.transform(() => payload).put(`/app/catalogo/productos/${props.producto.id}`, liberar);
     }
 };
 
@@ -301,7 +382,7 @@ const verEnSiigo = async () => {
         const { data } = await axios.get(`/app/siigo/verificar/producto/${props.producto.id}`);
         siigoVivo.value = data;
     } catch (e) {
-        alert('Error consultando SIIGO: ' + (e.response?.data?.message || e.message));
+        avisarError(mensajeDeError(e, 'No pude consultar el estado en SIIGO'));
     } finally {
         cargandoSiigo.value = false;
     }
@@ -347,9 +428,9 @@ const forzarSync = () => {
                 const { data } = await axios.post(`/app/catalogo/productos/${props.producto.id}/forzar-sync`);
                 // Refresca el panel SIIGO para ver el nuevo estado tras encolar.
                 await verEnSiigo();
-                alert(data.mensaje);
+                avisar(data.mensaje);
             } catch (e) {
-                alert('Error: ' + (e.response?.data?.message || e.message));
+                avisarError(mensajeDeError(e, 'No pude encolar el sync a SIIGO'));
             } finally {
                 forzandoSync.value = false;
             }
@@ -370,7 +451,7 @@ const subirImagen = async (event, orden) => {
     const file = event.target.files?.[0];
     if (!file) return;
     if (file.size > 1024 * 1024) {
-        alert('La imagen supera 1 MB · reduce el tamaño antes de subir.');
+        avisar('La imagen supera 1 MB · reducí el tamaño antes de subir.', 'warning');
         event.target.value = '';
         return;
     }
@@ -384,7 +465,7 @@ const subirImagen = async (event, orden) => {
         });
         router.reload({ only: ['producto'] });
     } catch (e) {
-        alert('Error subiendo imagen: ' + (e.response?.data?.message || e.message));
+        avisarError(mensajeDeError(e, 'No pude subir la imagen'));
     } finally {
         subiendoImagen.value = false;
         event.target.value = '';
@@ -402,7 +483,7 @@ const eliminarImagen = (id) => {
                 await axios.delete(`/app/catalogo/productos/${props.producto.id}/imagenes/${id}`);
                 router.reload({ only: ['producto'] });
             } catch (e) {
-                alert('Error: ' + (e.response?.data?.message || e.message));
+                avisarError(mensajeDeError(e, 'No pude borrar la imagen'));
             }
         },
     };
@@ -537,6 +618,46 @@ const matrizDisenos = ref([]);
                 </div>
             </div>
 
+            <!--
+                Qué le falta a este producto para servir de algo.
+
+                Se puede guardar con referencia, nombre y línea, y queda
+                perfectamente inútil: sin precio de venta no entra en ningún
+                pedido, y sin costo sus movimientos de kardex no se pueden
+                asentar, así que la venta no registra el costo y el margen
+                bruto sale 100%. Las dos cosas fallaban DESPUÉS, lejos de acá
+                y sin explicación. El formulario de contactos ya avisa así;
+                este no decía nada.
+
+                Avisa, no bloquea: crear el producto y ponerle precio después
+                es una forma legítima de trabajar.
+            -->
+            <div v-if="producto && (listo_para_vender.sin_costo || listo_para_vender.sin_precio || listo_para_vender.variantes_sin_precio)"
+                 class="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-900/20 px-4 py-3">
+                <div class="flex items-start gap-2">
+                    <AlertTriangle class="h-4 w-4 text-amber-600 shrink-0 mt-0.5"/>
+                    <div class="text-sm text-amber-900 dark:text-amber-100">
+                        <p class="font-semibold">Este producto todavía no está listo para operar.</p>
+                        <ul class="mt-1 space-y-0.5 text-amber-800 dark:text-amber-200">
+                            <li v-if="listo_para_vender.sin_precio">
+                                <strong>No tiene precio de venta</strong>, así que no se puede pedir.
+                                <template v-if="form.desglose_stock">Se carga en cada variante.</template>
+                                <template v-else>Se carga abajo, en la pestaña Comercial.</template>
+                            </li>
+                            <li v-else-if="listo_para_vender.variantes_sin_precio">
+                                <strong>{{ listo_para_vender.variantes_sin_precio }} variante(s) sin precio</strong>:
+                                esas no se pueden pedir.
+                            </li>
+                            <li v-if="listo_para_vender.sin_costo">
+                                <strong>No tiene precio de proveedor</strong>, que es el costo. Sin él la venta no
+                                registra cuánto costó la mercancía y el margen sale inflado.
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+
             <!-- Tabs -->
             <div class="flex items-center gap-1 border-b border-surface-200 dark:border-surface-800 overflow-x-auto">
                 <button v-for="t in tabs" :key="t.key" @click="tab = t.key"
@@ -592,7 +713,9 @@ const matrizDisenos = ref([]);
                     <div class="text-xs uppercase tracking-widest font-bold text-brand-600 mb-2">Clasificación SIIGO</div>
                     <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
                         <div>
-                            <label class="text-xs font-semibold text-surface-600">Línea *</label>
+                            <!-- Sin asterisco: el servidor la acepta nula. Decía
+                                 obligatoria y no lo era. -->
+                            <label class="text-xs font-semibold text-surface-600">Línea</label>
                             <select v-model="form.linea_id" class="input w-full">
                                 <option :value="null">— Selecciona —</option>
                                 <option v-for="l in catalogos.lineas" :key="l.id" :value="l.id">{{ l.codigo }} · {{ l.nombre }}</option>
@@ -775,7 +898,7 @@ const matrizDisenos = ref([]);
                     Sin variantes. Agrega una fila manualmente o genera la matriz arriba.
                 </div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full text-xs border-collapse">
+                    <table v-tabla-movil class="w-full text-xs border-collapse">
                         <thead class="bg-surface-100 text-surface-700">
                             <tr>
                                 <th class="text-left p-2 border">Color</th>
@@ -956,6 +1079,64 @@ const matrizDisenos = ref([]);
                         <div v-if="!form.sustitutos.length" class="text-xs text-surface-500">Sin sustitutos definidos.</div>
                     </div>
                 </div>
+
+                <!--
+                    Precio de venta por lista · sólo para productos agregados.
+
+                    En un producto granular el precio vive en cada variante. Un
+                    agregado no tenía dónde guardarlo: el pedido le buscaba precio,
+                    no lo encontraba y descartaba la línea en silencio. Resultado
+                    medido el 2026-10-08: 15 de los 31 productos activos no se
+                    podían vender y nadie sabía por qué.
+
+                    Se muestran TODAS las listas, también las que están en blanco,
+                    porque una lista sin precio es un grupo de clientes que no le
+                    puede comprar este producto.
+                -->
+                <div v-if="! form.desglose_stock && producto" class="pt-4 border-t border-surface-200 dark:border-surface-800">
+                    <div class="flex items-center justify-between gap-3 flex-wrap mb-1">
+                        <div>
+                            <div class="font-semibold text-sm">Precio de venta por lista</div>
+                            <div class="text-xs text-surface-500">
+                                Sin precio en una lista, los clientes que la tengan asignada no pueden pedir este producto.
+                            </div>
+                        </div>
+                        <button type="button" @click="guardarPrecios" :disabled="guardandoPrecios"
+                                class="btn-primary min-h-[44px] sm:min-h-0 disabled:opacity-50">
+                            {{ guardandoPrecios ? 'Guardando…' : 'Guardar precios' }}
+                        </button>
+                    </div>
+
+                    <p v-if="listasConPrecio === 0" class="mt-2 text-xs text-amber-700 dark:text-amber-300">
+                        Todavía no tiene precio en ninguna lista, así que hoy no se puede pedir.
+                    </p>
+                    <p v-else class="mt-2 text-xs text-surface-500">
+                        Con precio en {{ listasConPrecio }} de {{ precios.length }} listas.
+                    </p>
+
+                    <table v-tabla-movil class="w-full text-sm mt-3">
+                        <thead class="bg-surface-50 dark:bg-surface-900/60 text-xs uppercase text-surface-500">
+                            <tr>
+                                <th class="text-left px-3 py-2">Lista</th>
+                                <th class="text-left px-3 py-2">Origen</th>
+                                <th class="text-right px-3 py-2">Precio de venta</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="l in precios" :key="l.lista_id"
+                                class="border-t border-surface-100 dark:border-surface-800">
+                                <td class="px-3 py-2 font-medium">{{ l.nombre }}</td>
+                                <td class="px-3 py-2 text-xs text-surface-500">{{ l.grupo }}</td>
+                                <td class="px-3 py-2 text-right">
+                                    <input v-model="l.precio" type="number" min="0" step="1"
+                                           placeholder="sin precio"
+                                           class="input w-36 text-right font-mono tabular-nums"/>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
             </div>
 
             <!-- PESTAÑA 3: CARACTERÍSTICAS -->
@@ -1055,7 +1236,7 @@ Este texto aparece al momento de facturar y puede modificarse por línea."></tex
 
                     <!-- Modo AGREGADO · diff 1:1 lado a lado (producto único en SIIGO). -->
                     <div v-if="siigoVivo && siigoVivo.ok && !form.desglose_stock" class="space-y-2">
-                        <table class="w-full text-sm border rounded-lg overflow-hidden">
+                        <table v-tabla-movil class="w-full text-sm border rounded-lg overflow-hidden">
                             <thead class="bg-surface-50 text-xs uppercase text-surface-500">
                                 <tr>
                                     <th class="p-2 text-left w-1/3">Campo</th>
@@ -1093,7 +1274,7 @@ Este texto aparece al momento de facturar y puede modificarse por línea."></tex
                             viaja a SIIGO como producto independiente. Por eso aquí no hay un único
                             registro padre que comparar · abajo verás el estado real de cada variante.
                         </div>
-                        <table class="w-full text-sm border rounded-lg overflow-hidden">
+                        <table v-tabla-movil class="w-full text-sm border rounded-lg overflow-hidden">
                             <thead class="bg-surface-50 text-xs uppercase text-surface-500">
                                 <tr>
                                     <th class="p-2 text-left">Variante</th>
@@ -1319,7 +1500,7 @@ Este texto aparece al momento de facturar y puede modificarse por línea."></tex
                 <div v-if="!esNuevo && historial.length" class="card p-5 space-y-3">
                     <h3 class="font-bold text-sm uppercase text-surface-600">Historial de sync SIIGO · últimos {{ historial.length }}</h3>
                     <div class="max-h-60 overflow-y-auto">
-                        <table class="w-full text-xs">
+                        <table v-tabla-movil class="w-full text-xs">
                             <thead class="text-left text-surface-500 uppercase">
                                 <tr>
                                     <th class="py-1">Cuándo</th>

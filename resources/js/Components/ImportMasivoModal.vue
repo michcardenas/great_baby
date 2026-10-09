@@ -45,7 +45,7 @@ const subir = async () => {
     } catch (e) {
         resultado.value = {
             ok: false,
-            mensaje: e.response?.data?.mensaje || e.response?.data?.message || e.message,
+            mensaje: mensajeDeError(e, 'No pude procesar el archivo'),
         };
     } finally { subiendo.value = false; }
 };
@@ -59,8 +59,8 @@ const copiarErrores = async () => {
     if (!txt) return;
     try {
         await navigator.clipboard.writeText(txt);
-        alert('Errores copiados al portapapeles.');
-    } catch { alert('No pude copiar · marcá el texto a mano.'); }
+        avisar('Errores copiados al portapapeles.');
+    } catch { avisar('No pude copiar · marcá el texto a mano.', 'warning'); }
 };
 
 const descargarPlantilla = () => {
@@ -148,3 +148,5 @@ const cerrar = () => {
         </div>
     </div>
 </template>
+import { avisar } from '@/composables/useAviso';
+import { mensajeDeError } from '@/composables/useMensajeError';

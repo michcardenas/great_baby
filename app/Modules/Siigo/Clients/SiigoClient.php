@@ -9,6 +9,7 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use App\Modules\Siigo\Exceptions\CredencialSiigoInvalida;
 use RuntimeException;
 
 /**
@@ -48,7 +49,7 @@ class SiigoClient
         if (empty($this->config->username) || empty($this->config->access_key)) {
             $this->registrarAuth(false, 'Credenciales SIIGO no configuradas.');
 
-            throw new RuntimeException('Credenciales SIIGO no configuradas.');
+            throw new CredencialSiigoInvalida('Credenciales SIIGO no configuradas.');
         }
 
         $response = Http::timeout(self::TIMEOUT_SEGUNDOS)
@@ -69,7 +70,7 @@ class SiigoClient
             // credenciales vencidas y nadie se enteraba de que no salía nada.
             $this->registrarAuth(false, 'HTTP '.$response->status().' · '.$this->motivoDe($response));
 
-            throw new RuntimeException('Fallo autenticando contra SIIGO: HTTP '.$response->status());
+            throw new CredencialSiigoInvalida('Fallo autenticando contra SIIGO: HTTP '.$response->status());
         }
 
         $token = (string) $response->json('access_token');
@@ -327,12 +328,22 @@ class SiigoClient
                 continue;
             }
 
+            // Un tercero que no existe también cae acá, porque el NIT es una
+            // cifra larga y el código del error es el mismo. Se guardaba como
+            // «SIIGO no acepta la cuenta 901738354», y la pantalla de
+            // validación PUC le pedía a la contadora mapear un NIT como si
+            // fuera una cuenta del plan. Se separan: lo que SIIGO llama
+            // `customer` es un tercero, no una cuenta.
+            $esTercero = stripos($mensaje, 'customer') !== false;
+
             try {
                 \App\Modules\Siigo\Models\SiigoSyncLog::create([
-                    'recurso' => 'cuentas_rechazadas',
+                    'recurso' => $esTercero ? 'terceros_rechazados' : 'cuentas_rechazadas',
                     'estado' => 'fallido',
-                    'mensaje' => "SIIGO no acepta la cuenta {$m[1]}: {$mensaje}",
-                    'detalle' => ['cuenta' => $m[1], 'code' => $code],
+                    'mensaje' => $esTercero
+                        ? "SIIGO no conoce el tercero {$m[1]}: {$mensaje}"
+                        : "SIIGO no acepta la cuenta {$m[1]}: {$mensaje}",
+                    'detalle' => [$esTercero ? 'tercero' : 'cuenta' => $m[1], 'code' => $code],
                 ]);
             } catch (\Throwable) {
                 // Nunca romper la petición original por no poder dejar el registro.

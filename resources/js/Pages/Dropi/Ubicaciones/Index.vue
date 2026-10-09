@@ -71,7 +71,7 @@ const confirmarEliminar = () => {
             </div>
 
             <div class="card overflow-x-auto">
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-xs text-surface-500 dark:text-surface-400 uppercase border-b border-surface-200 dark:border-surface-800">
                         <tr>
                             <th class="text-left p-3">Código</th>

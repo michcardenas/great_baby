@@ -9,6 +9,8 @@ import AppLayout from '@/Layouts/AppLayout.vue';
 import KpiCard from '@/Components/KpiCard.vue';
 import { useMoney } from '@/composables/useMoney';
 import { fechaCorta } from '@/composables/useFecha';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
+import AppPromptModal from '@/Components/AppPromptModal.vue';
 
 const props = defineProps({
     tab: { type: String, default: 'ordenes' },
@@ -17,6 +19,12 @@ const props = defineProps({
     importaciones: { type: Array, required: true },
     recepciones: { type: Array, required: true },
 });
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
+// Pedido de motivo (anulaciones), en vez del prompt() nativo.
+const modalMotivo = ref(null);
 const tabAct = ref(props.tab);
 const { money } = useMoney();
 
@@ -35,36 +43,60 @@ const anulando = ref(null);
 const duplicando = ref(null);
 
 const duplicar = (o) => {
-    if (! confirm(`¿Duplicar OC ${o.numero}?\n\nSe crea una nueva OC en borrador con los mismos ítems y proveedor.`)) return;
-    duplicando.value = o.id;
-    router.post(`/app/compras/oc/${o.id}/duplicar`, {}, {
-        preserveScroll: true,
-        onFinish: () => { duplicando.value = null; },
-    });
+    modalConfirm.value = {
+        titulo: `¿Duplicar OC ${o.numero}?`,
+        mensaje: `Se crea una nueva OC en borrador con los mismos ítems y proveedor.`,
+        color: 'sky',
+        textoConfirmar: 'Duplicar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            duplicando.value = o.id;
+            router.post(`/app/compras/oc/${o.id}/duplicar`, {}, {
+                preserveScroll: true,
+                onFinish: () => { duplicando.value = null; },
+            });
+        },
+    };
 };
 
 const anular = (o) => {
-    const motivo = prompt(`Motivo de anulación de OC ${o.numero}\n(mínimo 10 caracteres):`);
-    if (! motivo || motivo.trim().length < 10) {
-        if (motivo !== null) alert('El motivo debe tener al menos 10 caracteres.');
-        return;
-    }
-    anulando.value = o.id;
-    router.post(`/app/compras/oc/${o.id}/anular`, { motivo }, {
-        preserveScroll: true,
-        onFinish: () => { anulando.value = null; },
-    });
+    // Antes era un prompt() nativo: dentro del iframe de la app de escritorio
+    // devuelve null al instante, así que anular no hacía nada y sin aviso.
+    modalMotivo.value = {
+        titulo: `Anular la OC ${o.numero}`,
+        mensaje: 'Queda registrado quién la anuló y cuándo. No se puede deshacer.',
+        etiqueta: 'Motivo de la anulación',
+        minimo: 10,
+        color: 'rose',
+        textoConfirmar: 'Anular',
+        onConfirmar: (motivo) => {
+            modalMotivo.value = null;
+            anulando.value = o.id;
+            router.post(`/app/compras/oc/${o.id}/anular`, { motivo }, {
+                preserveScroll: true,
+                onFinish: () => { anulando.value = null; },
+            });
+        },
+    };
 };
 
 // Sprint 3 · D.1 · reenviar recepción a SIIGO.
 const reenviandoSiigo = ref(null);
 const reenviarSiigoRecepcion = (r) => {
-    if (! confirm(`¿Reenviar recepción ${r.orden_numero} a SIIGO?\n\nEsto encola un nuevo push manual (bypasea el kill-switch).`)) return;
-    reenviandoSiigo.value = r.id;
-    router.post(`/app/compras/oc/${r.orden_id}/reenviar-siigo`, {}, {
-        preserveScroll: true,
-        onFinish: () => { reenviandoSiigo.value = null; },
-    });
+    modalConfirm.value = {
+        titulo: `¿Reenviar recepción ${r.orden_numero} a SIIGO?`,
+        mensaje: `Esto encola un nuevo push manual (bypasea el kill-switch).`,
+        color: 'sky',
+        textoConfirmar: 'Reenviar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            reenviandoSiigo.value = r.id;
+            router.post(`/app/compras/oc/${r.orden_id}/reenviar-siigo`, {}, {
+                preserveScroll: true,
+                onFinish: () => { reenviandoSiigo.value = null; },
+            });
+        },
+    };
 };
 
 const iconoSiigo = (color) => ({
@@ -122,7 +154,7 @@ const iconoSiigo = (color) => ({
             <div v-if="tabAct==='ordenes'" class="card overflow-hidden">
                 <div v-if="!ordenes.length" class="text-center py-12 text-surface-500 text-sm">Sin órdenes de compra registradas.</div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full min-w-[900px] text-sm">
+                    <table v-tabla-movil class="w-full min-w-[900px] text-sm">
                         <thead class="bg-surface-50 dark:bg-surface-900"><tr class="text-surface-500 text-xs uppercase">
                             <th class="text-left px-4 py-2">Número</th>
                             <th class="text-left">Proveedor</th>
@@ -171,7 +203,7 @@ const iconoSiigo = (color) => ({
                     <div class="mt-3"><Link href="/app/compras/importacion/nueva" class="btn-primary text-xs"><Plus class="h-3 w-3"/> Crear la primera</Link></div>
                 </div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full min-w-[900px] text-sm">
+                    <table v-tabla-movil class="w-full min-w-[900px] text-sm">
                         <thead class="bg-surface-50 dark:bg-surface-900"><tr class="text-surface-500 text-xs uppercase">
                             <th class="text-left px-4 py-2">Número</th>
                             <th class="text-left">Contenedor</th>
@@ -204,7 +236,7 @@ const iconoSiigo = (color) => ({
             <div v-if="tabAct==='recepciones'" class="card overflow-hidden">
                 <div v-if="!recepciones.length" class="text-center py-12 text-surface-500 text-sm">Sin recepciones registradas.</div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full min-w-[900px] text-sm">
+                    <table v-tabla-movil class="w-full min-w-[900px] text-sm">
                         <thead class="bg-surface-50 dark:bg-surface-900"><tr class="text-surface-500 text-xs uppercase">
                             <th class="text-left px-4 py-2">Fecha</th>
                             <th class="text-left">OC</th>
@@ -248,5 +280,7 @@ const iconoSiigo = (color) => ({
                 </div>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
+        <AppPromptModal :cfg="modalMotivo" @cerrar="modalMotivo = null"/>
     </AppLayout>
 </template>

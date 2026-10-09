@@ -4,6 +4,7 @@ import { Head, Link, router } from '@inertiajs/vue3';
 import { AlertTriangle, RefreshCw, Cloud, CloudOff, ArrowLeft, Loader2, Check } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import { useMoney } from '@/composables/useMoney';
+import { mensajeDeError } from '@/composables/useMensajeError';
 import axios from 'axios';
 
 const { money } = useMoney();
@@ -21,7 +22,7 @@ const calcular = async () => {
         const { data } = await axios.get('/app/siigo/discrepancias/calcular');
         resultado.value = data;
     } catch (e) {
-        error.value = e.response?.data?.message || e.message || 'Error inesperado';
+        error.value = mensajeDeError(e, 'No pude calcular las diferencias con SIIGO');
     } finally {
         cargando.value = false;
     }
@@ -120,7 +121,7 @@ const todoOk = computed(() =>
                         <span class="text-xs font-normal text-surface-500">({{ resultado.filas.length }})</span>
                     </h2>
                 </div>
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-xs text-surface-500 uppercase border-b bg-surface-50">
                         <tr>
                             <th class="text-left p-3 w-36">Referencia</th>
@@ -172,7 +173,7 @@ const todoOk = computed(() =>
                         </span>
                     </h2>
                 </div>
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-xs text-surface-500 uppercase border-b bg-surface-50">
                         <tr>
                             <th class="text-left p-3 w-36">Referencia</th>
@@ -205,7 +206,7 @@ const todoOk = computed(() =>
                         </span>
                     </h2>
                 </div>
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-xs text-surface-500 uppercase border-b bg-surface-50">
                         <tr>
                             <th class="text-left p-3 w-28">SIIGO code</th>

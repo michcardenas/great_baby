@@ -40,6 +40,31 @@ class ReintentarEmisionDian implements ShouldQueue
             return;
         }
 
+        // Ya está en SIIGO pero la DIAN no la timbró.
+        //
+        // Este job re-emite, y re-emitir un documento que ya existe allá lo
+        // duplicaría en cuanto caduque la clave de idempotencia, gastando
+        // numeración de la DIAN. Se vio en vivo: 11 reintentos encolados para
+        // la misma factura que ya estaba en SIIGO. Lo que falta ahí es volver
+        // a timbrar, que es otra operación y se hace desde SIIGO.
+        if ($factura->siigo_id) {
+            Log::warning('[ReintentarEmisionDian] Factura ya existe en SIIGO · no se re-emite', [
+                'factura' => $factura->numero,
+                'siigo' => $factura->numero_siigo,
+                'stamp_status' => $factura->stamp_status,
+            ]);
+
+            SiigoSyncLog::create([
+                'recurso' => 'facturas_venta',
+                'estado' => 'omitido',
+                'mensaje' => "Factura {$factura->numero} ya está en SIIGO como {$factura->numero_siigo}; "
+                    ."el timbrado quedó en «{$factura->stamp_status}». Reintentar el timbrado desde SIIGO.",
+                'detalle' => ['factura_id' => $factura->id, 'siigo_id' => $factura->siigo_id],
+            ]);
+
+            return;
+        }
+
         $svc->emitir($factura);
         $fresh = $factura->fresh();
 

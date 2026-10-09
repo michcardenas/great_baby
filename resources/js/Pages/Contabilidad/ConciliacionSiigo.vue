@@ -105,7 +105,7 @@ const recargar = () => router.get('/app/contabilidad/siigo/conciliacion',
                             La misma factura tiene un total en el ERP y otro en SIIGO. Hay que corregirlo antes de declarar.
                         </p>
                     </div>
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-xs uppercase text-surface-500 bg-surface-50">
                             <tr>
                                 <th class="p-3 text-left">Factura ERP</th>
@@ -135,7 +135,7 @@ const recargar = () => router.get('/app/contabilidad/siigo/conciliacion',
                             No llegaron a SIIGO · {{ resultado.sin_enviar.length }}
                         </h3>
                     </div>
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-xs uppercase text-surface-500 bg-surface-50">
                             <tr>
                                 <th class="p-3 text-left">Factura</th><th class="p-3 text-left">Fecha</th>
@@ -162,7 +162,7 @@ const recargar = () => router.get('/app/contabilidad/siigo/conciliacion',
                         </h3>
                         <p class="text-xs text-red-800 mt-1">Puede que se hayan anulado desde el portal de SIIGO.</p>
                     </div>
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-xs uppercase text-surface-500 bg-surface-50">
                             <tr><th class="p-3 text-left">Factura</th><th class="p-3 text-left">Nº SIIGO</th><th class="p-3 text-right">Total</th></tr>
                         </thead>
@@ -188,7 +188,7 @@ const recargar = () => router.get('/app/contabilidad/siigo/conciliacion',
                             En el ambiente de pruebas de SIIGO es normal: la resolución se comparte con otros usuarios.
                         </p>
                     </div>
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-xs uppercase text-surface-500 bg-surface-50">
                             <tr>
                                 <th class="p-3 text-left">Nº SIIGO</th><th class="p-3 text-left">Fecha</th>

@@ -4,15 +4,72 @@ import { Head, router } from '@inertiajs/vue3';
 import { Save, Sliders, RotateCcw, Search, AlertTriangle } from 'lucide-vue-next';
 import { useEventListener } from '@vueuse/core';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
 
 const props = defineProps({
     grupos: { type: Object, required: true },
     gruposLabels: { type: Object, required: true },
+    // clave de regla → familia de document-type de SIIGO (NC, ND, CC, …)
+    familiasDocumento: { type: Object, default: () => ({}) },
 });
 
+/**
+ * Comprobantes reales de la cuenta de SIIGO, agrupados por familia.
+ *
+ * Los tipos de documento se piden una vez al entrar. Hasta que lleguen, el
+ * desplegable sale con la opción «sin elegir» y, si ya había un id guardado,
+ * con ese id: así la casilla nunca miente sobre lo que hay configurado.
+ */
+const documentos = ref({});
+const docsError = ref('');
+
+onMounted(async () => {
+    if (! Object.keys(props.familiasDocumento).length) return;
+    try {
+        const r = await fetch('/app/siigo/document-types', {
+            headers: { Accept: 'application/json' },
+            credentials: 'same-origin',
+        });
+        if (! r.ok) throw new Error('HTTP ' + r.status);
+        documentos.value = (await r.json()).grupos || {};
+    } catch (e) {
+        docsError.value = 'No pude traer los comprobantes de SIIGO. Los tipos de documento quedan como están.';
+        console.error('[reglas] document-types', e);
+    }
+});
+
+/** ¿El id guardado figura entre los comprobantes que devolvió SIIGO? */
+const estaEnLista = (r) => {
+    const familia = props.familiasDocumento[r.clave];
+    return (documentos.value[familia] || []).some((d) => Number(d.id) === Number(r.valor));
+};
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
+
+/**
+ * Las reglas de tipo `json` llegan ya decodificadas del servidor.
+ *
+ * Puestas tal cual en una casilla se verían como «[object Object]» y guardar
+ * escribiría ese texto encima del valor real. Se pasan a texto JSON para que
+ * la casilla muestre exactamente lo que hay; el backend acepta la cadena.
+ */
+const aTexto = (grupos) => {
+    const copia = JSON.parse(JSON.stringify(grupos));
+    for (const grupo in copia) {
+        for (const r of copia[grupo]) {
+            if (r.tipo === 'json' && typeof r.valor !== 'string') {
+                r.valor = JSON.stringify(r.valor ?? {}, null, 0);
+            }
+        }
+    }
+    return copia;
+};
+
 // Estado local editable.
-const originales = ref(JSON.parse(JSON.stringify(props.grupos)));
-const editable = reactive(JSON.parse(JSON.stringify(props.grupos)));
+const originales = ref(aTexto(props.grupos));
+const editable = reactive(aTexto(props.grupos));
 const guardando = ref(false);
 const busqueda = ref('');
 
@@ -23,16 +80,17 @@ watch(() => props.grupos, (nuevos) => {
     if (! clavesEnvio.value.size && modificadas.value.length) return; // refresh externo con edits → no pisar
 
     // Merge selectivo: solo reglas cuya clave estaba en el POST recién guardado.
-    Object.keys(nuevos).forEach(grupo => {
+    const limpios = aTexto(nuevos);
+    Object.keys(limpios).forEach(grupo => {
         if (! editable[grupo]) editable[grupo] = [];
-        nuevos[grupo].forEach((nueva, i) => {
+        limpios[grupo].forEach((nueva, i) => {
             const enEdit = editable[grupo][i];
             if (clavesEnvio.value.has(nueva.clave) || ! enEdit) {
                 editable[grupo][i] = JSON.parse(JSON.stringify(nueva));
             }
         });
     });
-    originales.value = JSON.parse(JSON.stringify(nuevos));
+    originales.value = JSON.parse(JSON.stringify(limpios));
     clavesEnvio.value = new Set(); // limpiar tras aplicar
 }, { deep: true });
 
@@ -59,14 +117,43 @@ useEventListener(typeof window !== 'undefined' ? window : null, 'beforeunload', 
     }
 });
 // Guard navegación Inertia — Aracely click en otro item del sidebar.
+//
+// Acá iba un confirm() nativo porque Inertia necesita la respuesta en el acto,
+// pero queda bloqueado dentro del iframe de la app de escritorio: la
+// navegación pasaba de largo y los cambios se perdían sin aviso. Ahora se
+// cancela siempre el viaje, se pregunta con el modal y, si dice que sí, se
+// repite el mismo destino con la guarda desactivada.
 let offBefore = null;
+let saliendoSinGuardar = false;
 onMounted(() => {
     offBefore = router.on('before', (event) => {
-        if (modificadas.value.length && event.detail.visit.url.pathname !== '/app/reglas') {
-            if (! window.confirm(`Tenés ${modificadas.value.length} cambios sin guardar. ¿Descartar y salir?`)) {
-                event.preventDefault();
-            }
+        if (saliendoSinGuardar) {
+            saliendoSinGuardar = false;
+            return;
         }
+        if (! modificadas.value.length) return;
+        if (event.detail.visit.url.pathname === '/app/reglas') return;
+
+        const visita = event.detail.visit;
+        const cuantos = modificadas.value.length;
+        event.preventDefault();
+        modalConfirm.value = {
+            titulo: `Tenés ${cuantos} cambio${cuantos === 1 ? '' : 's'} sin guardar`,
+            mensaje: 'Si salís ahora se descartan.',
+            color: 'amber',
+            textoConfirmar: 'Descartar y salir',
+            onConfirmar: () => {
+                modalConfirm.value = null;
+                saliendoSinGuardar = true;
+                router.visit(visita.url, {
+                    method: visita.method,
+                    data: visita.data,
+                    replace: visita.replace,
+                    preserveState: visita.preserveState,
+                    preserveScroll: visita.preserveScroll,
+                });
+            },
+        };
     });
 });
 onBeforeUnmount(() => { offBefore?.(); });
@@ -120,9 +207,17 @@ const guardar = () => {
 };
 
 const resetearTodo = () => {
-    if (! window.confirm('¿Descartar todos los cambios sin guardar?')) return;
-    Object.assign(editable, JSON.parse(JSON.stringify(originales.value)));
-    erroresCliente.value = [];
+    modalConfirm.value = {
+        titulo: '¿Descartar todos los cambios sin guardar?',
+        mensaje: 'Las reglas vuelven a como estaban la última vez que se guardó.',
+        color: 'amber',
+        textoConfirmar: 'Descartar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            Object.assign(editable, JSON.parse(JSON.stringify(originales.value)));
+            erroresCliente.value = [];
+        },
+    };
 };
 
 const labelGrupo = (g) => props.gruposLabels[g] || g;
@@ -225,6 +320,16 @@ const totalReglas = computed(() =>
                 <div class="text-xs text-surface-500 mt-1">Contactá al equipo técnico — este panel debería tener reglas sembradas.</div>
             </div>
 
+            <!--
+                Si no se pudieron traer los comprobantes de SIIGO hay que
+                decirlo: si no, los desplegables salen vacíos y parece que la
+                cuenta no tuviera tipos de documento configurados.
+            -->
+            <div v-if="docsError"
+                 class="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+                {{ docsError }}
+            </div>
+
             <!-- Grupos -->
             <div v-for="(reglas, grupo) in gruposFiltrados" :key="grupo" class="card p-5">
                 <h2 class="text-lg font-bold mb-1">{{ labelGrupo(grupo) }}</h2>
@@ -251,8 +356,33 @@ const totalReglas = computed(() =>
                             <div v-if="r.descripcion" class="text-xs text-surface-500 mt-0.5 mb-2">{{ r.descripcion }}</div>
                             <div v-else class="mb-2"></div>
 
+                            <!--
+                                Tipos de documento de SIIGO: desplegable con los
+                                comprobantes reales de la cuenta. Antes era una
+                                casilla numérica y había que adivinar un id entre
+                                59 notas crédito que no se ven desde acá.
+                            -->
+                            <select
+                                v-if="familiasDocumento[r.clave]"
+                                :id="'regla-' + r.clave"
+                                v-model.number="r.valor"
+                                class="input w-full">
+                                <option :value="0">— sin elegir —</option>
+                                <option v-for="d in (documentos[familiasDocumento[r.clave]] || [])"
+                                        :key="d.id" :value="d.id">{{ d.label }}</option>
+                                <!--
+                                    Si el valor guardado no está en la lista
+                                    (comprobante borrado o inactivo en SIIGO) se
+                                    agrega igual, para que la casilla muestre lo
+                                    que de verdad hay y guardar no lo borre.
+                                -->
+                                <option v-if="r.valor && ! estaEnLista(r)" :value="r.valor">
+                                    {{ r.valor }} · no figura en SIIGO
+                                </option>
+                            </select>
+
                             <input
-                                v-if="r.tipo === 'int' || r.tipo === 'float'"
+                                v-else-if="r.tipo === 'int' || r.tipo === 'float'"
                                 :id="'regla-' + r.clave"
                                 type="number"
                                 :step="r.tipo === 'float' ? '0.01' : '1'"
@@ -260,6 +390,16 @@ const totalReglas = computed(() =>
                                 v-model.number="r.valor"
                                 class="input w-full font-mono tabular-nums"
                             />
+                            <!-- JSON: campo ancho, porque un mapa no entra en una línea. -->
+                            <textarea
+                                v-else-if="r.tipo === 'json'"
+                                :id="'regla-' + r.clave"
+                                v-model="r.valor"
+                                rows="2"
+                                spellcheck="false"
+                                class="input w-full font-mono text-xs"
+                            ></textarea>
+
                             <input
                                 v-else
                                 :id="'regla-' + r.clave"
@@ -278,5 +418,6 @@ const totalReglas = computed(() =>
                 💡 Los cambios se propagan a todo el ERP (workers incluidos) en cuanto guardás.
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

@@ -73,6 +73,8 @@ class SiigoController extends Controller implements HasMiddleware
             'cola' => $this->cola(),
             // UBIC-7 · estado del setup de Facturación Electrónica para el wizard.
             'setup_fe' => $this->estadoSetupFacturacionElectronica(),
+            // Las cuentas PUC configuradas, contrastadas con el plan real.
+            'cuentas_puc' => $this->estadoCuentasPuc(),
             'fallidos_recientes' => $this->fallidosRecientes(),
             // PROD-15 · productos con falla permanente (≥3 intentos fallidos).
             'fallas_permanentes' => $this->fallasPermanentes(),
@@ -722,13 +724,51 @@ class SiigoController extends Controller implements HasMiddleware
                 ->limit(10)
                 ->get(['id', 'payload', 'attempts', 'available_at']);
         } catch (\Throwable) {
-            return ['pendientes' => 0, 'proximos' => []];
+            return ['pendientes' => 0, 'proximos' => [], 'atascada' => false];
         }
+
+        /*
+         * ¿Hay alguien procesando la cola?
+         *
+         * Encontrado el 2026-10-07: 29 trabajos encolados, el más viejo del día
+         * anterior, y ningún `queue:work` corriendo. El ERP encolaba todo para
+         * SIIGO y no salía nada — sin un solo aviso en pantalla. Si el servidor
+         * del cliente no levanta el worker, pasa exactamente eso.
+         *
+         * Se mide por la antigüedad del trabajo más viejo: si lleva más de 15
+         * minutos esperando, algo no lo está consumiendo.
+         */
+        //   Se mira `available_at` y no `created_at`: un trabajo que falló y
+        //   está esperando su reintento tiene fecha de creación vieja pero
+        //   todavía no le toca, y contarlo haría saltar el aviso siempre. Un
+        //   aviso que grita sin motivo se vuelve invisible, que es peor que no
+        //   tenerlo. Acá sólo cuentan los que YA deberían haberse ejecutado.
+        $vencidos = DB::table('jobs')->where('available_at', '<=', time() - 900);
+        $pendientesVencidos = (int) $vencidos->count();
+        $masViejo = $vencidos->min('available_at');
+        $esperaMin = $masViejo ? (int) round((time() - (int) $masViejo) / 60) : 0;
+        $atascada = $pendientesVencidos > 0;
+
+        /*
+         * Por qué no se mueve la cola.
+         *
+         * Hay dos motivos y mandan a lados distintos: o no hay `queue:work`
+         * corriendo —eso es soporte técnico— o la credencial de SIIGO está
+         * muerta y los push se están aplazando solos —eso lo arregla Aracely
+         * pegando la llave nueva—. El aviso decía siempre lo primero.
+         * Comprobado el 2026-10-09: llave del sandbox caída con 401, el worker
+         * corriendo bien y los 30 trabajos aplazándose cada 5 minutos.
+         */
+        $credencialMuerta = \App\Modules\Siigo\Models\SiigoConfig::current()->credencialMuerta();
 
         return [
             'pendientes' => (int) DB::table('jobs')
                 ->where('queue', config('siigo.queue', 'siigo'))
                 ->count(),
+            'atascada' => $atascada,
+            'motivo' => $credencialMuerta ? 'credencial' : 'worker',
+            'espera_minutos' => $esperaMin,
+            'total_todas_las_colas' => (int) DB::table('jobs')->count(),
             'proximos' => $filas->map(function ($f) {
                 $payload = json_decode($f->payload, true);
                 $data = $payload['data']['command'] ?? '';
@@ -833,6 +873,72 @@ class SiigoController extends Controller implements HasMiddleware
                 'id' => $u->id, 'codigo' => $u->codigo, 'nombre' => $u->nombre,
             ])->all(),
         ];
+    }
+
+    /**
+     * Las cuentas PUC que el ERP tiene configuradas, contrastadas con el plan
+     * de cuentas real.
+     *
+     * Hallado el 2026-10-09 revisando por qué un asiento de inventario no
+     * sube: `siigo.cta_perdida_inventario_default` vale `5299` y esa cuenta
+     * **no existe** en `plan_cuentas`; `siigo.cta_conciliacion_default` vale
+     * `139535` y tampoco. Las otras tres sí existen pero son cuentas de
+     * encabezado —tienen subcuentas colgando— y SIIGO no deja mover en ellas,
+     * sólo en las auxiliares.
+     *
+     * Nada de esto se veía: el asiento salía, SIIGO lo rechazaba y el error
+     * quedaba en el log. Qué código usar es decisión del contador de Aracely,
+     * así que esto no corrige nada por su cuenta — lo pone a la vista, que es
+     * lo que faltaba.
+     *
+     * @return list<array{clave: string, etiqueta: string, codigo: string, estado: string, detalle: string}>
+     */
+    private function estadoCuentasPuc(): array
+    {
+        $claves = [
+            'siigo.cta_gasto_default' => 'Gasto por defecto',
+            'siigo.cta_banco_default' => 'Banco por defecto',
+            'siigo.cta_conciliacion_default' => 'Partida conciliatoria',
+            'siigo.cta_perdida_inventario_default' => 'Pérdida por baja de inventario',
+            'siigo.cta_sobrante_inventario_default' => 'Sobrante de toma física',
+        ];
+
+        $filas = [];
+        foreach ($claves as $clave => $etiqueta) {
+            $codigo = trim((string) setting($clave, ''));
+
+            if ($codigo === '') {
+                $filas[] = ['clave' => $clave, 'etiqueta' => $etiqueta, 'codigo' => '',
+                    'estado' => 'rojo', 'detalle' => 'Sin configurar.'];
+                continue;
+            }
+
+            $cuenta = \Illuminate\Support\Facades\DB::table('plan_cuentas')
+                ->where('codigo', $codigo)->first(['codigo', 'nombre']);
+
+            if (! $cuenta) {
+                $filas[] = ['clave' => $clave, 'etiqueta' => $etiqueta, 'codigo' => $codigo,
+                    'estado' => 'rojo', 'detalle' => 'No existe en el plan de cuentas.'];
+                continue;
+            }
+
+            // Una cuenta con subcuentas es de encabezado: acumula, no recibe
+            // movimiento. El asiento tiene que ir a una auxiliar.
+            $hijas = \Illuminate\Support\Facades\DB::table('plan_cuentas')
+                ->where('codigo', 'like', $codigo.'_%')->count();
+
+            $filas[] = [
+                'clave' => $clave,
+                'etiqueta' => $etiqueta,
+                'codigo' => $codigo,
+                'estado' => $hijas > 0 ? 'amber' : 'verde',
+                'detalle' => $hijas > 0
+                    ? $cuenta->nombre." · es cuenta de encabezado ({$hijas} subcuentas): hay que usar una auxiliar."
+                    : $cuenta->nombre,
+            ];
+        }
+
+        return $filas;
     }
 
     /**

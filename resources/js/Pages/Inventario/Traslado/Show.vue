@@ -6,11 +6,16 @@ import AppLayout from '@/Layouts/AppLayout.vue';
 import ImportMasivoModal from '@/Components/ImportMasivoModal.vue';
 import { useEscClose } from '@/composables/useEscClose';
 import { useFecha } from '@/composables/useFecha';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
 
 const importMasivoAbierto = ref(false);
 const importMasivoOk = () => { importMasivoAbierto.value = false; router.reload({ only: ['traslado'] }); };
 
 const props = defineProps({ traslado: { type: Object, required: true } });
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
 const { fechaCorta } = useFecha();
 
 const badge = (e) => ({
@@ -72,25 +77,49 @@ const guardarItem = () => {
 };
 
 const eliminarItem = (it) => {
-    if (!confirm(`Eliminar ${it.producto} (${it.sku}) del traslado?`)) return;
-    router.delete(`/app/inventario/traslados/${props.traslado.id}/items/${it.id}`, { preserveScroll: true });
+    modalConfirm.value = {
+        titulo: `¿Quitar ${it.producto} del traslado?`,
+        mensaje: `SKU ${it.sku}.`,
+        color: 'rose',
+        textoConfirmar: 'Quitar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            router.delete(`/app/inventario/traslados/${props.traslado.id}/items/${it.id}`, { preserveScroll: true });
+        },
+    };
 };
 
 // State-machine actions
 const enviando = ref(false);
 const enviar = () => {
     const total = props.traslado.items.reduce((s, it) => s + Number(it.cantidad_solicitada || 0), 0);
-    if (!confirm(`Enviar traslado ${props.traslado.numero}?\n\nSe descontarán ${total} unidades del origen (${props.traslado.origen.nombre}) y quedarán En Tránsito hacia ${props.traslado.destino.nombre}. Esta acción NO se puede deshacer sin una reversa.`)) return;
-    enviando.value = true;
-    router.post(`/app/inventario/traslados/${props.traslado.id}/enviar`, {}, { preserveScroll: true, onFinish: () => (enviando.value = false) });
+    modalConfirm.value = {
+        titulo: `Enviar traslado ${props.traslado.numero}?`,
+        mensaje: `Se descontarán ${total} unidades del origen (${props.traslado.origen.nombre}) y quedarán En Tránsito hacia ${props.traslado.destino.nombre}. Esta acción NO se puede deshacer sin una reversa.`,
+        color: 'sky',
+        textoConfirmar: 'Enviar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            enviando.value = true;
+            router.post(`/app/inventario/traslados/${props.traslado.id}/enviar`, {}, { preserveScroll: true, onFinish: () => (enviando.value = false) });
+        },
+    };
 };
 
 const recibiendo = ref(false);
 const recibir = () => {
     const total = props.traslado.items.reduce((s, it) => s + Number(it.cantidad_solicitada || 0), 0);
-    if (!confirm(`Confirmar recepción de traslado ${props.traslado.numero}?\n\nSe ingresarán ${total} unidades en el destino (${props.traslado.destino.nombre}).`)) return;
-    recibiendo.value = true;
-    router.post(`/app/inventario/traslados/${props.traslado.id}/recibir`, {}, { preserveScroll: true, onFinish: () => (recibiendo.value = false) });
+    modalConfirm.value = {
+        titulo: `Confirmar recepción de traslado ${props.traslado.numero}?`,
+        mensaje: `Se ingresarán ${total} unidades en el destino (${props.traslado.destino.nombre}).`,
+        color: 'emerald',
+        textoConfirmar: 'Confirmar recepción',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            recibiendo.value = true;
+            router.post(`/app/inventario/traslados/${props.traslado.id}/recibir`, {}, { preserveScroll: true, onFinish: () => (recibiendo.value = false) });
+        },
+    };
 };
 
 const modalAnular = ref(false);
@@ -221,7 +250,7 @@ const anular = () => {
 
             <!-- Tabla items -->
             <div class="card overflow-x-auto">
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-xs text-surface-500 uppercase border-b">
                         <tr>
                             <th class="text-left p-3">SKU</th>
@@ -278,5 +307,6 @@ const anular = () => {
                 </div>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

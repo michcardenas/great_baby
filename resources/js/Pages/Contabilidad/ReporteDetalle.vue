@@ -169,7 +169,7 @@ const tieneMeta = computed(() => props.meta && props.meta.numero);
 
             <div v-if="movimientos.length" class="card p-4" :class="cargando ? 'opacity-60 pointer-events-none' : ''">
                 <div class="overflow-x-auto">
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-xs uppercase text-surface-500 border-b">
                             <tr><th class="text-left p-2">Fecha</th><th class="text-left p-2">Cuenta</th><th class="text-left p-2">Descripción</th><th class="text-right p-2">Débito</th><th class="text-right p-2">Crédito</th></tr>
                         </thead>

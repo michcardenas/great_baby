@@ -3,8 +3,13 @@ import { ref, reactive, computed } from 'vue';
 import { Head, router } from '@inertiajs/vue3';
 import { Receipt, Plus, Pencil, Trash2, X } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
 
 const props = defineProps({ reglas: { type: Array, required: true } });
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
 
 const tab = ref('retefuente');
 const modal = ref(false);
@@ -30,8 +35,16 @@ const guardar = () => {
 };
 
 const eliminar = (id) => {
-    if (! confirm('¿Eliminar esta regla de retención?')) return;
-    router.delete(`/app/cartera/retenciones/${id}`, { preserveScroll: true });
+    modalConfirm.value = {
+        titulo: '¿Eliminar esta regla de retención?',
+        mensaje: 'No se puede deshacer. Los documentos ya emitidos conservan la retención que se les aplicó.',
+        color: 'rose',
+        textoConfirmar: 'Eliminar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            router.delete(`/app/cartera/retenciones/${id}`, { preserveScroll: true });
+        },
+    };
 };
 
 const tabs = [
@@ -75,7 +88,7 @@ const tabs = [
                         <Plus class="h-3 w-3"/> Nueva regla
                     </button>
                 </div>
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-[10px] uppercase text-surface-500 border-b bg-surface-50 dark:bg-surface-900">
                         <tr>
                             <th class="text-left p-2">Concepto</th>
@@ -173,5 +186,6 @@ const tabs = [
                 </div>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

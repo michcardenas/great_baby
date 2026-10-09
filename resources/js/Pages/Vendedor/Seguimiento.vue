@@ -52,7 +52,7 @@ const fechaCorta = (iso) => {
                     </span>
                 </div>
                 <div class="overflow-x-auto">
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-xs uppercase text-surface-500 bg-surface-50 dark:bg-surface-900">
                             <tr>
                                 <th class="p-3 text-left">N.º</th>
@@ -109,7 +109,7 @@ const fechaCorta = (iso) => {
                     </span>
                 </div>
                 <div class="overflow-x-auto">
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-xs uppercase text-surface-500 bg-surface-50 dark:bg-surface-900">
                             <tr>
                                 <th class="p-3 text-left">Pedido</th>
@@ -157,7 +157,7 @@ const fechaCorta = (iso) => {
                     </span>
                 </div>
                 <div class="overflow-x-auto">
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-xs uppercase text-surface-500 bg-surface-50 dark:bg-surface-900">
                             <tr>
                                 <th class="p-3 text-left">N.º</th>

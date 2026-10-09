@@ -7,6 +7,7 @@ use App\Models\NotificacionErp;
 use App\Modules\Cartera\Enums\EstadoFactura;
 use App\Modules\Cartera\Models\FacturaVenta;
 use App\Modules\Siigo\Clients\SiigoClient;
+use App\Modules\Siigo\Exceptions\PagoSinFacturaEnSiigo;
 use App\Modules\Siigo\Models\SiigoConfig;
 use App\Modules\Siigo\Support\CuentasSiigo;
 use Illuminate\Support\Facades\DB;
@@ -35,6 +36,15 @@ class SiigoEmisionService
     {
         $this->validarElegible($factura);
         $config = $this->validarConfig();
+
+        // El cliente tiene que existir en SIIGO antes de facturarle.
+        //   Sólo había importación (SIIGO → ERP), nunca envío, así que a un
+        //   cliente dado de alta en el ERP la primera factura le rebotaba con
+        //   «The customer doesn't exist». Comprobado en el flujo real.
+        //
+        //   Va ANTES de tomar el lock: si esto falla, la factura no debe
+        //   quedar marcada como "emitiendo" y bloqueada 60 segundos.
+        $this->asegurarClienteEnSiigo($factura->contacto()->first());
 
         // 1. LOCK anti-carrera + set emitiendo_at
         $factura = DB::transaction(function () use ($factura) {
@@ -106,6 +116,9 @@ class SiigoEmisionService
             $factura->fill([
                 'siigo_id' => (string) ($data['id'] ?? ''),
                 'numero_siigo' => (string) ($data['name'] ?? $data['number'] ?? ''),
+                // El documento impreso que devuelve SIIGO, para poder abrirlo
+                // e imprimirlo desde el ERP sin ir a buscarlo allá.
+                'siigo_public_url' => (string) ($data['public_url'] ?? '') ?: null,
                 'cufe' => $cufe,
                 'stamp_status' => $stampStatus,
                 // Guardamos respuesta cruda pero excluimos de auditoría (ver FacturaVenta::$auditExclude)
@@ -176,6 +189,23 @@ class SiigoEmisionService
             throw new RuntimeException("La factura {$factura->numero} ya fue emitida electrónicamente (CUFE: " . substr($factura->cufe, 0, 20) . '…).');
         }
 
+        // El documento ya existe en SIIGO aunque la DIAN no lo haya timbrado.
+        //
+        // El guard de arriba sólo miraba el CUFE, así que una factura creada en
+        // SIIGO y rechazada por la DIAN (sin CUFE) seguía siendo "elegible" y
+        // cada reintento la volvía a enviar. Se vio en vivo: 11 reintentos
+        // encolados para la MISMA factura que ya estaba allá. La clave de
+        // idempotencia los frena mientras SIIGO la recuerde, pero esas claves
+        // caducan y después se duplicaría el documento, consumiendo numeración
+        // de la DIAN. Si el timbrado falló, lo que corresponde es reintentar el
+        // timbrado, no volver a crear la factura.
+        if (! empty($factura->siigo_id)) {
+            throw new RuntimeException(
+                "La factura {$factura->numero} ya está en SIIGO como {$factura->numero_siigo} "
+                .'· no se vuelve a crear. Si la DIAN la rechazó, hay que reintentar el timbrado desde SIIGO.'
+            );
+        }
+
         if ($factura->items->isEmpty()) {
             $factura->load('items');
         }
@@ -231,9 +261,7 @@ class SiigoEmisionService
         $items = $factura->items->map(function ($item) use ($ivaPorPct) {
             $variante = $item->variante;
             $producto = $variante?->producto ?? $item->producto;
-            $codigo = $variante?->codigo_barras
-                ?? $producto?->referencia
-                ?? "ITEM-{$item->id}";
+            $codigo = $this->codigoSiigoDe($variante, $producto, $item->descripcion);
 
             $linea = [
                 'code' => (string) $codigo,
@@ -392,7 +420,9 @@ class SiigoEmisionService
             $ordenItem = $i->ordenItem;
             $producto = $ordenItem?->producto;
             $variante = $ordenItem?->variante;
-            $code = $variante?->codigo_barras ?? $producto?->referencia ?? "RCITEM-{$i->id}";
+            // Mismo criterio que en la factura: el código con que SIIGO conoce
+            // el ítem, no el de barras a ciegas.
+            $code = $this->codigoSiigoDe($variante, $producto, $producto?->nombre);
             $line = [
                 'type' => 'Product',
                 'code' => (string) $code,
@@ -551,7 +581,9 @@ class SiigoEmisionService
                 $ordenItem = $i->ordenItem;
                 $producto = $ordenItem?->producto;
                 $variante = $ordenItem?->variante;
-                $code = $variante?->codigo_barras ?? $producto?->referencia ?? "RCITEM-{$i->id}";
+                // Mismo criterio que en la factura: el código con que SIIGO conoce
+            // el ítem, no el de barras a ciegas.
+            $code = $this->codigoSiigoDe($variante, $producto, $producto?->nombre);
                 $cant = (float) $i->cantidad_recibida;
                 if ($cant <= 0) continue;
                 $precio = (float) ($ordenItem?->precio_unit ?? 0);
@@ -646,6 +678,28 @@ class SiigoEmisionService
         $p->loadMissing(['factura', 'contacto']);
 
         if (! $p->factura?->siigo_id) {
+            /*
+             * Hay dos motivos distintos y se tratan distinto.
+             *
+             * Si la factura es electrónica y todavía no subió, es cuestión de
+             * orden: el pago tiene que esperar, y para eso sirve la excepción
+             * —el job reintenta—.
+             *
+             * Si NO es electrónica, no va a subir nunca: SIIGO sólo recibe las
+             * de la DIAN, y la red de seguridad diaria filtra por
+             * `es_electronica = 1`. Lanzar acá convertía ese pago en un fallo
+             * permanente que se reencolaba cada día para volver a morir. Medido
+             * el 2026-10-09: las 23 facturas sin `siigo_id` eran TODAS no
+             * electrónicas —demo y semilla—, y los 3 pagos colgados de ellas
+             * llevaban días reapareciendo en `failed_jobs`.
+             */
+            if (! $p->factura?->es_electronica) {
+                throw new PagoSinFacturaEnSiigo(
+                    "El pago {$p->id} es de la factura {$p->factura?->numero}, que no es electrónica y "
+                    ."por eso no va a SIIGO. El recibo tampoco."
+                );
+            }
+
             throw new RuntimeException(
                 "El pago {$p->id} apunta a factura {$p->factura?->numero} que aún no está en SIIGO · " .
                 "espera a que la factura se emita antes de aplicar el pago."
@@ -660,15 +714,38 @@ class SiigoEmisionService
             throw new RuntimeException("El pago {$p->id} tiene monto_aplicado 0.");
         }
 
+        // El tipo de documento del recibo vive en `siigo.doc_type_recibo`.
+        // Hubo un tiempo en que acá se leía `siigo.doc_type_recibo_caja`, que
+        // no estaba declarado en ningún lado: daba 0, el bloque `document` se
+        // descartaba y SIIGO respondía «The field document is required». Se
+        // dejó un respaldo con el nombre viejo, pero esa clave nunca existió
+        // ni se puede crear desde el panel, así que sólo escondía el problema.
+        $docRecibo = (int) setting('siigo.doc_type_recibo', 0);
+
+        $siigoFactura = $this->prefijoConsecutivoSiigo($p->factura);
+
         $payload = [
-            'document' => ['id' => (int) setting('siigo.doc_type_recibo_caja', 0)],
+            'document' => ['id' => $docRecibo],
+            // `type` va en la raíz del recibo, no en la línea. SIIGO admite
+            // DebtPayment | AdvancePayment | Advanced; acá siempre se está
+            // abonando a una factura existente, así que es DebtPayment.
+            'type' => 'DebtPayment',
             'date' => $p->fecha->format('Y-m-d'),
             'customer' => ['identification' => (string) $p->contacto->numero_documento],
-            'currency' => ['code' => 'COP'],
+            // Sin bloque `currency`: al mandarlo SIIGO exige además
+            // `exchange_rate`, y acá siempre se cobra en pesos, que es la
+            // moneda base de la empresa.
+            // La factura se identifica con el prefijo y el consecutivo que le
+            // puso SIIGO, no con los del ERP: son numeraciones distintas (acá
+            // FV-261007-0004, allá FV-247-1215) y con las del ERP el recibo
+            // quedaba apuntando a una factura inexistente.
             'items' => [[
-                'due' => ['prefix' => 'FV', 'consecutive' => (int) $p->factura->consecutivo ?: 0,
-                          'quote' => 1, 'date' => $p->factura->fecha_emision->format('Y-m-d')],
-                'invoice_id' => (string) $p->factura->siigo_id,
+                'due' => [
+                    'prefix' => $siigoFactura['prefijo'],
+                    'consecutive' => $siigoFactura['consecutivo'],
+                    'quote' => 1,
+                    'date' => $p->factura->fecha_emision->format('Y-m-d'),
+                ],
                 'value' => $monto,
             ]],
             // El tipo de pago lo decide el MÉTODO con que cobró el cliente.
@@ -719,6 +796,170 @@ class SiigoEmisionService
         ])->save();
 
         return $p;
+    }
+
+    /**
+     * Prefijo y consecutivo con que SIIGO numeró la factura.
+     *
+     * El ERP y SIIGO llevan numeraciones distintas (FV-261007-0004 acá,
+     * FV-247-1215 allá). El recibo de caja tiene que referirse a la de SIIGO o
+     * apunta a una factura que no existe, así que se lee del documento real.
+     *
+     * @return array{prefijo: string, consecutivo: int}
+     */
+    private function prefijoConsecutivoSiigo(FacturaVenta $f): array
+    {
+        $r = $this->cliente->request('GET', '/v1/invoices/'.$f->siigo_id);
+
+        if (! $r->successful()) {
+            throw new RuntimeException(
+                "No se pudo leer de SIIGO la factura {$f->numero} para aplicarle el pago: HTTP ".$r->status()
+            );
+        }
+
+        // `name` llega como "FV-247-1215": el prefijo es todo menos el último
+        // tramo, que es el consecutivo.
+        $nombre = (string) $r->json('name');
+        $numero = (int) $r->json('number');
+        $prefijo = $nombre !== '' && str_contains($nombre, '-')
+            ? substr($nombre, 0, strrpos($nombre, '-'))
+            : 'FV';
+
+        return ['prefijo' => $prefijo, 'consecutivo' => $numero ?: 0];
+    }
+
+    /**
+     * Con qué código conoce SIIGO este ítem.
+     *
+     * El ERP mandaba siempre el código de barras de la variante, pero el push
+     * de productos sube la variante con su código de barras SÓLO si la variante
+     * se sincronizó; si lo que viajó fue el producto padre, allá quedó con la
+     * `referencia`. Resultado comprobado: una factura con una variante no
+     * sincronizada se rechazaba con «The code doesn't exist: 7701000000011»,
+     * aunque el producto sí estuviera en SIIGO.
+     *
+     * Acá se devuelve el código que SIIGO tiene de verdad, y si el ítem no está
+     * sincronizado se corta con un mensaje que dice qué falta, en vez de mandar
+     * un código inventado y recibir un error críptico.
+     */
+    private function codigoSiigoDe($variante, $producto, ?string $descripcion = null): string
+    {
+        if ($variante?->siigo_code) {
+            return (string) $variante->siigo_code;
+        }
+        if ($variante?->siigo_id && $variante->codigo_barras) {
+            return (string) $variante->codigo_barras;
+        }
+        if ($producto?->siigo_id && $producto->referencia) {
+            return (string) $producto->referencia;
+        }
+
+        $nombre = $descripcion ?: ($producto->nombre ?? 'sin nombre');
+        throw new RuntimeException(
+            "El producto «{$nombre}» todavía no está en SIIGO: sincronizalo antes de facturarlo "
+            .'(Catálogo → Productos → Sincronizar con SIIGO).'
+        );
+    }
+
+    /**
+     * Garantiza que el cliente exista en SIIGO antes de facturarle.
+     *
+     * Primero lo busca por documento (puede existir allá aunque el ERP no lo
+     * tenga marcado) y, si no está, lo crea. Guarda el `siigo_id` para no
+     * repetir la consulta en cada factura.
+     *
+     * No se inventa datos: si falta algo que SIIGO exige, deja que el error
+     * suba con el motivo, que es más útil que crear un tercero a medias.
+     */
+    private function asegurarClienteEnSiigo(?\App\Models\Contacto $c): void
+    {
+        if (! $c) {
+            throw new RuntimeException('La factura no tiene cliente asociado.');
+        }
+        if ($c->siigo_id) {
+            return;
+        }
+
+        $doc = trim((string) $c->numero_documento);
+        if ($doc === '') {
+            throw new RuntimeException("El cliente «{$c->nombreDisplay()}» no tiene documento: SIIGO no lo puede recibir.");
+        }
+
+        // 1 · ¿Ya existe allá?
+        $busca = $this->cliente->request('GET', '/v1/customers?identification='.urlencode($doc));
+        $encontrado = collect($busca->successful() ? ($busca->json('results') ?? []) : [])
+            ->firstWhere('identification', $doc);
+
+        if ($encontrado && ! empty($encontrado['id'])) {
+            $c->forceFill(['siigo_id' => $encontrado['id'], 'siigo_sync_at' => now()])->save();
+
+            return;
+        }
+
+        // 2 · No existe: crearlo. El mapeo es el inverso del importador
+        //     (`SiigoService::guardarCliente`).
+        $ciudad = \App\Modules\Siigo\Support\CiudadesDane::resolver($c->ciudad);
+        if (! $ciudad['exacta']) {
+            Log::channel('siigo')->warning('Ciudad sin código DANE: se usa la predeterminada', [
+                'contacto_id' => $c->id, 'ciudad' => $c->ciudad, 'usada' => $ciudad['city_code'],
+            ]);
+        }
+
+        $esEmpresa = $c->tipo_documento === 'NIT';
+        $nombre = $esEmpresa
+            ? [$c->razon_social ?: $c->nombre_completo]
+            : array_slice(array_pad(explode(' ', trim($c->nombre_completo), 2), 2, ''), 0, 2);
+
+        $payload = array_filter([
+            'type' => 'Customer',
+            'person_type' => $esEmpresa ? 'Company' : 'Person',
+            'id_type' => $esEmpresa ? '31' : '13',
+            'identification' => $doc,
+            'name' => array_values(array_filter($nombre, fn ($n) => $n !== '')),
+            'commercial_name' => $c->razon_social ?: null,
+            'active' => (bool) $c->activo,
+            // SIIGO exige city_code (DANE). El ERP guarda la ciudad como texto
+            // libre y SIIGO no publica endpoint de ciudades, así que se traduce
+            // con una tabla propia; si no la reconoce usa la predeterminada y
+            // lo deja anotado, para no tumbar la venta por un nombre mal escrito.
+            'address' => [
+                'address' => $c->direccion ?: 'No reportado',
+                'city' => [
+                    'country_code' => 'CO',
+                    'state_code' => $ciudad['state_code'],
+                    'city_code' => $ciudad['city_code'],
+                ],
+            ],
+            'contacts' => array_filter([
+                array_filter([
+                    'first_name' => $nombre[0] ?? $c->nombre_completo,
+                    'last_name' => $nombre[1] ?? '.',
+                    'email' => $c->email ?: null,
+                    'phone' => $c->telefono ? ['number' => $c->telefono] : null,
+                ]),
+            ]),
+        ], fn ($v) => $v !== null && $v !== []);
+
+        $r = $this->cliente->request('POST', '/v1/customers', $payload, 1, "cli:{$c->id}");
+
+        // `successful()` y no `ok()`: SIIGO responde 201 al crear el tercero y
+        // `ok()` sólo acepta 200, así que daba por fallido un alta correcta.
+        if (! $r->successful()) {
+            $msg = (string) ($r->json('Errors.0.Message') ?? $r->json('errors.0.message')
+                ?? $r->json('message') ?? ('HTTP '.$r->status()));
+            throw new RuntimeException(
+                "SIIGO no aceptó al cliente «{$c->nombreDisplay()}» (doc {$doc}): {$msg}"
+            );
+        }
+
+        $c->forceFill([
+            'siigo_id' => (string) $r->json('id'),
+            'siigo_sync_at' => now(),
+        ])->save();
+
+        Log::channel('siigo')->info('Cliente creado en SIIGO', [
+            'contacto_id' => $c->id, 'doc' => $doc, 'siigo_id' => $c->siigo_id,
+        ]);
     }
 
     /**
@@ -1092,6 +1333,99 @@ class SiigoEmisionService
      *
      * @param  \App\Modules\Dropi\Models\InventarioMovimiento  $m
      */
+    /**
+     * Tercero con el que se asientan los ajustes de inventario en SIIGO.
+     *
+     * Un traslado, una merma o un sobrante no tienen contraparte externa, pero
+     * SIIGO pide un tercero igual en cada linea del journal. El que corresponde
+     * es la propia empresa. Se puede fijar a mano en la regla
+     * `siigo.tercero_ajustes_inventario` (util si en SIIGO esta creada con otra
+     * identificacion); si no, se toma el NIT de la empresa, sin puntos ni
+     * digito de verificacion, que es como lo guarda SIIGO.
+     */
+    /**
+     * Una línea del asiento de inventario.
+     *
+     * Las cuentas de inventario (1435…) son transaccionales en SIIGO pero
+     * exigen `product` en la línea: sin él responde «The field product is
+     * required» y el asiento no entra. La cantidad va DENTRO de `product`, no
+     * al lado, igual que en el journal de devoluciones a proveedor. Las cuentas
+     * de pérdida o sobrante (5299 / 4295) no lo piden, así que el producto sólo
+     * se manda donde hace falta.
+     */
+    private function lineaAsiento(
+        string $cuenta,
+        string $movimiento,
+        float $valor,
+        string $tercero,
+        \App\Modules\Dropi\Models\InventarioMovimiento $m,
+        string $concepto,
+    ): array {
+        $linea = [
+            'account' => ['code' => CuentasSiigo::codigo($cuenta), 'movement' => $movimiento],
+            'customer' => ['identification' => $tercero],
+            'value' => $valor,
+            'description' => "{$concepto} · mov {$m->id}",
+        ];
+
+        if (! str_starts_with(ltrim($cuenta), '14')) {
+            return $linea;
+        }
+
+        // Lo que el asiento referencia tiene que existir YA en SIIGO; el
+        // asiento no lo crea. Y lo que vive allá depende del tipo de producto:
+        // de uno granular SIIGO guarda las VARIANTES (el padre nunca tiene
+        // `siigo_id`), de uno agregado guarda el producto. Mirar siempre el
+        // padre daba un falso «no está en SIIGO» para todo producto granular.
+        $variante = $m->variante;
+        $producto = $m->producto ?? $variante?->producto;
+
+        $sujeto = $variante ?: $producto;
+        $codigoLocal = $variante?->codigo_barras ?? $producto?->referencia;
+
+        if (! $sujeto?->siigo_id) {
+            $nombre = $variante?->codigo_barras ?? $producto?->referencia ?? '?';
+            throw new RuntimeException(
+                "«{$nombre}» (movimiento {$m->id}) todavía no está en SIIGO. Sincronizalo primero "
+                .'desde Catálogo; el asiento de inventario sólo lo referencia.'
+            );
+        }
+
+        // Mismo código con el que se publicó: lo calcula el propio constructor
+        // del payload de productos, no una copia local de la regla.
+        $linea['product'] = [
+            'code' => \App\Modules\Siigo\Support\ProductoPayloadBuilder::sanitizarCode(
+                $codigoLocal,
+                "movimiento {$m->id}"
+            ),
+            'quantity' => abs((float) $m->cantidad),
+        ];
+
+        return $linea;
+    }
+
+    private function terceroAjustesInventario(): string
+    {
+        $fijado = trim((string) setting('siigo.tercero_ajustes_inventario', ''));
+        if ($fijado !== '') {
+            return $fijado;
+        }
+
+        $nit = (string) (DB::table('empresa_config')->value('nit') ?? '');
+        // «901.738.354-7» -> «901738354»
+        $soloDigitos = preg_replace('/[^0-9]/', '', explode('-', $nit)[0] ?? '');
+
+        if ($soloDigitos === '') {
+            throw new RuntimeException(
+                'No hay tercero para los ajustes de inventario: cargá el NIT en Configuración → '
+                .'Empresa, o fijalo en la regla «siigo.tercero_ajustes_inventario». '
+                .'SIIGO exige un tercero en cada línea del asiento.'
+            );
+        }
+
+        return $soloDigitos;
+    }
+
     public function emitirAsiento(\App\Modules\Dropi\Models\InventarioMovimiento $m): \App\Modules\Dropi\Models\InventarioMovimiento
     {
         if ($m->siigo_journal_id) return $m;
@@ -1142,14 +1476,19 @@ class SiigoEmisionService
             default                                 => throw new RuntimeException("Tipo de movimiento '{$m->tipo}' no configurado para asiento SIIGO."),
         };
 
+        // SIIGO exige `customer.identification` en cada línea del journal, igual
+        // que en las devoluciones a proveedor. Un ajuste de inventario no tiene
+        // contraparte externa —la mercancía se movió adentro de la casa—, así
+        // que el tercero es la propia empresa. Sin esto SIIGO responde
+        // «The field customer is required» y el asiento no entra nunca.
+        $tercero = $this->terceroAjustesInventario();
+
         $payload = [
             'document' => ['id' => (int) setting('siigo.doc_type_gasto', 0)],
             'date' => $m->created_at->format('Y-m-d'),
             'items' => [
-                ['account' => ['code' => CuentasSiigo::codigo($cuentaDebito), 'movement' => 'Debit'], 'value' => $valor,
-                 'description' => "{$concepto} · mov {$m->id}"],
-                ['account' => ['code' => CuentasSiigo::codigo($cuentaCredito), 'movement' => 'Credit'], 'value' => $valor,
-                 'description' => "{$concepto} · mov {$m->id}"],
+                $this->lineaAsiento($cuentaDebito, 'Debit', $valor, $tercero, $m, $concepto),
+                $this->lineaAsiento($cuentaCredito, 'Credit', $valor, $tercero, $m, $concepto),
             ],
             'observations' => "ERP mov #{$m->id} · {$m->tipo} · ubicación " . optional($m->ubicacion)->nombre,
         ];

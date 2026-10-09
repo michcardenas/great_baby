@@ -35,7 +35,7 @@ const eliminar = (tipo, id) => {
     modalConfirm.value = {
         titulo: '¿Eliminar registro?',
         mensaje: 'La acción no se puede deshacer.',
-        color: 'red',
+        color: 'rose',
         textoConfirmar: 'Eliminar',
         onConfirmar: () => {
             modalConfirm.value = null;
@@ -66,7 +66,7 @@ const eliminar = (tipo, id) => {
                     <div class="text-xs uppercase font-bold text-brand-600">Marcas</div>
                     <button @click="abrir('marca')" class="btn-primary text-sm"><Plus class="h-4 w-4"/> Nueva</button>
                 </div>
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-xs text-surface-500 uppercase border-b"><tr><th class="text-left p-2">Código</th><th class="text-left p-2">Nombre</th><th class="text-center p-2">Activa</th><th class="text-right p-2"></th></tr></thead>
                     <tbody class="divide-y">
                         <tr v-for="m in marcas" :key="m.id" class="hover:bg-surface-50">
@@ -85,7 +85,7 @@ const eliminar = (tipo, id) => {
                     <div class="text-xs uppercase font-bold text-brand-600">Categorías</div>
                     <button @click="abrir('categoria')" class="btn-primary text-sm"><Plus class="h-4 w-4"/> Nueva</button>
                 </div>
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-xs text-surface-500 uppercase border-b"><tr><th class="text-left p-2">Código</th><th class="text-left p-2">Nombre</th><th class="text-left p-2">PUC Ingreso</th><th class="text-left p-2">PUC Costo</th><th class="text-right p-2"></th></tr></thead>
                     <tbody class="divide-y">
                         <tr v-for="c in categorias" :key="c.id" class="hover:bg-surface-50">
@@ -105,7 +105,7 @@ const eliminar = (tipo, id) => {
                     <div class="text-xs uppercase font-bold text-brand-600">Colores</div>
                     <button @click="abrir('color')" class="btn-primary text-sm"><Plus class="h-4 w-4"/> Nuevo</button>
                 </div>
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-xs text-surface-500 uppercase border-b"><tr><th class="text-left p-2">Muestra</th><th class="text-left p-2">Código</th><th class="text-left p-2">Nombre</th><th class="text-left p-2">Hex</th><th class="text-right p-2"></th></tr></thead>
                     <tbody class="divide-y">
                         <tr v-for="c in colores" :key="c.id" class="hover:bg-surface-50">

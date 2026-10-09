@@ -14,7 +14,7 @@ const badge = (e) => ({ completada: 'bg-emerald-100 text-emerald-800', procesand
             <p class="text-sm text-surface-500">Histórico de cargas Excel/CSV (facturas, pagos, contactos, productos).</p>
 
             <div class="card overflow-x-auto">
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-xs text-surface-500 uppercase border-b">
                         <tr>
                             <th class="text-left p-3">Tipo</th>

@@ -7,6 +7,7 @@ import {
     Receipt, Star, Warehouse, ArrowRight,
 } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
 
 const props = defineProps({
     config: { type: Object, required: true },
@@ -22,33 +23,57 @@ const props = defineProps({
     reconciliar: { type: Object, default: () => ({ estado: 'idle' }) },
     // UBIC-7 · estado del setup Facturación Electrónica para el wizard.
     setup_fe: { type: Object, default: () => ({ estado: 'rojo' }) },
+    // Las cuentas PUC configuradas, contrastadas con el plan de cuentas.
+    cuentas_puc: { type: Array, default: () => [] },
 });
+
+// Sólo se avisa de las que están mal; las que están bien no necesitan espacio.
+const cuentasPucConProblema = computed(() => props.cuentas_puc.filter((c) => c.estado !== 'verde'));
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
 
 // F8 · toggle kill-switch (solo Aracely).
 const togglando = ref(false);
 const togglear = () => {
     if (! props.puede_toggle) return;
     const nuevo = ! props.config.push_auto;
-    const msg = nuevo
-        ? '¿Encender el sync automático a SIIGO?\n\nCada cambio de producto se enviará solo.'
-        : '¿Apagar el sync automático?\n\nLos productos que edites NO se enviarán hasta que lo reactives (los jobs YA encolados también se pausan).';
-    if (! confirm(msg)) return;
-    togglando.value = true;
-    router.post('/app/siigo/kill-switch', { activo: nuevo }, {
-        preserveScroll: true,
-        onFinish: () => { togglando.value = false; },
-    });
+    modalConfirm.value = {
+        titulo: nuevo ? '¿Encender el sync automático a SIIGO?' : '¿Apagar el sync automático?',
+        mensaje: nuevo
+            ? 'Cada cambio de producto se enviará solo.'
+            : 'Los productos que edites NO se enviarán hasta que lo reactives. Los jobs que ya están encolados también se pausan.',
+        color: nuevo ? 'emerald' : 'amber',
+        textoConfirmar: nuevo ? 'Encender' : 'Apagar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            togglando.value = true;
+            router.post('/app/siigo/kill-switch', { activo: nuevo }, {
+                preserveScroll: true,
+                onFinish: () => { togglando.value = false; },
+            });
+        },
+    };
 };
 
 // F8 · reintentar un fallido.
 const reintentando = ref(null);
 const reintentar = (logId) => {
-    if (! confirm('¿Reintentar este sync? Se encolará un nuevo job manual.')) return;
-    reintentando.value = logId;
-    router.post(`/app/siigo/logs/${logId}/reintentar`, {}, {
-        preserveScroll: true,
-        onFinish: () => { reintentando.value = null; },
-    });
+    modalConfirm.value = {
+        titulo: '¿Reintentar este sync?',
+        mensaje: 'Se encola un job manual nuevo.',
+        color: 'sky',
+        textoConfirmar: 'Reintentar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            reintentando.value = logId;
+            router.post(`/app/siigo/logs/${logId}/reintentar`, {}, {
+                preserveScroll: true,
+                onFinish: () => { reintentando.value = null; },
+            });
+        },
+    };
 };
 
 // Semáforo global.
@@ -203,6 +228,42 @@ const claseEstadoLog = (l) => {
                 </div>
             </div>
 
+            <!-- Cola atascada · nadie está procesando los envíos a SIIGO.
+                 Sin esto el silencio es invisible: el ERP encola y no sale
+                 nada, sin un solo aviso en pantalla. -->
+            <div v-if="cola.atascada"
+                 class="card p-5 border-2 border-rose-400 bg-rose-50/60 dark:bg-rose-950/30">
+                <div class="flex items-start gap-3">
+                    <AlertTriangle class="h-8 w-8 text-rose-600 shrink-0"/>
+                    <div class="flex-1 min-w-0">
+                        <!-- Dos causas, dos destinos: la llave la arregla
+                             Aracely acá mismo, el worker es soporte técnico.
+                             Antes siempre decía lo segundo. -->
+                        <h2 class="font-bold text-lg text-rose-800 dark:text-rose-200">
+                            {{ cola.motivo === 'credencial'
+                                ? 'La llave de SIIGO no está autenticando'
+                                : 'Nadie está enviando los documentos a SIIGO' }}
+                        </h2>
+                        <p class="text-sm text-surface-700 dark:text-surface-300 mt-1">
+                            Hay <strong>{{ cola.total_todas_las_colas }} documento(s) esperando</strong> y el más
+                            viejo lleva <strong>{{ cola.espera_minutos }} minutos</strong> en la fila. Mientras esto
+                            siga así, lo que factures y cobres queda guardado en el ERP pero <strong>no llega a
+                            SIIGO</strong>.
+                        </p>
+                        <p v-if="cola.motivo === 'credencial'" class="text-sm text-surface-700 dark:text-surface-300 mt-2">
+                            SIIGO está rechazando la credencial, así que los envíos
+                            <strong>quedan en espera</strong> —no se pierden— y arrancan solos apenas
+                            la llave vuelva a servir. Pegá la nueva arriba, en «Credenciales de SIIGO»,
+                            y probá la conexión.
+                        </p>
+                        <p v-else class="text-xs text-surface-600 dark:text-surface-400 mt-2">
+                            Es un proceso del servidor que debe estar siempre encendido
+                            (<code class="font-mono">queue:work</code>). Avisale a soporte técnico.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
             <!-- UBIC-7 · Wizard Setup Facturación Electrónica -->
             <div v-if="setup_fe.estado !== 'verde'"
                  :class="[
@@ -312,6 +373,36 @@ const claseEstadoLog = (l) => {
                     <strong>Facturación Electrónica lista.</strong>
                     {{ setup_fe.total_resoluciones }} resolución(es) · default marcada · {{ setup_fe.ubicaciones_venta_total }} ubicaciones mapeadas.
                 </span>
+            </div>
+
+            <!-- Cuentas PUC configuradas vs. plan de cuentas real -->
+            <div v-if="cuentasPucConProblema.length"
+                 class="card p-4 border-l-4 border-amber-400 bg-amber-50/50 space-y-2">
+                <div class="flex items-center gap-2 text-sm font-bold text-amber-900">
+                    <AlertTriangle class="h-4 w-4"/>
+                    Cuentas contables que SIIGO va a rechazar ({{ cuentasPucConProblema.length }})
+                </div>
+                <p class="text-xs text-amber-800">
+                    El ERP arma los asientos con estas cuentas. SIIGO sólo acepta cuentas auxiliares que
+                    existan en el plan, así que mientras estén así el asiento sale y vuelve rechazado.
+                    Qué código corresponde lo define el contador.
+                </p>
+                <div class="divide-y divide-amber-200 text-sm">
+                    <div v-for="c in cuentasPucConProblema" :key="c.clave"
+                         class="flex items-start justify-between gap-3 py-2">
+                        <div class="min-w-0">
+                            <div class="font-semibold">{{ c.etiqueta }}</div>
+                            <div class="text-xs text-surface-600">{{ c.detalle }}</div>
+                        </div>
+                        <span class="font-mono text-xs px-2 py-0.5 rounded whitespace-nowrap"
+                              :class="c.estado === 'rojo' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-900'">
+                            {{ c.codigo || 'sin valor' }}
+                        </span>
+                    </div>
+                </div>
+                <p class="text-[11px] text-surface-600">
+                    Se cambian en <strong>Configuración → Reglas</strong>, claves <code>siigo.cta_*</code>.
+                </p>
             </div>
 
             <!-- Header con semáforo global -->
@@ -651,7 +742,7 @@ const claseEstadoLog = (l) => {
                 <div v-if="!logs.length" class="text-center py-10 text-surface-500 text-sm">
                     Sin sincronizaciones aún. Cuando llegue una acción a la cola aparecerá acá.
                 </div>
-                <table v-else class="w-full text-sm">
+                <table v-tabla-movil v-else class="w-full text-sm">
                     <thead class="text-[10px] text-surface-500 uppercase border-b">
                         <tr>
                             <th class="text-left p-2">Hora</th>
@@ -680,5 +771,6 @@ const claseEstadoLog = (l) => {
             </div>
 
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

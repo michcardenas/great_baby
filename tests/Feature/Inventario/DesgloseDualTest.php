@@ -277,6 +277,15 @@ describe('ReservarStock polimórfico', function () {
 
     it('rechaza reservar por producto granular (guardarraíl)', function () {
         $p = Producto::create(['referencia' => 'REG-'.uniqid(), 'nombre' => 'x', 'desglose_stock' => true]);
+        // Hace falta un movimiento que sirva de origen: sin él
+        // `InventarioMovimiento::first()` devuelve null y `handleSujeto()`
+        // reventaba por el tipo del parámetro antes de llegar al guardarraíl,
+        // que es justo lo que esta prueba quiere verificar.
+        $v = ProductoVariante::create(['producto_id' => $p->id]);
+        InventarioMovimiento::create([
+            'variante_id' => $v->id, 'ubicacion_id' => $this->bodega->id,
+            'tipo' => 't', 'cantidad' => 1,
+        ]);
         $origen = InventarioMovimiento::first();
 
         expect(fn () => app(ReservarStock::class)->handleSujeto($p, $this->bodega->id, 5, $origen))

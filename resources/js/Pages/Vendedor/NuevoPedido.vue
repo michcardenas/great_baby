@@ -17,7 +17,15 @@ const notas = ref('');
 const procesando = ref(false);
 const err = ref(null);
 
-// Carrito como mapa variante_id → cantidad.
+/**
+ * Carrito indexado por una clave que sirve para los dos tipos de línea.
+ *
+ * Un producto granular se identifica por su variante; uno agregado —colores
+ * surtidos— por el producto, y ahí `variante_id` viene nulo. Usando el
+ * variante_id como clave, todos los agregados caían en la misma casilla
+ * «null» y se pisaban entre ellos.
+ */
+const claveDe = (v) => (v.variante_id ? `v:${v.variante_id}` : `p:${v.producto_id}`);
 const carrito = ref({});
 
 const resultados = computed(() => {
@@ -34,17 +42,20 @@ const resultados = computed(() => {
 });
 
 const agregar = (v) => {
-    if (carrito.value[v.variante_id]) {
-        carrito.value[v.variante_id].cantidad += 1;
+    const k = claveDe(v);
+    if (carrito.value[k]) {
+        carrito.value[k].cantidad += 1;
     } else {
-        carrito.value[v.variante_id] = {
-            variante_id: v.variante_id,
+        carrito.value[k] = {
+            clave: k,
+            variante_id: v.variante_id ?? null,
+            producto_id: v.producto_id ?? null,
             sku: v.sku, nombre: v.nombre, color: v.color, talla: v.talla,
             precio: v.precio, iva_pct: v.iva_pct, cantidad: 1,
         };
     }
 };
-const quitar = (vid) => { delete carrito.value[vid]; carrito.value = { ...carrito.value }; };
+const quitar = (k) => { delete carrito.value[k]; carrito.value = { ...carrito.value }; };
 
 const carritoLista = computed(() => Object.values(carrito.value));
 const subtotal = computed(() => carritoLista.value.reduce((a, it) => a + it.precio * it.cantidad, 0));
@@ -75,7 +86,11 @@ const confirmar = () => {
     }
     procesando.value = true;
     router.post(`/app/vendedor/pedido-nuevo/${props.cliente.id}`, {
-        items: carritoLista.value.map((it) => ({ variante_id: it.variante_id, cantidad: it.cantidad })),
+        items: carritoLista.value.map((it) => ({
+            variante_id: it.variante_id,
+            producto_id: it.producto_id,
+            cantidad: it.cantidad,
+        })),
         notas: notas.value || null,
     }, {
         onError: (e) => { err.value = Object.values(e)[0] || 'No se pudo crear.'; },
@@ -96,7 +111,7 @@ const confirmar = () => {
             <div class="card p-4 flex items-start justify-between gap-4 flex-wrap">
                 <div>
                     <div class="text-xs text-surface-500 uppercase font-semibold">Pedido para</div>
-                    <div class="text-xl font-bold">{{ cliente.nombre }}</div>
+                    <h1 class="text-xl font-bold">{{ cliente.nombre }}</h1>
                     <div class="text-sm text-surface-500">
                         NIT {{ cliente.documento }} · {{ cliente.ciudad }} · lista <b>{{ cliente.lista }}</b>
                     </div>
@@ -130,7 +145,7 @@ const confirmar = () => {
                     </div>
                     <div v-else-if="!resultados.length" class="text-sm text-surface-500">Sin resultados.</div>
                     <div v-else class="divide-y divide-surface-200 dark:divide-surface-800 max-h-[500px] overflow-y-auto">
-                        <div v-for="v in resultados" :key="v.variante_id"
+                        <div v-for="v in resultados" :key="claveDe(v)"
                              class="flex items-center justify-between gap-2 py-2">
                             <div class="flex-1 min-w-0">
                                 <div class="font-semibold truncate">{{ v.nombre }}</div>
@@ -156,7 +171,7 @@ const confirmar = () => {
                         Agregá productos desde el buscador.
                     </div>
                     <div v-else class="space-y-2 max-h-[380px] overflow-y-auto">
-                        <div v-for="it in carritoLista" :key="it.variante_id"
+                        <div v-for="it in carritoLista" :key="it.clave"
                              class="p-2 rounded border border-surface-200 dark:border-surface-700 flex items-center gap-2">
                             <div class="flex-1 min-w-0">
                                 <div class="text-sm font-semibold truncate">{{ it.nombre }}</div>
@@ -164,7 +179,7 @@ const confirmar = () => {
                             </div>
                             <input v-model.number="it.cantidad" type="number" min="1" max="9999"
                                    class="w-14 text-center border rounded px-1 py-0.5 text-sm">
-                            <button @click="quitar(it.variante_id)" class="text-red-600 hover:text-red-800">
+                            <button @click="quitar(it.clave)" class="text-red-600 hover:text-red-800">
                                 <Trash2 class="h-4 w-4"/>
                             </button>
                         </div>

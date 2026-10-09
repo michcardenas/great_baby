@@ -119,7 +119,7 @@ const eliminarCfg = (c) => router.delete(`/app/cartera/comisiones/config/${c.id}
                     <div class="text-xs mt-1">Usá «Calcular comisiones del mes» para generarlas.</div>
                 </div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-xs uppercase text-surface-500 bg-surface-50 dark:bg-surface-900 border-b border-surface-200 dark:border-surface-800">
                             <tr>
                                 <th class="p-3 text-left">Vendedor</th>
@@ -236,7 +236,7 @@ const eliminarCfg = (c) => router.delete(`/app/cartera/comisiones/config/${c.id}
                     <div v-if="! configs.length" class="p-8 text-center text-surface-500">
                         Ningún vendedor tiene comisión configurada todavía: sin esto el cálculo del mes no los incluye.
                     </div>
-                    <table v-else class="w-full text-sm">
+                    <table v-tabla-movil v-else class="w-full text-sm">
                         <thead class="text-xs uppercase text-surface-500 bg-surface-50 dark:bg-surface-900 border-b border-surface-200 dark:border-surface-800">
                             <tr>
                                 <th class="p-3 text-left">Vendedor</th>

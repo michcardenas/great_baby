@@ -100,7 +100,7 @@ const abrirWhatsApp = (tel, nombre, numero, saldo) => {
                     <div class="text-sm mt-2">No hay facturas con estos criterios.</div>
                 </div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full min-w-[900px] text-sm">
+                    <table v-tabla-movil data-vacia="No hay facturas que coincidan con la búsqueda." class="w-full min-w-[900px] text-sm">
                         <thead class="bg-surface-50 dark:bg-surface-900">
                             <tr class="text-surface-500 text-xs uppercase">
                                 <th class="text-left px-4 py-2">Número</th>

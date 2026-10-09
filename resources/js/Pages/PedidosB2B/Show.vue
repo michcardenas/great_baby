@@ -218,7 +218,7 @@ const rechazar = () => {
                 <div class="card p-4 md:col-span-2">
                     <div class="text-xs uppercase tracking-widest font-bold text-brand-600 mb-3">Ítems ({{ items.length }})</div>
                     <div class="overflow-x-auto">
-                        <table class="w-full text-sm">
+                        <table v-tabla-movil class="w-full text-sm">
                             <thead class="text-xs text-surface-500 uppercase">
                                 <tr>
                                     <th class="text-left p-2">SKU / Producto</th>
@@ -303,32 +303,41 @@ const rechazar = () => {
                 </div>
             </div>
 
-            <!-- LOG-J7 · Modal despachar · exige guía antes de registrar la salida -->
-            <div v-if="modalDespachar" @click.self="modalDespachar = false" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-                <div class="bg-white dark:bg-surface-900 rounded-lg shadow-xl w-full max-w-md p-6">
-                    <h3 class="text-lg font-bold mb-1 flex items-center gap-2">🚚 Despachar pedido</h3>
-                    <p class="text-sm text-surface-500 mb-4">
-                        Registrás la salida física al transportador. El inventario queda con huella.
-                    </p>
-                    <div class="space-y-3">
-                        <div>
-                            <label class="text-xs font-semibold">Transportadora <span class="text-surface-400">(opcional)</span></label>
-                            <input v-model="despachoForm.transportadora" type="text" placeholder="Servientrega, Interrapidísimo…" class="input w-full text-sm" maxlength="80"/>
-                        </div>
-                        <div>
-                            <label class="text-xs font-semibold">N° de guía <span class="text-red-600">*</span></label>
-                            <input v-model="despachoForm.guia_transportadora" type="text" placeholder="Número que da la transportadora" class="input w-full text-sm font-mono" maxlength="60" required/>
-                        </div>
-                        <div v-if="despachoError" class="text-xs text-red-600 bg-red-50 border border-red-200 p-2 rounded">
-                            {{ despachoError }}
-                        </div>
+        </div>
+
+        <!--
+            LOG-J7 · Modal despachar · exige guía antes de registrar la salida.
+
+            Estaba ANIDADO dentro del modal «Confirmar acción» de arriba, así que su
+            `v-if` sólo se evaluaba cuando ese otro modal estaba abierto: nunca. El
+            botón «Despachar» no hacía absolutamente nada y un pedido B2B no se podía
+            despachar desde esta pantalla, así que el descuento de stock al despachar
+            jamás llegó a correr en la práctica.
+        -->
+        <div v-if="modalDespachar" @click.self="modalDespachar = false" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div class="bg-white dark:bg-surface-900 rounded-lg shadow-xl w-full max-w-md p-6">
+                <h3 class="text-lg font-bold mb-1 flex items-center gap-2">🚚 Despachar pedido</h3>
+                <p class="text-sm text-surface-500 mb-4">
+                    Registrás la salida física al transportador. El inventario queda con huella.
+                </p>
+                <div class="space-y-3">
+                    <div>
+                        <label class="text-xs font-semibold">Transportadora <span class="text-surface-400">(opcional)</span></label>
+                        <input v-model="despachoForm.transportadora" type="text" placeholder="Servientrega, Interrapidísimo…" class="input w-full text-sm" maxlength="80"/>
                     </div>
-                    <div class="flex items-center justify-end gap-2 mt-5">
-                        <button @click="modalDespachar = false" :disabled="procesando" class="btn-ghost">Cancelar</button>
-                        <button @click="despachar" :disabled="procesando" class="btn-primary bg-indigo-600 hover:bg-indigo-700">
-                            {{ procesando ? 'Despachando…' : 'Confirmar despacho' }}
-                        </button>
+                    <div>
+                        <label class="text-xs font-semibold">N° de guía <span class="text-red-600">*</span></label>
+                        <input v-model="despachoForm.guia_transportadora" type="text" placeholder="Número que da la transportadora" class="input w-full text-sm font-mono" maxlength="60" required/>
                     </div>
+                    <div v-if="despachoError" class="text-xs text-red-600 bg-red-50 border border-red-200 p-2 rounded">
+                        {{ despachoError }}
+                    </div>
+                </div>
+                <div class="flex items-center justify-end gap-2 mt-5">
+                    <button @click="modalDespachar = false" :disabled="procesando" class="btn-ghost">Cancelar</button>
+                    <button @click="despachar" :disabled="procesando" class="btn-primary bg-indigo-600 hover:bg-indigo-700">
+                        {{ procesando ? 'Despachando…' : 'Confirmar despacho' }}
+                    </button>
                 </div>
             </div>
         </div>

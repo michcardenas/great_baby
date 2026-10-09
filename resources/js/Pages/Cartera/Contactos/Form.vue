@@ -5,7 +5,7 @@
  * Esta pantalla sólo existía en el panel Filament. Al dejar `/admin` para
  * Dropi, el ERP se quedaba sin forma de dar de alta un cliente o un proveedor.
  */
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { Head, Link, router } from '@inertiajs/vue3';
 import { ArrowLeft, Save, User, AlertTriangle } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
@@ -13,6 +13,7 @@ import AppLayout from '@/Layouts/AppLayout.vue';
 const props = defineProps({
     contacto: { type: Object, default: null },
     listas: { type: Array, default: () => [] },
+    ciudades_dane: { type: Array, default: () => [] },
 });
 
 const editando = computed(() => !! props.contacto?.id);
@@ -40,6 +41,51 @@ const guardando = ref(false);
 
 // Un B2B sin lista no se puede facturar ni aparece en el armador del vendedor.
 const faltaLista = computed(() => form.value.es_cliente_b2b && ! form.value.lista_precios_id);
+
+/**
+ * Listas de precios por origen, conservando el orden que manda el servidor
+ * (las de Great Baby primero). Un `reduce` sobre el arreglo mantiene ese orden;
+ * agrupar en el template lo perdería.
+ */
+const listasAgrupadas = computed(() => props.listas.reduce((acc, l) => {
+    const g = l.grupo || 'Listas de precios';
+    (acc[g] ??= []).push(l);
+    return acc;
+}, {}));
+
+/**
+ * Ciudad ↔ código DANE.
+ *
+ * SIIGO no factura con el nombre de la ciudad, factura con el código DANE. El
+ * ERP traduce con una tabla propia y, si no reconoce lo escrito, emite con la
+ * ciudad por defecto (Bogotá) y lo deja sólo en el log. Un dedazo —«Mosquera,
+ * Cund.»— mandaba la factura a otra ciudad sin que nadie lo viera.
+ *
+ * Acá se ofrece la lista que el ERP sí sabe traducir y se avisa cuando la
+ * escrita no está. No se bloquea: puede haber un cliente en un municipio que
+ * todavía no figura en la tabla.
+ */
+const normalizarCiudad = (v) => (v || '')
+    .toLowerCase()
+    .split(',')[0]
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z ]/g, '')
+    .trim().replace(/\s+/g, ' ');
+
+const ciudadDane = computed(() => {
+    const k = normalizarCiudad(form.value.ciudad);
+    if (! k) return null;
+    return props.ciudades_dane.find((c) => normalizarCiudad(c.ciudad) === k) || null;
+});
+
+const ciudadDesconocida = computed(() =>
+    form.value.ciudad.trim() !== '' && ! ciudadDane.value);
+
+// Al reconocer la ciudad se completa el departamento, que es dato derivado:
+// nadie debería teclear "Antioquia" después de escribir "Medellín".
+watch(ciudadDane, (c) => {
+    if (c && form.value.departamento.trim() === '') form.value.departamento = c.departamento;
+});
 
 const puedeGuardar = computed(() =>
     form.value.numero_documento.trim() !== ''
@@ -123,7 +169,22 @@ const guardar = () => {
                     </div>
                     <div>
                         <label class="text-xs font-semibold text-surface-600 dark:text-surface-300">Ciudad</label>
-                        <input v-model="form.ciudad" class="input w-full min-h-11" maxlength="80"/>
+                        <!-- Lista sugerida, no cerrada: se puede escribir una
+                             que no esté y el aviso de abajo explica qué pasa. -->
+                        <input v-model="form.ciudad" list="ciudades-dane" class="input w-full min-h-11" maxlength="80"
+                               :class="ciudadDesconocida ? 'border-amber-400' : ''"
+                               placeholder="Empezá a escribir y elegí de la lista"/>
+                        <datalist id="ciudades-dane">
+                            <option v-for="c in ciudades_dane" :key="c.city_code" :value="c.ciudad">{{ c.departamento }}</option>
+                        </datalist>
+                        <p v-if="ciudadDane" class="text-xs text-emerald-700 mt-1">
+                            ✓ Código DANE {{ ciudadDane.city_code }} · se factura a esta ciudad.
+                        </p>
+                        <p v-else-if="ciudadDesconocida" class="text-xs text-amber-700 mt-1">
+                            ⚠ Esta ciudad no está en la tabla DANE, así que la factura electrónica
+                            va a salir con la ciudad por defecto (Bogotá). Elegí una de la lista
+                            o avisá para agregarla.
+                        </p>
                     </div>
                     <div>
                         <label class="text-xs font-semibold text-surface-600 dark:text-surface-300">Departamento</label>
@@ -158,7 +219,17 @@ const guardar = () => {
                         <select v-model="form.lista_precios_id" class="input w-full min-h-11"
                                 :class="faltaLista && 'border-amber-500'">
                             <option value="">— Sin lista —</option>
-                            <option v-for="l in listas" :key="l.id" :value="l.id">{{ l.nombre }}</option>
+                            <!--
+                                Agrupadas: las de Great Baby arriba. El sandbox de
+                                SIIGO es compartido, así que el catálogo trae listas
+                                de otras empresas («14.999», «Asistente Gerente»)
+                                que acá no significan nada y antes salían primero.
+                            -->
+                            <optgroup v-for="(grupo, nombre) in listasAgrupadas" :key="nombre" :label="nombre">
+                                <option v-for="l in grupo" :key="l.id" :value="l.id" :disabled="l.productos === 0">
+                                    {{ l.nombre }} · {{ l.productos ? l.productos + ' productos' : 'sin precios cargados' }}
+                                </option>
+                            </optgroup>
                         </select>
                     </div>
                     <div>

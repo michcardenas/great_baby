@@ -310,7 +310,7 @@ const badgeDif = (clas, dif) => {
                     <div class="text-sm mt-2">Sin pagos con estos criterios.</div>
                 </div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full min-w-[900px] text-sm">
+                    <table v-tabla-movil data-vacia="No se registraron pagos en ese periodo." class="w-full min-w-[900px] text-sm">
                         <thead class="bg-surface-50 dark:bg-surface-900">
                             <tr class="text-surface-500 text-xs uppercase">
                                 <th class="text-left px-4 py-2">Fecha</th>
@@ -320,6 +320,7 @@ const badgeDif = (clas, dif) => {
                                 <th class="text-left">Referencia</th>
                                 <th class="text-right">Recibido</th>
                                 <th class="text-right">Aplicado</th>
+                                <th class="text-left">Comprobante SIIGO</th>
                                 <th class="text-center">Estado</th>
                             </tr>
                         </thead>
@@ -338,6 +339,17 @@ const badgeDif = (clas, dif) => {
                                 </td>
                                 <td class="text-right font-mono">{{ fmtCOP(p.monto_recibido) }}</td>
                                 <td class="text-right font-mono font-bold text-emerald-600">{{ fmtCOP(p.monto_aplicado) }}</td>
+                                <!-- Si el cobro llegó o no a la contabilidad.
+                                     Se guardaba el número y no se mostraba, así
+                                     que no había forma de saberlo sin entrar a
+                                     SIIGO a buscarlo. -->
+                                <td class="text-xs">
+                                    <span v-if="p.siigo_numero" class="font-mono text-emerald-700 dark:text-emerald-400">
+                                        {{ p.siigo_numero }}
+                                    </span>
+                                    <span v-else-if="p.en_siigo" class="font-mono text-emerald-700 dark:text-emerald-400">en SIIGO</span>
+                                    <span v-else class="text-amber-600">sin enviar</span>
+                                </td>
                                 <td class="text-center">
                                     <span :class="['inline-block px-2 py-0.5 rounded text-xs font-bold', badgeDif(p.clasificacion, p.diferencia).cls]">
                                         {{ badgeDif(p.clasificacion, p.diferencia).txt }}

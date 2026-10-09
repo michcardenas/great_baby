@@ -3,6 +3,7 @@ import { ref, reactive, computed } from 'vue';
 import { Head, router } from '@inertiajs/vue3';
 import { Calendar, Plus, ChevronLeft, ChevronRight } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
 
 const props = defineProps({
     anio: Number, mes: Number,
@@ -12,6 +13,10 @@ const props = defineProps({
     conteos: { type: Object, required: true },
     productos: { type: Array, required: true },
 });
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
 
 const MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 
@@ -44,8 +49,16 @@ const crear = () => {
     });
 };
 const eliminar = (id) => {
-    if (!confirm('Eliminar post?')) return;
-    router.delete(`/app/marketing/parrilla/${id}`, { preserveScroll: true });
+    modalConfirm.value = {
+        titulo: '¿Eliminar el post?',
+        mensaje: 'Se borra de la parrilla. No se puede deshacer.',
+        color: 'rose',
+        textoConfirmar: 'Eliminar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            router.delete(`/app/marketing/parrilla/${id}`, { preserveScroll: true });
+        },
+    };
 };
 
 const canalBadge = (c) => ({
@@ -149,5 +162,6 @@ const diaKey = (d) => `${props.anio}-${String(props.mes).padStart(2, '0')}-${Str
                 </div>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

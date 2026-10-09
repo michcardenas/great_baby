@@ -14,6 +14,11 @@ const props = defineProps({
     resultados: { type: Array, required: true },
     faltantes: { type: Array, required: true },
     settings: { type: Object, required: true },
+    // Lo que SIIGO respondio de verdad. El controlador ya lo mandaba y esta
+    // pantalla nunca lo pintaba: la lista exacta de lo que hay que arreglar
+    // quedaba invisible.
+    rechazadas_siigo: { type: Array, default: () => [] },
+    terceros_rechazados: { type: Array, default: () => [] },
 });
 
 const viaLabel = {
@@ -101,7 +106,7 @@ const viaCls = {
                 <div class="p-3 border-b bg-surface-50 dark:bg-surface-900/40 text-xs uppercase font-bold text-brand-600">
                     Cuentas PUC usadas por documentos pendientes
                 </div>
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-[10px] uppercase text-surface-500 border-b">
                         <tr>
                             <th class="text-left p-3">PUC</th>
@@ -149,7 +154,7 @@ const viaCls = {
                     <span>Settings SIIGO críticos</span>
                     <Link href="/app/empresa/reglas" class="btn-ghost text-xs"><Settings class="h-3 w-3"/> Editar</Link>
                 </div>
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <tbody class="divide-y divide-surface-200 dark:divide-surface-800">
                         <tr v-for="(info, clave) in settings" :key="clave" class="hover:bg-surface-50 dark:hover:bg-surface-900/40">
                             <td class="p-3 font-mono text-xs">{{ clave }}</td>
@@ -161,6 +166,75 @@ const viaCls = {
                                     <XCircle class="h-3 w-3"/> sin configurar
                                 </span>
                             </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Lo que SIIGO rechazo de verdad, no lo que el validador local supone. -->
+            <div v-if="rechazadas_siigo.length" class="card overflow-hidden">
+                <div class="px-5 py-3 border-b border-surface-200 dark:border-surface-800">
+                    <h2 class="font-bold text-rose-700 dark:text-rose-300">
+                        Cuentas que SIIGO rechazo ({{ rechazadas_siigo.length }})
+                    </h2>
+                    <p class="text-xs text-surface-500 mt-0.5">
+                        SIIGO no publica su plan de cuentas, asi que esta es la unica forma de saber que
+                        falta mapear. Se corrige en Plan de cuentas, en el campo &laquo;cuenta SIIGO&raquo;.
+                    </p>
+                </div>
+                <table v-tabla-movil class="w-full text-sm">
+                    <thead class="bg-surface-50 dark:bg-surface-900/60 text-xs uppercase text-surface-500">
+                        <tr>
+                            <th class="text-left px-5 py-2">Cuenta</th>
+                            <th class="text-left px-5 py-2">Que respondio SIIGO</th>
+                            <th class="text-center px-5 py-2">Veces</th>
+                            <th class="text-left px-5 py-2">Ultimo intento</th>
+                            <th class="text-center px-5 py-2">Mapeada</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="c in rechazadas_siigo" :key="c.cuenta"
+                            class="border-t border-surface-100 dark:border-surface-800">
+                            <td class="px-5 py-2 font-mono font-semibold">{{ c.cuenta }}</td>
+                            <td class="px-5 py-2 text-surface-600 dark:text-surface-400">{{ c.mensaje }}</td>
+                            <td class="px-5 py-2 text-center tabular-nums">{{ c.veces }}</td>
+                            <td class="px-5 py-2 text-xs text-surface-500">{{ c.ultimo }}</td>
+                            <td class="px-5 py-2 text-center">
+                                <CheckCircle v-if="c.mapeada" class="h-4 w-4 text-emerald-600 inline"/>
+                                <XCircle v-else class="h-4 w-4 text-red-500 inline"/>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Terceros, que es otro problema: no se mapean, se crean en SIIGO. -->
+            <div v-if="terceros_rechazados.length" class="card overflow-hidden">
+                <div class="px-5 py-3 border-b border-surface-200 dark:border-surface-800">
+                    <h2 class="font-bold text-amber-700 dark:text-amber-300">
+                        Terceros que SIIGO no conoce ({{ terceros_rechazados.length }})
+                    </h2>
+                    <p class="text-xs text-surface-500 mt-0.5">
+                        Esto NO se arregla en el plan de cuentas: hay que crear el tercero en SIIGO con esa
+                        misma identificacion, o el documento que lo use no va a entrar.
+                    </p>
+                </div>
+                <table v-tabla-movil class="w-full text-sm">
+                    <thead class="bg-surface-50 dark:bg-surface-900/60 text-xs uppercase text-surface-500">
+                        <tr>
+                            <th class="text-left px-5 py-2">Identificacion</th>
+                            <th class="text-left px-5 py-2">Nombre en el ERP</th>
+                            <th class="text-center px-5 py-2">Veces</th>
+                            <th class="text-left px-5 py-2">Ultimo intento</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="t in terceros_rechazados" :key="t.tercero"
+                            class="border-t border-surface-100 dark:border-surface-800">
+                            <td class="px-5 py-2 font-mono font-semibold">{{ t.tercero }}</td>
+                            <td class="px-5 py-2">{{ t.nombre || 'No esta en Contactos' }}</td>
+                            <td class="px-5 py-2 text-center tabular-nums">{{ t.veces }}</td>
+                            <td class="px-5 py-2 text-xs text-surface-500">{{ t.ultimo }}</td>
                         </tr>
                     </tbody>
                 </table>

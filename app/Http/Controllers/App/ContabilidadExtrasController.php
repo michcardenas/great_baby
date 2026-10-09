@@ -268,6 +268,158 @@ class ContabilidadExtrasController extends Controller implements HasMiddleware
         ]);
     }
 
+    /**
+     * Saldos acumulados por cuenta PUC, con el nombre que les da el catálogo.
+     *
+     * `$desde = null` significa «desde que existe el libro», que es lo que
+     * necesita un balance general: el activo de hoy es todo lo acumulado, no
+     * lo del mes. El estado de resultados sí pide un rango, porque la utilidad
+     * es de un periodo.
+     *
+     * @return \Illuminate\Support\Collection<int, array{codigo:string, nombre:string, debe:float, haber:float}>
+     */
+    private function saldosPorCuenta(?string $desde, string $hasta, bool $incluirAnulados): \Illuminate\Support\Collection
+    {
+        $filas = MovimientoContable::query()
+            ->when($incluirAnulados, fn ($q) => $q->withTrashed())
+            ->when($desde, fn ($q) => $q->where('fecha', '>=', $desde))
+            ->where('fecha', '<=', $hasta)
+            ->selectRaw('cuenta_puc, SUM(debe) AS debe, SUM(haber) AS haber')
+            ->groupBy('cuenta_puc')
+            ->get();
+
+        $nombres = \App\Modules\Contabilidad\Models\PlanCuenta::query()
+            ->whereIn('codigo', $filas->pluck('cuenta_puc'))
+            ->pluck('nombre', 'codigo');
+
+        return $filas->map(fn ($f) => [
+            'codigo' => (string) $f->cuenta_puc,
+            'nombre' => $nombres[$f->cuenta_puc] ?? 'Cuenta fuera del plan',
+            'debe' => (float) $f->debe,
+            'haber' => (float) $f->haber,
+        ]);
+    }
+
+    /**
+     * Agrupa las cuentas de una clase PUC y les da el signo que les toca.
+     *
+     * El saldo de una cuenta de activo o de gasto es `debe - haber`; el de una
+     * de pasivo, patrimonio o ingreso es `haber - debe`. Si se presentan todas
+     * con la misma resta, el pasivo sale en negativo y el informe no se puede
+     * leer.
+     */
+    private function agruparClase(\Illuminate\Support\Collection $saldos, string $clase, string $naturaleza): array
+    {
+        $cuentas = $saldos
+            ->filter(fn ($c) => str_starts_with($c['codigo'], $clase))
+            ->map(function ($c) use ($naturaleza) {
+                $c['saldo'] = $naturaleza === 'debito'
+                    ? round($c['debe'] - $c['haber'], 2)
+                    : round($c['haber'] - $c['debe'], 2);
+                return $c;
+            })
+            ->filter(fn ($c) => abs($c['saldo']) > 0.009)
+            ->sortBy('codigo')
+            ->values();
+
+        return [
+            'cuentas' => $cuentas->all(),
+            'total' => round($cuentas->sum('saldo'), 2),
+        ];
+    }
+
+    /**
+     * Balance general · Activo = Pasivo + Patrimonio.
+     *
+     * La utilidad del ejercicio NO está en una cuenta: sale de restar clases
+     * 5/6/7 a la clase 4 y se suma al patrimonio. Sin eso la ecuación nunca
+     * cuadra y el informe parece roto cuando en realidad está incompleto.
+     */
+    public function balanceGeneral(Request $r): Response
+    {
+        $data = $r->validate([
+            'hasta' => ['nullable', 'date'],
+            'incluir_anulados' => ['nullable', 'boolean'],
+        ]);
+        $hasta = $data['hasta'] ?? now('America/Bogota')->toDateString();
+        $incluirAnulados = (bool) ($data['incluir_anulados'] ?? false);
+
+        $saldos = $this->saldosPorCuenta(null, $hasta, $incluirAnulados);
+
+        $activo = $this->agruparClase($saldos, '1', 'debito');
+        $pasivo = $this->agruparClase($saldos, '2', 'credito');
+        $patrimonio = $this->agruparClase($saldos, '3', 'credito');
+
+        // Resultado acumulado: ingresos menos costos y gastos.
+        $ingresos = $this->agruparClase($saldos, '4', 'credito')['total'];
+        $gastos = $this->agruparClase($saldos, '5', 'debito')['total'];
+        $costoVentas = $this->agruparClase($saldos, '6', 'debito')['total'];
+        $costosProd = $this->agruparClase($saldos, '7', 'debito')['total'];
+        $resultado = round($ingresos - $gastos - $costoVentas - $costosProd, 2);
+
+        $totalPatrimonio = round($patrimonio['total'] + $resultado, 2);
+        $descuadre = round($activo['total'] - $pasivo['total'] - $totalPatrimonio, 2);
+
+        return Inertia::render('Contabilidad/BalanceGeneral', [
+            'filtros' => ['hasta' => $hasta, 'incluir_anulados' => $incluirAnulados],
+            'activo' => $activo,
+            'pasivo' => $pasivo,
+            'patrimonio' => $patrimonio,
+            'resultado_ejercicio' => $resultado,
+            'total_patrimonio' => $totalPatrimonio,
+            'total_pasivo_patrimonio' => round($pasivo['total'] + $totalPatrimonio, 2),
+            'descuadre' => $descuadre,
+            'cuadra' => abs($descuadre) <= 0.01,
+            'sin_datos' => $saldos->isEmpty(),
+        ]);
+    }
+
+    /**
+     * Estado de resultados · de ingresos a utilidad neta.
+     *
+     * Se separan costo de ventas (clase 6) de los gastos de operación (clase 5)
+     * porque la utilidad BRUTA —la que dice si el negocio compra y vende bien—
+     * sólo descuenta el costo. Mezclarlas esconde si el problema está en el
+     * margen del producto o en la estructura de la empresa.
+     */
+    public function estadoResultados(Request $r): Response
+    {
+        $data = $r->validate([
+            'desde' => ['nullable', 'date'],
+            'hasta' => ['nullable', 'date', 'after_or_equal:desde'],
+            'incluir_anulados' => ['nullable', 'boolean'],
+        ]);
+        $desde = $data['desde'] ?? now('America/Bogota')->startOfMonth()->toDateString();
+        $hasta = $data['hasta'] ?? now('America/Bogota')->toDateString();
+        $incluirAnulados = (bool) ($data['incluir_anulados'] ?? false);
+
+        $saldos = $this->saldosPorCuenta($desde, $hasta, $incluirAnulados);
+
+        $ingresos = $this->agruparClase($saldos, '4', 'credito');
+        $costoVentas = $this->agruparClase($saldos, '6', 'debito');
+        $gastos = $this->agruparClase($saldos, '5', 'debito');
+        $costosProd = $this->agruparClase($saldos, '7', 'debito');
+
+        $utilidadBruta = round($ingresos['total'] - $costoVentas['total'] - $costosProd['total'], 2);
+        $utilidadNeta = round($utilidadBruta - $gastos['total'], 2);
+        $margen = fn (float $v) => $ingresos['total'] > 0
+            ? round($v / $ingresos['total'] * 100, 2)
+            : null;
+
+        return Inertia::render('Contabilidad/EstadoResultados', [
+            'filtros' => ['desde' => $desde, 'hasta' => $hasta, 'incluir_anulados' => $incluirAnulados],
+            'ingresos' => $ingresos,
+            'costo_ventas' => $costoVentas,
+            'costos_produccion' => $costosProd,
+            'gastos' => $gastos,
+            'utilidad_bruta' => $utilidadBruta,
+            'utilidad_neta' => $utilidadNeta,
+            'margen_bruto' => $margen($utilidadBruta),
+            'margen_neto' => $margen($utilidadNeta),
+            'sin_datos' => $saldos->isEmpty(),
+        ]);
+    }
+
     public function reportes(): Response
     {
         // Cada reporte declara de qué tabla sale y con qué columna se sabe si
@@ -289,8 +441,8 @@ class ContabilidadExtrasController extends Controller implements HasMiddleware
                 ['nombre' => 'Pagos recibidos',         'desc' => 'Ingresos del periodo', 'href' => '/app/pagos', 'listo' => true, 'familia' => 'Auxiliares', 'siigo' => $cob('pagos_venta', 'siigo_id'), 'export' => 'Excel'],
                 ['nombre' => 'Compras del periodo',     'desc' => 'OCs recibidas', 'href' => '/app/compras/reporte', 'listo' => true, 'familia' => 'Auxiliares', 'siigo' => $cob('compras_recepciones', 'siigo_id'), 'export' => 'Excel'],
                 ['nombre' => 'Retenciones (RETEFTE + RETEIVA + RETEICA)', 'desc' => 'Base para declaración DIAN · cuentas 2365/2367/2368', 'href' => '/app/cartera/movimientos?cuentas=2365,2367,2368', 'listo' => true, 'familia' => 'Impuestos', 'siigo' => $deMovimientos, 'export' => 'Excel'],
-                ['nombre' => 'Balance general',         'desc' => 'Activo/Pasivo/Patrimonio (por familia PUC)', 'href' => null, 'listo' => false, 'familia' => 'Estados', 'siigo' => null, 'export' => null],
-                ['nombre' => 'Estado de resultados',    'desc' => 'Ingresos vs egresos con margen', 'href' => null, 'listo' => false, 'familia' => 'Estados', 'siigo' => null, 'export' => null],
+                ['nombre' => 'Balance general',         'desc' => 'Activo = Pasivo + Patrimonio, con la utilidad del ejercicio', 'href' => '/app/contabilidad/balance-general', 'listo' => true, 'familia' => 'Estados', 'siigo' => $deMovimientos, 'export' => null],
+                ['nombre' => 'Estado de resultados',    'desc' => 'De ingresos a utilidad neta, con margen bruto y neto', 'href' => '/app/contabilidad/estado-resultados', 'listo' => true, 'familia' => 'Estados', 'siigo' => $deMovimientos, 'export' => null],
             ],
             // Reportes que NO salen del ERP: los genera la contabilidad de SIIGO.
             'reportes_siigo' => [

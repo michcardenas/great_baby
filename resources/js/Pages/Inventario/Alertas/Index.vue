@@ -5,6 +5,7 @@ import { Bell, Plus, Pencil, Trash2, Search, Upload } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import ImportMasivoModal from '@/Components/ImportMasivoModal.vue';
 import { useEscClose } from '@/composables/useEscClose';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
 
 const importMasivoAbierto = ref(false);
 const importMasivoUbicacion = ref(null);
@@ -18,6 +19,10 @@ const props = defineProps({
     ubicaciones: { type: Array, default: () => [] },
     can_importar_alertas: { type: Boolean, default: false },
 });
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
 
 const modal = ref(false);
 useEscClose(modal);
@@ -91,8 +96,16 @@ const guardar = () => {
 };
 
 const eliminar = (a) => {
-    if (!confirm(`Eliminar alerta para ${a.producto} (${a.sku})?`)) return;
-    router.delete(`/app/inventario/alertas/${a.id}`, { preserveScroll: true });
+    modalConfirm.value = {
+        titulo: `¿Eliminar la alerta de ${a.producto}?`,
+        mensaje: `SKU ${a.sku}. Deja de avisarte cuando el stock baje del mínimo.`,
+        color: 'rose',
+        textoConfirmar: 'Eliminar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            router.delete(`/app/inventario/alertas/${a.id}`, { preserveScroll: true });
+        },
+    };
 };
 </script>
 
@@ -128,7 +141,7 @@ const eliminar = (a) => {
             </div>
 
             <div class="card overflow-x-auto">
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-xs text-surface-500 uppercase border-b">
                         <tr>
                             <th class="text-left p-3">SKU</th>
@@ -229,5 +242,6 @@ const eliminar = (a) => {
                 </div>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

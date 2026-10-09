@@ -103,8 +103,25 @@ class ValidacionPucSiigoController extends Controller implements HasMiddleware
             ])
             ->values()->all();
 
+        // Terceros que SIIGO no conoce. Antes caían en la lista de cuentas
+        // —el NIT también es una cifra larga— y la contadora terminaba
+        // buscando «901738354» en el plan de cuentas, donde nunca iba a estar.
+        // Lo que les falta es existir como tercero en SIIGO, que es otra cosa.
+        $tercerosRechazados = \App\Modules\Siigo\Models\SiigoSyncLog::query()
+            ->where('recurso', 'terceros_rechazados')
+            ->latest('id')->limit(100)->get()
+            ->groupBy(fn ($l) => data_get($l->detalle, 'tercero'))
+            ->map(fn ($g, $tercero) => [
+                'tercero' => (string) $tercero,
+                'veces' => $g->count(),
+                'ultimo' => optional($g->first()->created_at)->format('Y-m-d H:i'),
+                'nombre' => \App\Models\Contacto::where('numero_documento', (string) $tercero)->value('nombre_completo'),
+            ])
+            ->values()->all();
+
         return Inertia::render('Contabilidad/ValidacionPucSiigo', [
             'rechazadas_siigo' => $rechazadasSiigo,
+            'terceros_rechazados' => $tercerosRechazados,
             'resumen' => [
                 'pucs_en_uso' => count($pucsEnUso),
                 'pucs_ok' => count($diagnostico['resultados']) - count($diagnostico['faltantes']),

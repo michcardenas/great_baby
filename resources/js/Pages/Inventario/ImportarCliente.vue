@@ -1,11 +1,13 @@
 <script setup>
 import { ref, computed, watch, nextTick } from 'vue';
 import { Head, useForm } from '@inertiajs/vue3';
-import { Upload, FileSpreadsheet, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-vue-next';
+import { Upload, FileSpreadsheet, CheckCircle2, AlertTriangle, Loader2, MapPin } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import { avisar } from '@/composables/useAviso';
 
 const props = defineProps({
     bodegas: { type: Array, required: true },
+    grupos: { type: Array, default: () => [] },
 });
 
 const form = useForm({
@@ -13,6 +15,21 @@ const form = useForm({
     bodega_id: props.bodegas[0]?.id ?? null,
     hoja: 'Hoja1',
     dry_run: false,
+    // Posición por defecto · se aplica a las filas que no traigan la suya en el
+    // Excel. Vacío = la mercancía entra a la bodega sin posición, como antes.
+    pasillo: '',
+    estante: '',
+    nivel: '',
+});
+
+// Solo una bodega puede tener posiciones adentro. Si se eligió una posición
+// concreta como destino, pedir pasillo/estante/nivel sería mentir: el modelo no
+// anida un nivel dentro de otro nivel y el importador lo ignoraría.
+const destino = computed(() => props.bodegas.find((b) => b.id === form.bodega_id) || null);
+const destinoEsBodega = computed(() => destino.value?.es_bodega !== false);
+
+watch(destinoEsBodega, (esBodega) => {
+    if (! esBodega) { form.pasillo = ''; form.estante = ''; form.nivel = ''; }
 });
 
 const dragActive = ref(false);
@@ -27,7 +44,7 @@ const mensajeOverlay = ref('');
 const seleccionar = (file) => {
     if (!file) return;
     if (!/\.(xlsx|xls)$/i.test(file.name)) {
-        alert('El archivo debe ser .xlsx o .xls');
+        avisar('El archivo debe ser .xlsx o .xls', 'warning');
         return;
     }
     form.archivo = file;
@@ -42,7 +59,7 @@ const onDrop = (e) => {
 
 const enviar = (dryRun = false) => {
     if (!form.archivo || !form.bodega_id) {
-        alert('Elige un archivo y una bodega antes de enviar.');
+        avisar('Elegí un archivo y una bodega antes de enviar.', 'warning');
         return;
     }
     form.dry_run = dryRun;
@@ -141,6 +158,34 @@ const enviar = (dryRun = false) => {
                                 <div class="text-xs text-surface-500 mt-1">Ignoradas</div>
                             </div>
                         </div>
+                        <div v-if="$page.props.flash.importResumen.ubicaciones_creadas > 0"
+                             class="mt-3 p-3 rounded bg-brand-50 border border-brand-200 text-surface-800 text-sm">
+                            <div class="font-semibold flex items-center gap-1.5">
+                                <MapPin class="h-4 w-4 text-brand-600"/>
+                                {{ $page.props.flash.importResumen.ubicaciones_creadas }}
+                                {{ $page.props.flash.importResumen.dry_run ? 'posiciones se crearían' : 'posiciones creadas' }}
+                                dentro de la bodega
+                            </div>
+                            <ul class="mt-1 text-xs font-mono text-surface-600 list-disc list-inside">
+                                <li v-for="(u, i) in ($page.props.flash.importResumen.ubicaciones_detalle || []).slice(0, 12)" :key="i">{{ u }}</li>
+                            </ul>
+                            <div v-if="($page.props.flash.importResumen.ubicaciones_detalle || []).length > 12"
+                                 class="text-xs text-surface-500 mt-1">
+                                … y {{ $page.props.flash.importResumen.ubicaciones_detalle.length - 12 }} más ·
+                                la lista completa está en <a href="/app/inventario/ubicaciones" class="underline">Ubicaciones</a>.
+                            </div>
+                        </div>
+                        <div v-if="($page.props.flash.importResumen.columnas_posicion || []).length"
+                             class="mt-3 p-3 rounded bg-sky-50 border border-sky-200 text-sky-900 text-xs">
+                            Columnas de posición detectadas en el Excel:
+                            <strong>{{ ($page.props.flash.importResumen.columnas_posicion || []).join(', ') }}</strong>
+                            · esas mandan sobre la posición del formulario.
+                        </div>
+                        <div v-if="$page.props.flash.importResumen.pos_ignoradas > 0" class="mt-3 p-3 rounded bg-amber-100 text-amber-900 text-sm">
+                            <strong>⚠️ {{ $page.props.flash.importResumen.pos_ignoradas }}</strong> filas traían
+                            pasillo/estante/nivel pero el destino elegido ya era una posición, no una bodega:
+                            esa mercancía entró en el destino tal cual. Para repartirla, volvé a cargar eligiendo la bodega.
+                        </div>
                         <div v-if="$page.props.flash.importResumen.omitidos_granular > 0" class="mt-3 p-3 rounded bg-amber-100 text-amber-900 text-sm">
                             <strong>⚠️ {{ $page.props.flash.importResumen.omitidos_granular }}</strong> productos saltados porque ya existen como granular. Renombra su referencia si son distintos.
                         </div>
@@ -175,15 +220,55 @@ const enviar = (dryRun = false) => {
                 <div>
                     <label class="text-sm font-semibold block mb-2">1. Bodega donde cargar el inventario</label>
                     <select v-model="form.bodega_id" class="input w-full">
-                        <option v-for="b in bodegas" :key="b.id" :value="b.id">{{ b.label }}</option>
+                        <optgroup v-for="g in grupos" :key="g" :label="g">
+                            <option v-for="b in bodegas.filter((x) => x.grupo === g)" :key="b.id" :value="b.id">
+                                {{ b.label }}
+                            </option>
+                        </optgroup>
                     </select>
                     <p class="text-xs text-surface-500 mt-1">
                         Todos los productos entrarán con su stock inicial aquí.
                     </p>
                 </div>
 
+                <!-- Dónde queda parada la mercancía dentro de la bodega. Sin
+                     esto la carga dejaba las 134 referencias como un bulto
+                     único y después el conteo había que hacerlo caminando. -->
                 <div>
-                    <label class="text-sm font-semibold block mb-2">2. Nombre de la hoja del Excel</label>
+                    <label class="text-sm font-semibold block mb-2 flex items-center gap-1.5">
+                        <MapPin class="h-4 w-4 text-brand-600"/>
+                        2. ¿En qué posición de la bodega? <span class="text-xs font-normal text-surface-400">(opcional)</span>
+                    </label>
+                    <div v-if="destinoEsBodega" class="grid grid-cols-3 gap-3">
+                        <div>
+                            <input v-model="form.pasillo" type="text" class="input w-full min-h-11" placeholder="4" maxlength="30"/>
+                            <div class="text-xs text-surface-500 mt-1">Pasillo</div>
+                        </div>
+                        <div>
+                            <input v-model="form.estante" type="text" class="input w-full min-h-11" placeholder="6" maxlength="30"/>
+                            <div class="text-xs text-surface-500 mt-1">Estante</div>
+                        </div>
+                        <div>
+                            <input v-model="form.nivel" type="text" class="input w-full min-h-11" placeholder="3" maxlength="30"/>
+                            <div class="text-xs text-surface-500 mt-1">Nivel</div>
+                        </div>
+                    </div>
+                    <p v-if="destinoEsBodega" class="text-xs text-surface-500 mt-2">
+                        Esto es el respaldo: <strong>si el Excel trae columnas llamadas «Pasillo», «Estante» o
+                        «Nivel», manda el Excel</strong> y cada producto queda en su propio sitio. Lo que escribas acá
+                        se usa para las filas que no las traigan. La posición se crea sola si no existía
+                        (ej. pañales de recién nacido en pasillo 4, estante 6, nivel 3 → se crea
+                        <code>Pasillo 4 · Estante 6 · Nivel 3</code> dentro de la bodega).
+                        Si lo dejás vacío, todo entra a la bodega sin posición.
+                    </p>
+                    <p v-else class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2 mt-1">
+                        Elegiste una posición concreta, no una bodega: la mercancía entra ahí tal cual.
+                        Para repartirla por pasillo/estante/nivel, elegí arriba la bodega que los contiene.
+                    </p>
+                </div>
+
+                <div>
+                    <label class="text-sm font-semibold block mb-2">3. Nombre de la hoja del Excel</label>
                     <input v-model="form.hoja" type="text" class="input w-full" placeholder="Hoja1"/>
                     <p class="text-xs text-surface-500 mt-1">
                         Por defecto <code>Hoja1</code>. Si tu Excel tiene otro nombre (ej. <code>REPORTE</code>), cámbialo aquí.
@@ -191,7 +276,7 @@ const enviar = (dryRun = false) => {
                 </div>
 
                 <div>
-                    <label class="text-sm font-semibold block mb-2">3. Archivo Excel</label>
+                    <label class="text-sm font-semibold block mb-2">4. Archivo Excel</label>
                     <div
                         @dragenter.prevent="dragActive = true"
                         @dragover.prevent="dragActive = true"
@@ -249,6 +334,11 @@ const enviar = (dryRun = false) => {
                     <li>Lee filas de <strong>categoría</strong> (solo columna A con nombre) y <strong>producto</strong> (referencia + descripción + existencia + variación).</li>
                     <li>Crea/actualiza cada producto como <strong>agregado</strong> (colores surtidos).</li>
                     <li>Inserta el stock inicial en el kardex de la bodega elegida (idempotente: puedes re-correr sin duplicar).</li>
+                    <li>
+                        Si el Excel trae columnas <strong>Pasillo</strong>, <strong>Estante</strong> o
+                        <strong>Nivel</strong> (en cualquier posición, las reconoce por el nombre del encabezado),
+                        cada producto entra en esa posición dentro de la bodega y la posición se crea sola si no existía.
+                    </li>
                     <li>Salta productos que ya existen como <strong>granulares</strong> (para no romper el toggle).</li>
                     <li>Ignora filas de totales, fechas y fila de header.</li>
                 </ul>

@@ -38,8 +38,16 @@ class PrepararTomaFisica
     {
         return DB::transaction(function () use ($toma) {
             if ($toma->estado !== EstadoTomaFisica::Borrador) {
+                // El mensaje no puede reventar al construirse: si `estado`
+                // viene nulo (modelo recién creado que todavía no leyó el
+                // default de la base), `->value` lanzaba un ErrorException y
+                // tapaba el motivo real con un error de PHP.
+                $actual = $toma->estado instanceof EstadoTomaFisica
+                    ? $toma->estado->value
+                    : (string) ($toma->estado ?? 'sin estado');
+
                 throw new \InvalidArgumentException(
-                    "PrepararTomaFisica solo procesa Borradores. Estado actual: {$toma->estado->value}."
+                    "PrepararTomaFisica solo procesa Borradores. Estado actual: {$actual}."
                 );
             }
 

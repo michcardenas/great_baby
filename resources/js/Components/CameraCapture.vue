@@ -31,9 +31,28 @@ const abrir = async () => {
             videoEl.value.onloadedmetadata = () => { ready.value = true; };
         }
     } catch (e) {
-        error.value = 'Motivo: ' + (e.message || e.name) + '. Podés subir la foto desde archivo (o desde la cámara de tu celu).';
+        error.value = motivoCamara(e) + ' Podés subir la foto desde archivo (o desde la cámara de tu celu).';
     }
 };
+
+/**
+ * Traduce el error de getUserMedia a algo accionable.
+ *
+ * Antes se mostraba el `message` crudo del navegador, que cambia según cuál
+ * sea y a veces viene vacío: en Chrome sale «Permission denied» y en otros
+ * directamente nada. Lo que sirve es el `name`, que sí está estandarizado, y
+ * decirle a la persona qué puede hacer.
+ */
+function motivoCamara(e) {
+    const POR_NOMBRE = {
+        NotAllowedError: 'Bloqueaste el permiso de cámara para esta página. Habilitalo desde el candado de la barra de direcciones.',
+        NotFoundError: 'Este equipo no tiene cámara conectada.',
+        NotReadableError: 'La cámara está ocupada por otra aplicación. Cerrala y volvé a intentar.',
+        OverconstrainedError: 'La cámara no soporta la resolución pedida.',
+        SecurityError: 'El navegador bloquea la cámara en sitios sin HTTPS.',
+    };
+    return POR_NOMBRE[e?.name] || 'No pude abrir la cámara.';
+}
 
 const cerrar = () => {
     if (stream.value) {

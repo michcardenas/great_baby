@@ -1,17 +1,79 @@
 <script setup>
-import { computed } from 'vue';
-import { Head, Link } from '@inertiajs/vue3';
+import { computed, ref } from 'vue';
+import { Head, Link, router } from '@inertiajs/vue3';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import { Camera, Warehouse, ArrowRightLeft, ArrowLeftRight } from 'lucide-vue-next';
 
+/**
+ * El servidor ya manda los préstamos separados en abiertos y cerrados.
+ *
+ * Acá se declaraba `prestamos` como arreglo y se volvía a filtrar, pero
+ * `MarketingPrestamosController` envía un objeto `{abiertos, cerrados,
+ * total_abiertos}`. El `.filter()` sobre un objeto lanzaba
+ * «prestamos.filter is not a function» en pleno render y **toda la pantalla
+ * quedaba en blanco**: sin menú, sin contenido y sin forma de salir. Era el
+ * único rol que no podía usar el sistema.
+ *
+ * Se consume lo que el servidor manda, que además ya recorta el histórico a
+ * los últimos 20.
+ */
 const props = defineProps({
     mis_bodegas: { type: Array, required: true },
-    prestamos: { type: Array, required: true },
+    prestamos: { type: Object, required: true },
     bodegas_comerciales: { type: Array, required: true },
+    // Saldo real del kardex en los almacenes MKT: lo único que dice de verdad
+    // qué sigue prestado, porque la devolución es un traslado aparte y el
+    // modelo no guarda a qué préstamo corresponde.
+    en_mi_almacen: { type: Array, default: () => [] },
+    es_super: { type: Boolean, default: false },
 });
 
-const abiertos = computed(() => props.prestamos.filter(p => p.estado !== 'recibido' && p.estado !== 'anulado'));
-const cerrados = computed(() => props.prestamos.filter(p => p.estado === 'recibido'));
+const abiertos = computed(() => props.prestamos?.abiertos ?? []);
+const cerrados = computed(() => props.prestamos?.cerrados ?? []);
+
+/**
+ * Acciones rápidas que de verdad hacen algo.
+ *
+ * Los dos botones apuntaban a `/app/inventario/traslados` —la misma URL los
+ * dos— y esa pantalla le responde **403** al rol Marketing. Debajo había un
+ * texto pidiéndole a la persona que fuera allá y eligiera a mano origen,
+ * destino y motivo. La única acción del panel era un callejón sin salida.
+ *
+ * Ahora la solicitud se crea desde acá, contra el endpoint del propio módulo.
+ * Cuando hay una sola bodega de venta y un solo almacén MKT —el caso de hoy—
+ * no queda nada que elegir: se escribe qué se necesita y listo.
+ */
+const modal = ref(null);          // 'pedir' | 'devolver' | null
+const comercialId = ref(props.bodegas_comerciales[0]?.id ?? '');
+const mktId = ref(props.mis_bodegas[0]?.id ?? '');
+const observaciones = ref('');
+const enviando = ref(false);
+const errores = ref({});
+
+const puedePedir = computed(() => props.bodegas_comerciales.length > 0 && props.mis_bodegas.length > 0);
+
+const abrir = (tipo) => {
+    modal.value = tipo;
+    observaciones.value = '';
+    errores.value = {};
+};
+
+const enviar = () => {
+    if (enviando.value) return;
+    enviando.value = true;
+    errores.value = {};
+    const pedir = modal.value === 'pedir';
+    router.post('/app/marketing/prestamo', {
+        origen_id: pedir ? comercialId.value : mktId.value,
+        destino_id: pedir ? mktId.value : comercialId.value,
+        observaciones: observaciones.value || null,
+    }, {
+        preserveScroll: true,
+        onSuccess: () => { modal.value = null; },
+        onError: (e) => { errores.value = e; },
+        onFinish: () => (enviando.value = false),
+    });
+};
 
 const estadoChip = (e) => ({
     borrador: 'bg-surface-100 text-surface-700',
@@ -58,30 +120,35 @@ const estadoChip = (e) => ({
 
                 <div class="card p-4 lg:col-span-2 space-y-3">
                     <div class="text-sm font-semibold mb-1">Acciones rápidas</div>
-                    <Link href="/app/inventario/traslados" class="btn-primary w-full justify-start text-sm">
+                    <button type="button" @click="abrir('pedir')" :disabled="!puedePedir"
+                            class="btn-primary w-full justify-start text-sm disabled:opacity-50">
                         <ArrowRightLeft class="h-4 w-4"/>
-                        📸 Pedir prestado a bodega · crear traslado
-                    </Link>
-                    <Link href="/app/inventario/traslados" class="btn-ghost border border-brand-300 w-full justify-start text-sm">
+                        📸 Pedir prestado a bodega
+                    </button>
+                    <button type="button" @click="abrir('devolver')" :disabled="!puedePedir"
+                            class="btn-ghost border border-brand-300 w-full justify-start text-sm disabled:opacity-50">
                         <ArrowLeftRight class="h-4 w-4"/>
-                        ↩ Devolver a bodega · crear traslado de regreso
-                    </Link>
-                    <div class="text-[11px] text-surface-500 pt-1 italic">
-                        Los traslados se piden desde el módulo de Inventario (botón "Nuevo").
-                        Marcá origen=bodega comercial, destino=tu almacén MKT y motivo=prestamo.
+                        ↩ Devolver a bodega
+                    </button>
+                    <div v-if="!puedePedir" class="text-[11px] text-amber-700 pt-1">
+                        Falta configurar tu almacén (código MKT-) o una bodega de venta.
+                        Pedíselo a Aracely y estos botones se activan.
+                    </div>
+                    <div v-else class="text-[11px] text-surface-500 pt-1 italic">
+                        La solicitud queda en borrador; bodega la surte y la despacha.
                     </div>
                 </div>
             </div>
 
-            <!-- Prestado AHORA (no devuelto) -->
+            <!-- Solicitudes en curso -->
             <div class="card p-4">
                 <div class="text-sm font-semibold mb-3 flex items-center gap-2">
-                    🔴 Prestado ahora · {{ abiertos.length }}
+                    🔴 Solicitudes en curso · {{ abiertos.length }}
                 </div>
                 <div v-if="!abiertos.length" class="text-sm text-surface-400 italic text-center py-6">
-                    No hay préstamos abiertos.
+                    No tenés solicitudes pendientes.
                 </div>
-                <table v-else class="w-full text-sm">
+                <table v-tabla-movil v-else class="w-full text-sm">
                     <thead class="text-xs uppercase text-surface-500 border-b border-surface-200 dark:border-surface-800">
                         <tr>
                             <th class="p-2 text-left">N°</th>
@@ -106,24 +173,102 @@ const estadoChip = (e) => ({
                             <td class="p-2 text-xs">{{ p.solicitado_por || '—' }}</td>
                             <td class="p-2 text-xs">{{ p.fecha }}</td>
                             <td class="p-2 text-center">
-                                <span class="px-2 py-0.5 rounded text-xs font-semibold" :class="estadoChip(p.estado)">{{ p.estado }}</span>
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold" :class="estadoChip(p.estado)">{{ p.estado_label || p.estado }}</span>
                             </td>
                         </tr>
                     </tbody>
                 </table>
             </div>
 
-            <!-- Devueltos (histórico) -->
+            <!-- Lo que sigue en el almacén, según el kardex -->
+            <div class="card p-4">
+                <div class="text-sm font-semibold mb-3">📦 En mi almacén ahora · {{ en_mi_almacen.length }} referencias</div>
+                <div v-if="!en_mi_almacen.length" class="text-sm text-surface-400 italic text-center py-6">
+                    No tenés nada de bodega en tu poder.
+                </div>
+                <div v-else class="divide-y divide-surface-200 dark:divide-surface-800 text-sm">
+                    <div v-for="p in en_mi_almacen" :key="p.sku" class="flex items-center justify-between py-2">
+                        <div class="min-w-0">
+                            <div class="truncate">{{ p.nombre }}</div>
+                            <div class="text-xs text-surface-500 font-mono">
+                                {{ p.sku }}<span v-if="p.detalle"> · {{ p.detalle }}</span>
+                            </div>
+                        </div>
+                        <span class="font-bold tabular-nums">{{ p.cantidad }}</span>
+                    </div>
+                </div>
+                <p class="text-[11px] text-surface-500 italic pt-2">
+                    Sale del kardex: es lo que entró a tu almacén menos lo que ya devolviste.
+                </p>
+            </div>
+
+            <!-- Devoluciones y anulados -->
             <div v-if="cerrados.length" class="card p-4">
-                <div class="text-sm font-semibold mb-3">✓ Devueltos · histórico ({{ cerrados.length }})</div>
+                <div class="text-sm font-semibold mb-3">↩ Devoluciones y cancelados ({{ cerrados.length }})</div>
                 <div class="divide-y divide-surface-200 dark:divide-surface-800 text-sm">
                     <div v-for="p in cerrados" :key="p.id" class="flex items-center justify-between py-2">
                         <div>
                             <div class="font-mono text-xs">{{ p.numero }} · {{ p.origen }} → {{ p.destino }}</div>
-                            <div class="text-xs text-surface-500">{{ p.items_count }} items · devuelto {{ p.ejecutado_at || p.fecha }}</div>
+                            <div class="text-xs text-surface-500">
+                                {{ p.items_count }} ítems · {{ p.ejecutado_at || p.fecha }}
+                            </div>
                         </div>
-                        <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-100 text-emerald-800">OK</span>
+                        <!-- El chip decía "OK" en verde para todo. Un préstamo
+                             anulado se veía igual que una devolución completa. -->
+                        <span class="px-2 py-0.5 rounded text-xs font-semibold" :class="estadoChip(p.estado)">
+                            {{ p.estado_label || p.estado }}
+                        </span>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Solicitud de préstamo / devolución -->
+        <div v-if="modal" @click.self="modal = null"
+             class="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+            <div class="card p-6 max-w-md w-full space-y-3">
+                <h3 class="text-lg font-bold">
+                    {{ modal === 'pedir' ? '📸 Pedir prestado a bodega' : '↩ Devolver a bodega' }}
+                </h3>
+
+                <!-- Con una sola opción no se pregunta: se muestra. -->
+                <div v-if="bodegas_comerciales.length > 1">
+                    <label class="text-xs font-semibold">Bodega de venta</label>
+                    <select v-model.number="comercialId" class="input w-full">
+                        <option v-for="b in bodegas_comerciales" :key="b.id" :value="b.id">{{ b.codigo }} · {{ b.nombre }}</option>
+                    </select>
+                </div>
+                <div v-if="mis_bodegas.length > 1">
+                    <label class="text-xs font-semibold">Tu almacén</label>
+                    <select v-model.number="mktId" class="input w-full">
+                        <option v-for="b in mis_bodegas" :key="b.id" :value="b.id">{{ b.codigo }} · {{ b.nombre }}</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label class="text-xs font-semibold">
+                        {{ modal === 'pedir' ? '¿Qué necesitás y para cuándo?' : '¿Qué estás devolviendo?' }}
+                    </label>
+                    <textarea v-model="observaciones" rows="3" class="input w-full"
+                              :placeholder="modal === 'pedir'
+                                  ? 'Ej: los bodies de verano talla 0-3 para las fotos del viernes'
+                                  : 'Ej: todo lo del préstamo TRA-2026-000012, sin averías'"></textarea>
+                    <p v-if="errores.observaciones" class="text-xs text-red-600 mt-1">{{ errores.observaciones }}</p>
+                </div>
+
+                <p v-if="errores.origen_id || errores.destino_id" class="text-xs text-red-600">
+                    {{ errores.origen_id || errores.destino_id }}
+                </p>
+
+                <p class="text-xs text-surface-500">
+                    Queda como solicitud en borrador. Bodega decide qué referencias entran y la despacha.
+                </p>
+
+                <div class="flex justify-end gap-2 pt-1">
+                    <button @click="modal = null" class="btn-ghost min-h-11">Cancelar</button>
+                    <button @click="enviar" :disabled="enviando" class="btn-primary min-h-11">
+                        {{ enviando ? 'Enviando…' : 'Enviar solicitud' }}
+                    </button>
                 </div>
             </div>
         </div>

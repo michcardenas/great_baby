@@ -118,7 +118,7 @@ const fmtMoneda = (monto, mon) => mon === 'COP'
                     <span v-else class="text-xs text-surface-500">Ya liquidada — no admite gastos.</span>
                 </div>
                 <div class="overflow-x-auto">
-                    <table v-if="importacion.gastos.length" class="w-full text-sm">
+                    <table v-tabla-movil v-if="importacion.gastos.length" class="w-full text-sm">
                         <thead class="text-[10px] text-surface-500 uppercase border-b border-surface-200 dark:border-surface-800">
                             <tr>
                                 <th class="text-left p-2">Fecha</th>
@@ -147,7 +147,7 @@ const fmtMoneda = (monto, mon) => mon === 'COP'
             <div v-if="importacion.lineas.length" class="card p-4">
                 <div class="text-xs uppercase font-bold text-brand-600 mb-2">Líneas ({{ importacion.lineas.length }})</div>
                 <div class="overflow-x-auto">
-                    <table class="w-full text-sm min-w-[600px]">
+                    <table v-tabla-movil class="w-full text-sm min-w-[600px]">
                         <thead class="text-[10px] text-surface-500 uppercase border-b border-surface-200 dark:border-surface-800">
                             <tr>
                                 <th class="text-right p-2">Cant</th>

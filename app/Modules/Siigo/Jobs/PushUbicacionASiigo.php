@@ -11,6 +11,8 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
+use DateTimeInterface;
+use App\Modules\Siigo\Jobs\Middleware\EsperarCredencialSiigo;
 use Illuminate\Queue\Middleware\RateLimited;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Queue\SerializesModels;
@@ -19,6 +21,28 @@ use RuntimeException;
 
 /**
  * UBIC-9 · Push de ubicación local a SIIGO como warehouse.
+ *
+ * ⚠ DESCONECTADO el 2026-10-09 · nadie lo encola, y no conviene volver a
+ * enchufarlo sin leer esto.
+ *
+ * `/v1/warehouses` es un catálogo de **sólo lectura**. El GET responde 200
+ * —de ahí salieron las 43 bodegas cacheadas en `siigo_catalogos`— y el POST
+ * responde `404 Resource not found`. No era la credencial: un 401 se ve
+ * distinto, y la evidencia es que ninguna ubicación propia del ERP llegó
+ * nunca a tener `siigo_id`; las únicas que lo tienen son las `SIIGO-xx` que
+ * creó `SiigoService::mapearWarehouses()` trayéndolas de allá.
+ *
+ * Tampoco era deseable aunque funcionara: se disparaba para toda ubicación
+ * activa, y la mayoría son racks, niveles, zonas de avería y reservas
+ * —granularidad interna— que no tienen por qué existir como bodegas en la
+ * contabilidad.
+ *
+ * El camino real: la bodega se crea en SIIGO, se trae con «Sincronizar
+ * catálogos» y se enlaza desde el selector «Bodega SIIGO» del formulario de
+ * ubicaciones. El `PUT` de actualización nunca se pudo comprobar (la
+ * credencial estaba caída), así que tampoco se da por bueno.
+ *
+ * Se deja el archivo porque este repo no tiene git.
  *
  * - Si `siigo_id` es null → POST /v1/warehouses (crea) y guarda el id.
  * - Si `siigo_id` existe  → PUT /v1/warehouses/{id} (actualiza nombre/código).
@@ -30,7 +54,6 @@ class PushUbicacionASiigo implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public int $tries = 5;
     public int $timeout = 60;
     public bool $manual = false;
 
@@ -44,9 +67,32 @@ class PushUbicacionASiigo implements ShouldQueue
         return [10, 30, 60, 120, 300];
     }
 
+    /**
+     * El techo es el reloj, no el contador de intentos.
+     *
+     * Con `tries = 5` pelado, una credencial vencida mandaba el documento a
+     * `failed_jobs` en minutos y de ahi no sale solo: el 2026-10-08 fueron
+     * 1008 trabajos, el catalogo entero. `EsperarCredencialSiigo` lo devuelve
+     * a la cola mientras la llave este muerta, y `release()` gasta intento,
+     * asi que el limite tiene que ser temporal. 12 horas alcanzan para que
+     * alguien pegue la llave nueva en /app/siigo sin perder la cola.
+     *
+     * Los rechazos de verdad siguen acotados por `$maxExceptions`.
+     */
+    public function retryUntil(): DateTimeInterface
+    {
+        return now()->addHours(12);
+    }
+
+    /** Un rechazo real de SIIGO corta a los 5, como antes. */
+    public int $maxExceptions = 5;
+
     public function middleware(): array
     {
         return [
+            // Primero de todos: con la credencial muerta no tiene sentido ni
+            // pedir turno al rate limiter.
+            new EsperarCredencialSiigo(),
             new RateLimited('siigo-api'),
             (new WithoutOverlapping("siigo:ubic:{$this->ubicacionId}"))->releaseAfter(60)->expireAfter(180),
         ];

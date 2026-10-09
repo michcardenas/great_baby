@@ -72,9 +72,9 @@ const abrirWhatsApp = (telefono, nombre, saldo, dias) => {
             <!-- Header -->
             <div class="card p-5 flex items-start justify-between bg-gradient-to-r from-surface-900/5 to-brand-500/5">
                 <div>
-                    <div class="text-xs uppercase tracking-widest font-bold text-brand-600 flex items-center gap-2">
+                    <h1 class="text-xs uppercase tracking-widest font-bold text-brand-600 flex items-center gap-2">
                         <Wallet class="h-4 w-4"/> Cartera · Dashboard
-                    </div>
+                    </h1>
                     <div class="text-sm text-surface-500 mt-1">Semáforo de cobros al día, top morosos y proyección del mes.</div>
                 </div>
                 <div class="text-xs uppercase tracking-widest flex items-center gap-1.5">
@@ -130,7 +130,7 @@ const abrirWhatsApp = (telefono, nombre, saldo, dias) => {
                         <div class="text-sm mt-2">¡Nadie con mora! Cartera al día.</div>
                     </div>
                     <div v-else class="overflow-x-auto">
-                        <table class="w-full min-w-[500px] text-sm">
+                        <table v-tabla-movil class="w-full min-w-[500px] text-sm">
                             <thead>
                                 <tr class="text-surface-500 text-xs uppercase border-b border-surface-200 dark:border-surface-800">
                                     <th class="text-left py-2">Cliente</th>
@@ -189,7 +189,7 @@ const abrirWhatsApp = (telefono, nombre, saldo, dias) => {
                     Sin facturas por vencer en la próxima semana.
                 </div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full min-w-[600px] text-sm">
+                    <table v-tabla-movil class="w-full min-w-[600px] text-sm">
                         <thead>
                             <tr class="text-surface-500 text-xs uppercase border-b border-surface-200 dark:border-surface-800">
                                 <th class="text-left py-2">Factura</th>

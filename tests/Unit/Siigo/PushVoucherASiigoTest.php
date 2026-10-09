@@ -1,5 +1,6 @@
 <?php
 
+use DateTimeInterface;
 use App\Modules\Siigo\Jobs\PushVoucherASiigo;
 use Illuminate\Support\Facades\Queue;
 
@@ -21,7 +22,13 @@ it('el job va a la cola siigo y respeta timeout/tries', function () {
     $job = new PushVoucherASiigo(pagoId: 8888);
     expect($job->queue)->toBe('siigo');
     expect($job->timeout)->toBe(60);
-    expect($job->tries)->toBe(5);
+    // `tries` ya no gobierna: el worker lo ignora apenas el job define
+    // `retryUntil()` (Worker::markJobAsFailedIfWillExceedMaxAttempts). El
+    // techo es el reloj, y lo que corta un rechazo real de SIIGO es
+    // `maxExceptions`.
+    expect($job->retryUntil())->toBeInstanceOf(DateTimeInterface::class)
+        ->and($job->retryUntil()->greaterThan(now()->addHours(11)))->toBeTrue()
+        ->and($job->maxExceptions)->toBe(5);
 });
 
 it('backoff con jitter aleatorio', function () {

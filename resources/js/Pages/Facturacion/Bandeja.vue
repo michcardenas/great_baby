@@ -68,7 +68,7 @@ const colorEdad = (horas) => {
                     </h3>
                 </div>
                 <div class="overflow-x-auto">
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-xs uppercase text-surface-500 bg-surface-50 dark:bg-surface-900 border-b">
                             <tr>
                                 <th class="p-3 text-left">Pedido</th>

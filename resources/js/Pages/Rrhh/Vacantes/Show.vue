@@ -55,7 +55,7 @@ const etapaBadge = (e) => ({
                     <button @click="modal = true" class="btn-primary text-sm"><Plus class="h-4 w-4"/> Agregar candidato</button>
                 </div>
                 <div v-if="!candidatos.length" class="text-center py-6 text-surface-500 text-sm">Sin candidatos.</div>
-                <table v-else class="w-full text-sm">
+                <table v-tabla-movil v-else class="w-full text-sm">
                     <thead class="text-[10px] text-surface-500 uppercase border-b">
                         <tr>
                             <th class="text-left p-2">Nombre</th>

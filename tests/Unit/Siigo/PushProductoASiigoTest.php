@@ -1,5 +1,6 @@
 <?php
 
+use DateTimeInterface;
 use App\Modules\Siigo\Jobs\PushProductoASiigo;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
@@ -128,7 +129,13 @@ it('el job va a la cola siigo y respeta el timeout de 60s', function () {
 
     expect($job->queue)->toBe('siigo');
     expect($job->timeout)->toBe(60);
-    expect($job->tries)->toBe(5);
+    // `tries` ya no gobierna: el worker lo ignora apenas el job define
+    // `retryUntil()` (Worker::markJobAsFailedIfWillExceedMaxAttempts). El
+    // techo es el reloj, y lo que corta un rechazo real de SIIGO es
+    // `maxExceptions`.
+    expect($job->retryUntil())->toBeInstanceOf(DateTimeInterface::class)
+        ->and($job->retryUntil()->greaterThan(now()->addHours(11)))->toBeTrue()
+        ->and($job->maxExceptions)->toBe(5);
 
     // B4-M4 · backoff con jitter aleatorio (0-20% extra) para evitar
     // thundering herd tras 5xx global. Verificamos rangos, no valores exactos.

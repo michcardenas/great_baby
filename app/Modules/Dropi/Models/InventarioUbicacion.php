@@ -11,6 +11,10 @@ class InventarioUbicacion extends Model
     protected $table = 'inventario_ubicaciones';
 
     protected $fillable = [
+        // Jerarquía: una ubicación cuelga de una bodega. Una bodega es la que
+        // no tiene `bodega_id`. Pasillo/estante/nivel dicen dónde está parada
+        // físicamente la mercancía dentro de esa bodega.
+        'bodega_id', 'pasillo', 'estante', 'nivel',
         'codigo', 'nombre', 'categoria',
         'disponible_para_venta', 'activa', 'notas',
         // UBIC-3 · datos de operación / SIIGO por ubicación.
@@ -25,7 +29,51 @@ class InventarioUbicacion extends Model
         'activa' => 'boolean',
         'siigo_resolution_id' => 'integer',
         'responsable_user_id' => 'integer',
+        'bodega_id' => 'integer',
     ];
+
+    /** La bodega (sede) a la que pertenece. Null = esto ES una bodega. */
+    public function bodega(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(self::class, 'bodega_id');
+    }
+
+    /** Las ubicaciones que viven dentro de esta bodega. */
+    public function ubicaciones(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(self::class, 'bodega_id');
+    }
+
+    /** ¿Es una bodega (sede) y no una posición dentro de otra? */
+    public function esBodega(): bool
+    {
+        return $this->bodega_id === null;
+    }
+
+    /**
+     * Dónde está parada la mercancía, en palabras:
+     * «Pasillo 4 · Estante 6 · Nivel 3».
+     */
+    public function posicion(): string
+    {
+        $partes = array_filter([
+            filled($this->pasillo) ? "Pasillo {$this->pasillo}" : null,
+            filled($this->estante) ? "Estante {$this->estante}" : null,
+            filled($this->nivel) ? "Nivel {$this->nivel}" : null,
+        ]);
+
+        return $partes ? implode(' · ', $partes) : '';
+    }
+
+    /** «Bodega Principal Bogotá → Pasillo 4 · Estante 6 · Nivel 3» */
+    public function rutaCompleta(): string
+    {
+        $pos = $this->posicion() ?: $this->nombre;
+
+        return $this->bodega_id
+            ? trim(($this->bodega?->nombre ?? 'Bodega').' → '.$pos)
+            : $this->nombre;
+    }
 
     /**
      * UBIC-3 · Fallbacks a la configuración global cuando la ubicación no tiene

@@ -3,6 +3,7 @@ import { ref, reactive } from 'vue';
 import { Head, router } from '@inertiajs/vue3';
 import { Receipt, Plus, CheckCircle, XCircle, CreditCard } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
 
 const props = defineProps({ gastos: Object, conteos: Object, esAdmin: Boolean, filtros: Object });
 
@@ -25,14 +26,40 @@ const crear = () => {
         onFinish: () => procesando.value = false,
     });
 };
-const aprobar = (id) => { if (confirm('¿Aprobar este gasto?')) router.post(`/app/gastos/${id}/aprobar`, {}, { preserveScroll: true }); };
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseño.
+const modalConfirm = ref(null);
+
+const aprobar = (id) => {
+    modalConfirm.value = {
+        titulo: '¿Aprobar este gasto?',
+        mensaje: 'Queda aprobado y listo para pagarse.',
+        color: 'emerald',
+        textoConfirmar: 'Aprobar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            router.post(`/app/gastos/${id}/aprobar`, {}, { preserveScroll: true });
+        },
+    };
+};
 const rechazar = () => {
     if (motivoRech.value.trim().length < 10) return;
     router.post(`/app/gastos/${modalRech.value.id}/rechazar`, { motivo: motivoRech.value }, {
         preserveScroll: true, onSuccess: () => { modalRech.value = null; motivoRech.value = ''; },
     });
 };
-const marcarPagado = (id) => { if (confirm('¿Marcar como pagado?')) router.post(`/app/gastos/${id}/pagado`, {}, { preserveScroll: true }); };
+const marcarPagado = (id) => {
+    modalConfirm.value = {
+        titulo: '¿Marcar el gasto como pagado?',
+        mensaje: 'Se registra como pagado y sale de los pendientes.',
+        color: 'emerald',
+        textoConfirmar: 'Marcar pagado',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            router.post(`/app/gastos/${id}/pagado`, {}, { preserveScroll: true });
+        },
+    };
+};
 const filtrar = (campo, val) => router.get('/app/gastos', { ...props.filtros, [campo]: val || null });
 
 const money = (n) => '$' + Number(n || 0).toLocaleString('es-CO', { maximumFractionDigits: 0 });
@@ -71,7 +98,7 @@ const badge = (e) => ({ pendiente: 'bg-amber-100 text-amber-800', aprobado: 'bg-
             </div>
 
             <div class="card overflow-x-auto">
-                <table class="w-full text-sm">
+                <table v-tabla-movil data-vacia="No hay gastos registrados con esos filtros." class="w-full text-sm">
                     <thead class="text-xs text-surface-500 uppercase border-b">
                         <tr>
                             <th class="text-left p-2">Número</th>
@@ -159,5 +186,6 @@ const badge = (e) => ({ pendiente: 'bg-amber-100 text-amber-800', aprobado: 'bg-
                 </div>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

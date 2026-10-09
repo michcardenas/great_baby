@@ -5,11 +5,19 @@ import { ClipboardList, Plus, ExternalLink, Trash2, Ban } from 'lucide-vue-next'
 import AppLayout from '@/Layouts/AppLayout.vue';
 import { useEscClose } from '@/composables/useEscClose';
 import { useFecha } from '@/composables/useFecha';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
+import AppPromptModal from '@/Components/AppPromptModal.vue';
 
 const props = defineProps({
     tomas: { type: Object, required: true },
     ubicaciones: { type: Array, default: () => [] },
 });
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
+// Pedido de motivo (anulaciones), en vez del prompt() nativo.
+const modalMotivo = ref(null);
 const { fechaCorta } = useFecha();
 
 const modal = ref(false);
@@ -46,25 +54,41 @@ const eliminando = ref(null);
 const anulando = ref(null);
 
 const eliminar = (t) => {
-    if (! confirm(`¿Eliminar toma ${t.numero}?\n\nSolo se permite si está en BORRADOR y no tiene items contados.`)) return;
-    eliminando.value = t.id;
-    router.delete(`/app/inventario/conteos/${t.id}`, {
-        preserveScroll: true,
-        onFinish: () => { eliminando.value = null; },
-    });
+    modalConfirm.value = {
+        titulo: `¿Eliminar toma ${t.numero}?`,
+        mensaje: `Solo se permite si está en BORRADOR y no tiene items contados.`,
+        color: 'rose',
+        textoConfirmar: 'Eliminar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            eliminando.value = t.id;
+            router.delete(`/app/inventario/conteos/${t.id}`, {
+                preserveScroll: true,
+                onFinish: () => { eliminando.value = null; },
+            });
+        },
+    };
 };
 
 const anular = (t) => {
-    const motivo = prompt(`Motivo de anulación de la toma ${t.numero}\n(mínimo 10 caracteres):`);
-    if (! motivo || motivo.trim().length < 10) {
-        if (motivo !== null) alert('El motivo debe tener al menos 10 caracteres.');
-        return;
-    }
-    anulando.value = t.id;
-    router.post(`/app/inventario/conteos/${t.id}/anular`, { motivo }, {
-        preserveScroll: true,
-        onFinish: () => { anulando.value = null; },
-    });
+    // Antes era un prompt() nativo: dentro del iframe de la app de escritorio
+    // devuelve null al instante, así que anular no hacía nada y sin aviso.
+    modalMotivo.value = {
+        titulo: `Anular la toma ${t.numero}`,
+        mensaje: 'Queda registrado quién la anuló y cuándo. No se puede deshacer.',
+        etiqueta: 'Motivo de la anulación',
+        minimo: 10,
+        color: 'rose',
+        textoConfirmar: 'Anular',
+        onConfirmar: (motivo) => {
+            modalMotivo.value = null;
+            anulando.value = t.id;
+            router.post(`/app/inventario/conteos/${t.id}/anular`, { motivo }, {
+                preserveScroll: true,
+                onFinish: () => { anulando.value = null; },
+            });
+        },
+    };
 };
 
 const puedeEliminar = (t) => t.estado === 'borrador' && (t.items_diferentes || 0) === 0;
@@ -90,7 +114,7 @@ const puedeAnular = (t) => ['borrador', 'en_conteo'].includes(t.estado);
             </div>
 
             <div class="card overflow-x-auto">
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-xs text-surface-500 uppercase border-b">
                         <tr>
                             <th class="text-left p-3">Número</th>
@@ -181,5 +205,7 @@ const puedeAnular = (t) => ['borrador', 'en_conteo'].includes(t.estado);
                 </div>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
+        <AppPromptModal :cfg="modalMotivo" @cerrar="modalMotivo = null"/>
     </AppLayout>
 </template>

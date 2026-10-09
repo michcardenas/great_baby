@@ -42,7 +42,7 @@ const totalUnidades = (items) => items.reduce((acc, it) => acc + (it.cantidad ||
             <div class="border-b-2 border-black pb-3 mb-4">
                 <div class="flex items-start justify-between">
                     <div>
-                        <div class="text-xl font-bold uppercase">Hoja de picking</div>
+                        <h1 class="text-xl font-bold uppercase">Hoja de picking</h1>
                         <div class="text-sm">GREAT BABY · {{ pedido.generado_at }}</div>
                     </div>
                     <div class="text-right">

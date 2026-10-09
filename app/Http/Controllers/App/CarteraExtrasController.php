@@ -176,7 +176,21 @@ class CarteraExtrasController extends Controller implements HasMiddleware
         abort_unless($puedeResolver, 403,
             "Tu rol no puede resolver solicitudes escaladas a {$nivel}. Escalar a Gerencia.");
 
-        $nuevo = ['aprobar' => 'aprobada', 'rechazar' => 'rechazada', 'escalar' => 'escalada'][$data['decision']];
+        // El estado aprobado lleva el nivel que lo autorizó, igual que hace la
+        // pantalla de Filament y como lo documenta la migración de la tabla.
+        //
+        // Acá se guardaba «aprobada» a secas, y la compuerta de crédito de
+        // `PedidosB2BController::facturar()` sólo reconoce `aprobada_cartera` y
+        // `aprobada_gerencia`: la aprobación no servía de nada. El pedido
+        // quedaba retenido para siempre y cada intento de facturar creaba OTRA
+        // solicitud pendiente. Comprobado el 2026-10-08 con el pedido
+        // E2E-261006-174330: aprobado desde esta pantalla, siguió sin poder
+        // facturarse y quedó con dos solicitudes abiertas.
+        $aprobada = in_array($nivel, ['gerencia', 'direccion'], true)
+            ? 'aprobada_gerencia'
+            : 'aprobada_cartera';
+
+        $nuevo = ['aprobar' => $aprobada, 'rechazar' => 'rechazada', 'escalar' => 'escalada'][$data['decision']];
         $s->update([
             'estado' => $nuevo,
             'resolucion_notas' => $data['notas'],

@@ -104,7 +104,7 @@ const guardar = () => {
                     No hay órdenes de compra pendientes por recibir.
                 </div>
 
-                <table v-else class="w-full text-sm">
+                <table v-tabla-movil v-else class="w-full text-sm">
                     <thead class="text-xs uppercase text-surface-500 bg-surface-50 dark:bg-surface-900 border-b">
                         <tr>
                             <th class="p-3 text-left">Orden</th>
@@ -150,7 +150,7 @@ const guardar = () => {
                 <div class="card p-4">
                     <div class="text-xs uppercase font-bold text-brand-600 mb-2">Ítems a recibir ({{ form.items.length }})</div>
                     <div class="overflow-x-auto">
-                        <table class="w-full text-sm">
+                        <table v-tabla-movil class="w-full text-sm">
                             <thead class="text-[10px] text-surface-500 uppercase border-b border-surface-200 dark:border-surface-800">
                                 <tr>
                                     <th class="text-left p-2">Descripción</th>

@@ -49,7 +49,7 @@ const badge = (e) => ({ pendiente: 'bg-amber-100 text-amber-800', aprobada: 'bg-
             </div>
 
             <div class="card overflow-x-auto">
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-xs text-surface-500 uppercase border-b">
                         <tr>
                             <th class="text-left p-3">Cliente</th>

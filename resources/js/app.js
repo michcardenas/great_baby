@@ -4,6 +4,7 @@ import './bootstrap';
 import { createApp, h } from 'vue';
 import { createInertiaApp, Link, Head, router } from '@inertiajs/vue3';
 import { resolvePageComponent } from 'laravel-vite-plugin/inertia-helpers';
+import tablaMovil from './directivas/tablaMovil';
 
 // Interceptor GLOBAL: cualquier POST/PUT que devuelva 4xx/5xx dispara toast+beep
 // y una alerta visual persistente. Elimina el "silencio en errores" (UX-13, UX-2).
@@ -35,6 +36,8 @@ createInertiaApp({
             .use(plugin)
             .component('Link', Link)
             .component('Head', Head)
+            // Apila las tablas marcadas cuando la pantalla es angosta.
+            .directive('tabla-movil', tablaMovil)
             .mount(el);
     },
     progress: {

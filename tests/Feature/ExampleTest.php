@@ -14,7 +14,9 @@ class ExampleTest extends TestCase
     {
         $response = $this->get('/');
 
-        // El root redirige al panel de admin.
-        $response->assertRedirect('/admin');
+        // El root lleva al ERP, que vive en Vue bajo /app. Antes apuntaba a
+        // /admin, de cuando el panel de Filament era la puerta de entrada;
+        // hoy /admin quedó reservado para Dropi.
+        $response->assertRedirect('/app');
     }
 }

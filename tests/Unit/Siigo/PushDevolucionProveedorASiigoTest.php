@@ -1,5 +1,6 @@
 <?php
 
+use DateTimeInterface;
 use App\Modules\Siigo\Jobs\PushDevolucionProveedorASiigo;
 use Illuminate\Support\Facades\Queue;
 
@@ -30,7 +31,13 @@ it('cola correcta (siigo) y timeouts/retries estándar', function () {
     $job = new PushDevolucionProveedorASiigo(devolucionId: 42);
     expect($job->queue)->toBe('siigo');
     expect($job->timeout)->toBe(60);
-    expect($job->tries)->toBe(5);
+    // `tries` ya no gobierna: el worker lo ignora apenas el job define
+    // `retryUntil()` (Worker::markJobAsFailedIfWillExceedMaxAttempts). El
+    // techo es el reloj, y lo que corta un rechazo real de SIIGO es
+    // `maxExceptions`.
+    expect($job->retryUntil())->toBeInstanceOf(DateTimeInterface::class)
+        ->and($job->retryUntil()->greaterThan(now()->addHours(11)))->toBeTrue()
+        ->and($job->maxExceptions)->toBe(5);
 });
 
 it('backoff progresivo (10 · 30 · 60 · 120 · 300 segundos)', function () {

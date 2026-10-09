@@ -4,6 +4,7 @@ import { Head, router } from '@inertiajs/vue3';
 import { BookOpen, Plus, Search, Cloud, CloudOff, RefreshCw, X, Check, Trash2 } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import { useMoney } from '@/composables/useMoney';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
 
 const props = defineProps({
     filtros: { type: Object, required: true },
@@ -11,6 +12,10 @@ const props = defineProps({
     kpis: { type: Object, required: true },
     cuentas: { type: Array, required: true },
 });
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
 
 const { money } = useMoney();
 const q = ref(props.filtros.q);
@@ -64,18 +69,34 @@ const guardar = () => {
 };
 
 const aprobar = (a) => {
-    if (! confirm(`¿Aprobar asiento #${a.id} por ${money(a.valor_total)} y enviarlo a SIIGO?`)) return;
-    router.post(`/app/contabilidad/asientos-manuales/${a.id}/aprobar`, {}, { preserveScroll: true });
+    modalConfirm.value = {
+        titulo: `¿Aprobar el asiento #${a.id}?`,
+        mensaje: `Se aprueba por ${money(a.valor_total)} y se envía a SIIGO.`,
+        color: 'emerald',
+        textoConfirmar: 'Aprobar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            router.post(`/app/contabilidad/asientos-manuales/${a.id}/aprobar`, {}, { preserveScroll: true });
+        },
+    };
 };
 
 const reintentando = ref(null);
 const reenviar = (a) => {
-    if (! confirm(`¿Reenviar asiento #${a.id} a SIIGO?`)) return;
-    reintentando.value = a.id;
-    router.post(`/app/contabilidad/asientos-manuales/${a.id}/reenviar-siigo`, {}, {
-        preserveScroll: true,
-        onFinish: () => { reintentando.value = null; },
-    });
+    modalConfirm.value = {
+        titulo: `¿Reenviar asiento #${a.id} a SIIGO?`,
+        mensaje: 'Se encola un envío manual a SIIGO.',
+        color: 'sky',
+        textoConfirmar: 'Reenviar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            reintentando.value = a.id;
+            router.post(`/app/contabilidad/asientos-manuales/${a.id}/reenviar-siigo`, {}, {
+                preserveScroll: true,
+                onFinish: () => { reintentando.value = null; },
+            });
+        },
+    };
 };
 
 const badgeEstado = (e) => ({
@@ -137,7 +158,7 @@ const badgeEstado = (e) => ({
             </div>
 
             <div class="card overflow-hidden">
-                <table class="w-full text-sm">
+                <table v-tabla-movil data-vacia="No hay asientos manuales todavía." class="w-full text-sm">
                     <thead class="text-[10px] uppercase text-surface-500 border-b bg-surface-50 dark:bg-surface-900">
                         <tr>
                             <th class="text-left p-2">#</th>
@@ -200,7 +221,7 @@ const badgeEstado = (e) => ({
                         </div>
 
                         <div class="border rounded overflow-hidden">
-                            <table class="w-full text-xs">
+                            <table v-tabla-movil class="w-full text-xs">
                                 <thead class="bg-surface-50 dark:bg-surface-900 uppercase text-[10px]">
                                     <tr>
                                         <th class="text-left p-1.5 w-64">Cuenta PUC *</th>
@@ -272,5 +293,6 @@ const badgeEstado = (e) => ({
                 </div>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

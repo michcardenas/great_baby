@@ -5,8 +5,13 @@ import { ArrowLeft, Truck, Cloud, CloudOff, RefreshCw } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import { useMoney } from '@/composables/useMoney';
 import { fechaCorta } from '@/composables/useFecha';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
 
 const props = defineProps({ recepcion: { type: Object, required: true } });
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
 const { money } = useMoney();
 
 const badgeEstado = (e) => ({
@@ -19,12 +24,20 @@ const badgeEstado = (e) => ({
 // Sprint 3 · D.1 · reenvío manual a SIIGO desde detalle.
 const reenviando = ref(false);
 const reenviarSiigo = () => {
-    if (! confirm('¿Reenviar esta recepción a SIIGO?\n\nSe encola un job manual (bypasea el kill-switch).')) return;
-    reenviando.value = true;
-    router.post(`/app/compras/recepcion/${props.recepcion.id}/reenviar-siigo`, {}, {
-        preserveScroll: true,
-        onFinish: () => { reenviando.value = false; },
-    });
+    modalConfirm.value = {
+        titulo: '¿Reenviar esta recepción a SIIGO?',
+        mensaje: 'Se encola un job manual (bypasea el kill-switch).',
+        color: 'sky',
+        textoConfirmar: 'Reenviar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            reenviando.value = true;
+            router.post(`/app/compras/recepcion/${props.recepcion.id}/reenviar-siigo`, {}, {
+                preserveScroll: true,
+                onFinish: () => { reenviando.value = false; },
+            });
+        },
+    };
 };
 </script>
 
@@ -90,7 +103,7 @@ const reenviarSiigo = () => {
 
             <div class="card p-4">
                 <div class="text-xs uppercase font-bold text-brand-600 mb-2">Ítems ({{ recepcion.items.length }})</div>
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="text-[10px] text-surface-500 uppercase border-b">
                         <tr>
                             <th class="text-right p-2">Cantidad</th>
@@ -134,5 +147,6 @@ const reenviarSiigo = () => {
                 <p class="text-sm whitespace-pre-wrap">{{ recepcion.observaciones }}</p>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

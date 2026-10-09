@@ -82,7 +82,37 @@ class Reglas
         'siigo.cta_perdida_inventario_default' => ['grupo' => 'siigo', 'tipo' => 'string', 'valor' => '5299', 'etiqueta' => 'SIIGO · Cuenta pérdida por baja inventario', 'descripcion' => 'PUC débito para faltantes/mermas (default 5299 pérdida inventario)'],
         'siigo.cta_sobrante_inventario_default' => ['grupo' => 'siigo', 'tipo' => 'string', 'valor' => '4295', 'etiqueta' => 'SIIGO · Cuenta sobrante inventario', 'descripcion' => 'PUC crédito para sobrantes de toma física (default 4295 diversos)'],
         // COMP-B1 · documento SIIGO para NC de compra (devolución a proveedor).
-        'siigo.doc_type_nc_compra' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 0, 'etiqueta' => 'SIIGO · Tipo documento NC compra', 'descripcion' => 'ID del document-type para notas crédito de compra (devoluciones a proveedor)'],
+        'siigo.doc_type_nc_compra' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 0, 'etiqueta' => 'SIIGO · Comprobante de devolución a proveedor', 'descripcion' => 'Comprobante contable (CC) con el que se asienta la devolución a proveedor. Se manda por /v1/journals, no es una nota crédito pese al nombre de la regla'],
+
+        // ── Claves que el código leía y nadie podía configurar ──────────────
+        //
+        // `SiigoEmisionService` pedía estas tres con `setting(..., 0)`. Como no
+        // estaban declaradas acá, nunca se sembraban en la base, siempre valían
+        // 0, el bloque `document` se descartaba del payload y SIIGO respondía
+        // «The field document is required». Resultado medido el 2026-10-08: 0 de
+        // 79 asientos, 0 notas crédito y 0 notas débito habían llegado a SIIGO.
+        // No era un fallo intermitente: era imposible que funcionara.
+        // SIIGO pide un tercero en cada linea del journal, tambien en los
+        // ajustes de inventario, que no tienen contraparte externa. Vacio =
+        // se usa el NIT de la empresa (Configuracion -> Empresa).
+        'siigo.tercero_ajustes_inventario' => ['grupo' => 'siigo', 'tipo' => 'string', 'valor' => '', 'etiqueta' => 'SIIGO · Tercero para ajustes de inventario', 'descripcion' => 'Identificación con la que se asientan traslados, mermas y sobrantes. Vacío = el NIT de la empresa, sin puntos ni dígito de verificación'],
+        'siigo.doc_type_nota_credito' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 0, 'etiqueta' => 'SIIGO · Tipo documento Nota crédito (venta)', 'descripcion' => 'ID del document-type NC. Sin esto SIIGO rechaza toda nota crédito'],
+        'siigo.doc_type_nota_debito' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 0, 'etiqueta' => 'SIIGO · Tipo documento Nota débito (venta)', 'descripcion' => 'ID del document-type ND. Sin esto SIIGO rechaza toda nota débito'],
+        'siigo.doc_type_asiento_manual' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 0, 'etiqueta' => 'SIIGO · Tipo documento Asiento manual', 'descripcion' => 'ID del comprobante contable (CC) para asientos manuales. Si queda en 0 se usa el de Gasto'],
+
+        // Centro de costo de las compras. SIIGO lo exige en algunas cuentas.
+        'siigo.cost_center_compras' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 0, 'etiqueta' => 'SIIGO · Centro de costo de compras', 'descripcion' => 'ID del centro de costo para facturas de compra. 0 = no se manda'],
+
+        // Ciudad de respaldo cuando un contacto trae una que no está en el DANE.
+        'siigo.ciudad_default' => ['grupo' => 'siigo', 'tipo' => 'string', 'valor' => '11001', 'etiqueta' => 'SIIGO · Código DANE de ciudad por defecto', 'descripcion' => 'Se usa cuando la ciudad del contacto no figura en la tabla DANE (11001 = Bogotá)'],
+
+        // Destinos del comparador diario ERP ↔ SIIGO (TEST-S7). Sin estos el
+        // comando corre, escribe el reporte y no avisa a nadie.
+        'siigo.alerta_whatsapp' => ['grupo' => 'siigo', 'tipo' => 'string', 'valor' => '', 'etiqueta' => 'SIIGO · WhatsApp para alertas de descuadre', 'descripcion' => 'Número que recibe la alerta diaria si el ERP y SIIGO no cuadran. Vacío = no se manda'],
+        'siigo.alerta_email' => ['grupo' => 'siigo', 'tipo' => 'string', 'valor' => '', 'etiqueta' => 'SIIGO · Correo para alertas de descuadre', 'descripcion' => 'Correo que recibe el reporte diario de comparación. Vacío = no se manda'],
+
+        // Campos personalizados del producto en SIIGO, por nombre → id.
+        'siigo.custom_fields_map' => ['grupo' => 'siigo', 'tipo' => 'json', 'valor' => '{}', 'etiqueta' => 'SIIGO · Mapa de campos personalizados', 'descripcion' => 'JSON {"linea": 12345, "grupo": 12346} con los ids de los custom fields del producto en SIIGO'],
         'siigo.payment_type_compra_default' => ['grupo' => 'siigo', 'tipo' => 'int', 'valor' => 0, 'etiqueta' => 'SIIGO · Payment type compra default', 'descripcion' => 'Payment type por defecto para NC/factura de compra'],
         // COMP-B1 · cuentas AUXILIARES transaccionales SIIGO para journals de devolución
         // a proveedor. SIIGO rechaza cuentas padre (2205, 1435, 2408) con error
@@ -210,6 +240,26 @@ class Reglas
     /** Siembra en BD los defaults que aún no existen. Idempotente + concurrent-safe (firstOrCreate). */
     public static function seedDefaults(): int
     {
+        // Los textos de la UI se refrescan desde el diccionario en cada pasada.
+        //
+        // Antes, una clave que ya existía se saltaba entera: si acá se corregía
+        // una etiqueta equivocada, la pantalla seguía mostrando la vieja para
+        // siempre. Pasó con «Tipo documento NC compra», que en realidad es el
+        // comprobante contable de la devolución a proveedor. Se sincronizan
+        // sólo grupo, etiqueta y descripción —lo que describe la regla—; el
+        // `valor` y el `tipo` no se tocan nunca, porque ese dato es del usuario
+        // y cambiarle el tipo invalidaría lo que tenga guardado.
+        foreach (ReglaNegocio::all() as $fila) {
+            $meta = self::DEFAULTS[$fila->clave] ?? null;
+            if (! $meta) continue;
+            $fila->fill([
+                'grupo' => $meta['grupo'],
+                'etiqueta' => $meta['etiqueta'],
+                'descripcion' => $meta['descripcion'] ?? '',
+            ]);
+            if ($fila->isDirty()) $fila->save();
+        }
+
         $existentes = ReglaNegocio::pluck('clave')->flip(); // 1 query
         $creadas = 0;
         foreach (self::DEFAULTS as $clave => $meta) {

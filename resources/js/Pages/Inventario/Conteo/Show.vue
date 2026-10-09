@@ -5,6 +5,8 @@ import { ClipboardList, ArrowLeft, Play, Save, CheckCircle2, Search, Upload } fr
 import AppLayout from '@/Layouts/AppLayout.vue';
 import ImportMasivoModal from '@/Components/ImportMasivoModal.vue';
 import { useFecha } from '@/composables/useFecha';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
+import { avisar } from '@/composables/useAviso';
 
 const importMasivoAbierto = ref(false);
 const abrirImportMasivo = () => { importMasivoAbierto.value = true; };
@@ -33,6 +35,10 @@ const itemsFiltrados = computed(() => {
         (it.producto || '').toLowerCase().includes(t)
     );
 });
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
 
 const itemsContados = computed(() => props.toma.items.filter((it) => it.cantidad_contada !== null).length);
 const progreso = computed(() => (props.toma.items.length ? Math.round((itemsContados.value / props.toma.items.length) * 100) : 0));
@@ -68,12 +74,20 @@ const guardarItem = (item) => {
 
 const iniciando = ref(false);
 const iniciar = () => {
-    if (!confirm('Iniciar conteo: se congelará el saldo actual del sistema como snapshot. ¿Continuar?')) return;
-    iniciando.value = true;
-    router.post(`/app/inventario/conteos/${props.toma.id}/iniciar`, {}, {
-        preserveScroll: true,
-        onFinish: () => (iniciando.value = false),
-    });
+    modalConfirm.value = {
+        titulo: '¿Iniciar el conteo?',
+        mensaje: 'Se congela el saldo actual del sistema como foto de referencia.',
+        color: 'sky',
+        textoConfirmar: 'Iniciar conteo',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            iniciando.value = true;
+            router.post(`/app/inventario/conteos/${props.toma.id}/iniciar`, {}, {
+                preserveScroll: true,
+                onFinish: () => (iniciando.value = false),
+            });
+        },
+    };
 };
 
 const cerrando = ref(false);
@@ -83,12 +97,20 @@ const cerrar = () => {
         .filter((it) => it.cantidad_contada !== null)
         .reduce((s, it) => s + Number(it.diferencia) * Number(it.costo_unit || 0), 0);
     const signo = valor >= 0 ? 'sobrante' : 'faltante';
-    if (!confirm(`Cerrar conteo ${props.toma.numero}?\n\nItems con diferencia: ${dif}\nValor de ajuste: ${valor.toFixed(2)} (${signo})\n\nSe generarán movimientos en kardex y un asiento contable (1435 vs 4295/5299). Esta acción NO se puede deshacer.`)) return;
-    cerrando.value = true;
-    router.post(`/app/inventario/conteos/${props.toma.id}/cerrar`, {}, {
-        preserveScroll: true,
-        onFinish: () => (cerrando.value = false),
-    });
+    modalConfirm.value = {
+        titulo: `Cerrar conteo ${props.toma.numero}?`,
+        mensaje: `Items con diferencia: ${dif}\nValor de ajuste: ${valor.toFixed(2)} (${signo})\n\nSe generarán movimientos en kardex y un asiento contable (1435 vs 4295/5299). Esta acción NO se puede deshacer.`,
+        color: 'amber',
+        textoConfirmar: 'Cerrar conteo',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            cerrando.value = true;
+            router.post(`/app/inventario/conteos/${props.toma.id}/cerrar`, {}, {
+                preserveScroll: true,
+                onFinish: () => (cerrando.value = false),
+            });
+        },
+    };
 };
 
 // Escáner: input hidden capta código de barras (foco automático).
@@ -102,7 +124,7 @@ const escaneoDetectado = (e) => {
     codigoScan.value = '';
     if (!code) return;
     const item = props.toma.items.find((it) => it.sku === code);
-    if (!item) { alert('SKU no encontrado en esta toma: ' + code); return; }
+    if (!item) { avisar('Ese SKU no está en esta toma: ' + code, 'warning'); return; }
     // suma 1 al contado del item
     const actual = Number(cantidades[item.id] || 0);
     cantidades[item.id] = actual + 1;
@@ -207,7 +229,7 @@ onMounted(() => {
 
             <!-- Tabla captura -->
             <div v-if="toma.items.length" class="card overflow-x-auto">
-                <table class="w-full text-sm">
+                <table v-tabla-movil data-vacia="Esta toma física no tiene ítems para contar." class="w-full text-sm">
                     <thead class="text-xs text-surface-500 uppercase border-b">
                         <tr>
                             <th class="text-left p-3">SKU</th>
@@ -252,5 +274,6 @@ onMounted(() => {
                 Sin items todavía. Haz clic en <b>Iniciar conteo</b> para congelar el saldo del sistema como snapshot.
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

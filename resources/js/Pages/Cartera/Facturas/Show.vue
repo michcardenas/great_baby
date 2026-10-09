@@ -4,6 +4,9 @@ import { Head, Link, router, usePage } from '@inertiajs/vue3';
 import { useMoney } from '@/composables/useMoney';
 import { ArrowLeft, Download, Phone, Mail, MapPin, User, FileText, CreditCard, QrCode, Send, XCircle, FileCode, AlertTriangle } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
+import AppPromptModal from '@/Components/AppPromptModal.vue';
+import { mensajeDeError } from '@/composables/useMensajeError';
 
 const props = defineProps({
     factura: { type: Object, required: true },
@@ -11,6 +14,12 @@ const props = defineProps({
     items: { type: Array, required: true },
     pagos: { type: Array, required: true },
 });
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
+// Pedido de un dato antes de actuar, en vez del prompt() nativo.
+const modalMotivo = ref(null);
 
 const { money: fmtCOP } = useMoney();
 const badgeEstado = {
@@ -49,9 +58,22 @@ const erroresDian = ref(null);
 const consultandoDian = ref(false);
 
 const reenviarMail = () => {
-    const email = window.prompt('Reenviar factura a email:', props.contacto?.email ?? '');
-    if (! email) return;
-    router.post(`/app/facturas/${props.factura.id}/siigo/reenviar-mail`, { email }, { preserveScroll: true });
+    // Era un window.prompt(), que dentro del iframe de la app de escritorio
+    // devuelve null al instante: el botón no hacía nada y nadie se enteraba.
+    modalMotivo.value = {
+        titulo: `Reenviar la factura ${props.factura.numero}`,
+        mensaje: 'SIIGO le manda el documento a ese correo.',
+        etiqueta: 'Correo del destinatario',
+        placeholder: 'nombre@empresa.com',
+        valorInicial: props.contacto?.email ?? '',
+        minimo: 5,
+        color: 'sky',
+        textoConfirmar: 'Reenviar',
+        onConfirmar: (email) => {
+            modalMotivo.value = null;
+            router.post(`/app/facturas/${props.factura.id}/siigo/reenviar-mail`, { email }, { preserveScroll: true });
+        },
+    };
 };
 const consultarErroresDian = async () => {
     consultandoDian.value = true;
@@ -59,14 +81,22 @@ const consultarErroresDian = async () => {
         const r = await fetch(`/app/facturas/${props.factura.id}/siigo/errores-dian`);
         erroresDian.value = await r.json();
     } catch (e) {
-        erroresDian.value = { ok: false, mensaje: e.message };
+        erroresDian.value = { ok: false, mensaje: mensajeDeError(e, 'No pude consultar los errores DIAN') };
     } finally {
         consultandoDian.value = false;
     }
 };
 const anularFactura = () => {
-    if (! window.confirm(`¿Anular en SIIGO la factura ${props.factura.numero}?\n\nSolo se puede anular dentro de las 72h de emisión. Después de ese plazo, usar nota crédito.`)) return;
-    router.post(`/app/facturas/${props.factura.id}/siigo/anular`, {}, { preserveScroll: true });
+    modalConfirm.value = {
+        titulo: `¿Anular en SIIGO la factura ${props.factura.numero}?`,
+        mensaje: `Solo se puede anular dentro de las 72h de emisión. Después de ese plazo, usar nota crédito.`,
+        color: 'rose',
+        textoConfirmar: 'Anular en SIIGO',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            router.post(`/app/facturas/${props.factura.id}/siigo/anular`, {}, { preserveScroll: true });
+        },
+    };
 };
 </script>
 
@@ -96,6 +126,15 @@ const anularFactura = () => {
 
                     <!-- Acciones SIIGO · solo si la factura ya se emitió a SIIGO -->
                     <template v-if="factura.siigo_id || factura.numero_siigo">
+                        <!-- El documento tal como lo imprime SIIGO. Va primero
+                             porque es el que siempre existe: el «PDF DIAN» de
+                             al lado depende del timbrado, y si la DIAN todavía
+                             no respondió no hay nada que imprimir. -->
+                        <a v-if="factura.siigo_public_url" :href="factura.siigo_public_url"
+                           target="_blank" rel="noopener"
+                           class="btn-primary text-sm" title="Documento impreso de SIIGO · listo para imprimir o enviar">
+                            <Printer class="h-4 w-4"/> Imprimir {{ factura.numero_siigo || 'documento SIIGO' }}
+                        </a>
                         <a :href="`/app/facturas/${factura.id}/siigo/pdf`" target="_blank"
                            class="btn-secondary text-sm bg-blue-50 hover:bg-blue-100 text-blue-700" title="PDF oficial SIIGO con QR DIAN">
                             <Download class="h-4 w-4"/> PDF DIAN
@@ -202,7 +241,7 @@ const anularFactura = () => {
             <div class="card p-4">
                 <div class="text-xs uppercase tracking-widest font-bold text-brand-600 mb-3">Ítems ({{ items.length }})</div>
                 <div class="overflow-x-auto">
-                    <table class="w-full min-w-[600px] text-sm">
+                    <table v-tabla-movil class="w-full min-w-[600px] text-sm">
                         <thead>
                             <tr class="text-surface-500 text-xs uppercase border-b border-surface-200 dark:border-surface-800">
                                 <th class="text-left py-2">Descripción</th>
@@ -240,7 +279,7 @@ const anularFactura = () => {
                 </div>
                 <div v-if="! pagos.length" class="text-center py-6 text-surface-500 text-sm">Sin pagos aplicados aún.</div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full min-w-[500px] text-sm">
+                    <table v-tabla-movil class="w-full min-w-[500px] text-sm">
                         <thead>
                             <tr class="text-surface-500 text-xs uppercase border-b border-surface-200 dark:border-surface-800">
                                 <th class="text-left py-2">Fecha</th>
@@ -277,5 +316,7 @@ const anularFactura = () => {
                 </div>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
+        <AppPromptModal :cfg="modalMotivo" @cerrar="modalMotivo = null"/>
     </AppLayout>
 </template>

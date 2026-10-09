@@ -67,7 +67,7 @@ const lineDatasets = () => [
             <!-- Header con reloj -->
             <div class="card p-5 flex items-start justify-between bg-gradient-to-r from-surface-900/5 to-brand-500/5">
                 <div>
-                    <div class="text-xs uppercase tracking-widest font-bold text-brand-600">🗼 Torre de Control · Bodega</div>
+                    <h1 class="text-xs uppercase tracking-widest font-bold text-brand-600">🗼 Torre de Control · Bodega</h1>
                     <div class="text-sm text-surface-500 mt-1 capitalize">{{ fecha }}</div>
                 </div>
                 <div class="text-right">

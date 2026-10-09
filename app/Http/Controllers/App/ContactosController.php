@@ -218,9 +218,43 @@ class ContactosController extends Controller implements HasMiddleware
                 'lista_precios_id' => $contacto->lista_precios_id,
                 'activo' => (bool) $contacto->activo,
             ] : null,
-            'listas' => \App\Modules\Catalogo\Models\ListaPrecios::orderBy('nombre')
-                ->get(['id', 'nombre'])
-                ->map(fn ($l) => ['id' => $l->id, 'nombre' => $l->nombre]),
+            // Primero las listas de Great Baby, después las que llegaron del
+            // catálogo de SIIGO. Ordenadas sólo por nombre, el desplegable
+            // abría en «14.999» y «Asistente Gerente» —listas de otra empresa
+            // del sandbox compartido— y las propias (Mayorista, Detal,
+            // Distribuidor) quedaban enterradas. Es el mismo problema que tenía
+            // el selector de bodega del importador de inventario.
+            // Se muestra cuántos productos tiene cada lista con precio vigente.
+            //
+            // Sin ese número, elegir «Mayorista» parece lo obvio para un
+            // cliente B2B — y hoy esa lista tiene 2 productos, mientras que
+            // Detal, Dropi y Distribuidor están en cero. El cliente queda
+            // asignado a una lista vacía y el vendedor descubre el problema
+            // recién cuando le busca mercancía y no le aparece nada.
+            'listas' => \App\Modules\Catalogo\Models\ListaPrecios::query()
+                ->withCount(['precios as con_precio_count' => fn ($q) => $q
+                    ->where(fn ($w) => $w->whereNull('vigente_hasta')
+                        ->orWhere('vigente_hasta', '>=', now()->toDateString()))])
+                ->orderByRaw('siigo_id IS NOT NULL')
+                ->orderBy('nombre')
+                ->get(['id', 'nombre', 'siigo_id'])
+                ->map(fn ($l) => [
+                    'id' => $l->id,
+                    'nombre' => $l->nombre,
+                    'productos' => (int) $l->con_precio_count,
+                    'grupo' => $l->siigo_id ? 'Listas del catálogo de SIIGO' : 'Listas de Great Baby',
+                ]),
+
+            // La ciudad era texto libre. SIIGO no acepta el nombre: pide el
+            // código DANE, y cuando el ERP no reconoce lo escrito factura con
+            // la ciudad por defecto (Bogotá) y sólo lo anota en el log. Así
+            // que un «Medellin» sin tilde salía bien, pero un «Mosquera,
+            // Cund.» o un «Bogota D.C» mal tecleado emitía la factura con la
+            // ciudad equivocada sin que nadie se enterara. Ahora el formulario
+            // ofrece las que el ERP sabe traducir y avisa si la escrita no
+            // está — avisa, no bloquea: puede haber un cliente en un municipio
+            // que todavía no figura en la tabla.
+            'ciudades_dane' => \App\Modules\Siigo\Support\CiudadesDane::listado(),
         ]);
     }
 

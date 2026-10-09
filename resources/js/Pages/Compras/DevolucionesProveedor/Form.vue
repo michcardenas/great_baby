@@ -4,6 +4,8 @@ import { Head, Link, router } from '@inertiajs/vue3';
 import { Undo2, ArrowLeft, Plus, Trash2, Search, Send, Cloud, Clock, RefreshCw, X, Eye, CheckCircle2, AlertCircle } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import { useMoney } from '@/composables/useMoney';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
+import { mensajeDeError } from '@/composables/useMensajeError';
 import axios from 'axios';
 
 const { money: formato } = useMoney();
@@ -13,6 +15,10 @@ const props = defineProps({
     proveedores: { type: Array, default: () => [] },
     ubicaciones: { type: Array, default: () => [] },
 });
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
 
 const esNueva = computed(() => !props.devolucion?.id);
 const esBorrador = computed(() => !props.devolucion || props.devolucion.estado === 'borrador');
@@ -81,7 +87,7 @@ const errorLegible = (e, fallback = 'Ocurrió un error.') => {
     if (data?.errors) {
         return Object.values(data.errors).flat().join(' · ');
     }
-    return data?.mensaje || data?.message || e.message || fallback;
+    return mensajeDeError(e, fallback);
 };
 
 const mostrarFlash = (type, message) => {
@@ -124,13 +130,21 @@ const agregarItem = async () => {
 };
 
 const eliminarItem = async (itemId) => {
-    if (!confirm('¿Eliminar este ítem?')) return;
-    try {
-        const { data } = await axios.delete(`/app/compras/devoluciones/${header.id}/items/${itemId}`);
-        if (data.ok) {
-            router.reload({ only: ['devolucion'] });
-        }
-    } catch (e) { mostrarFlash('error', errorLegible(e)); }
+    modalConfirm.value = {
+        titulo: '¿Eliminar este ítem?',
+        mensaje: 'Se quita de la devolución. Podés volver a agregarlo.',
+        color: 'rose',
+        textoConfirmar: 'Eliminar',
+        onConfirmar: async () => {
+            modalConfirm.value = null;
+            try {
+                const { data } = await axios.delete(`/app/compras/devoluciones/${header.id}/items/${itemId}`);
+                if (data.ok) {
+                    router.reload({ only: ['devolucion'] });
+                }
+            } catch (e) { mostrarFlash('error', errorLegible(e)); }
+        },
+    };
 };
 
 // COMP-B2 · preview de asiento antes de ejecutar la confirmación.
@@ -175,13 +189,21 @@ const reenviarSiigo = async () => {
 
 // FIX-S0 · descartar borrador cuando el usuario abandona la devolución.
 const descartar = async () => {
-    if (!confirm(`¿Descartar borrador ${props.devolucion.numero}? Se eliminarán todos los ítems cargados.`)) return;
-    try {
-        const { data } = await axios.delete(`/app/compras/devoluciones/${header.id}`);
-        if (data.ok) {
-            router.visit('/app/compras/devoluciones');
-        }
-    } catch (e) { mostrarFlash('error', errorLegible(e)); }
+    modalConfirm.value = {
+        titulo: `¿Descartar el borrador ${props.devolucion.numero}?`,
+        mensaje: 'Se eliminan todos los ítems cargados. No se puede deshacer.',
+        color: 'rose',
+        textoConfirmar: 'Descartar',
+        onConfirmar: async () => {
+            modalConfirm.value = null;
+            try {
+                const { data } = await axios.delete(`/app/compras/devoluciones/${header.id}`);
+                if (data.ok) {
+                    router.visit('/app/compras/devoluciones');
+                }
+            } catch (e) { mostrarFlash('error', errorLegible(e)); }
+        },
+    };
 };
 </script>
 
@@ -326,7 +348,7 @@ const descartar = async () => {
 
                 <!-- Tabla items · FIX-S0 overflow-x-auto para móvil -->
                 <div class="overflow-x-auto">
-                <table class="w-full text-sm min-w-[700px]">
+                <table v-tabla-movil class="w-full text-sm min-w-[700px]">
                     <thead class="text-xs text-surface-500 uppercase border-b bg-surface-50">
                         <tr>
                             <th class="text-left p-2">Producto</th>
@@ -416,7 +438,7 @@ const descartar = async () => {
                         <!-- Partida doble -->
                         <div>
                             <h3 class="text-xs uppercase font-bold text-brand-700 mb-2">Movimientos contables</h3>
-                            <table class="w-full text-sm border rounded-lg overflow-hidden">
+                            <table v-tabla-movil class="w-full text-sm border rounded-lg overflow-hidden">
                                 <thead class="bg-surface-100 text-xs text-surface-600 uppercase">
                                     <tr>
                                         <th class="text-left p-2 w-20">PUC</th>
@@ -480,5 +502,6 @@ const descartar = async () => {
                 </div>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

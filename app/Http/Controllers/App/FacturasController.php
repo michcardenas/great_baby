@@ -96,6 +96,10 @@ class FacturasController extends Controller implements HasMiddleware
                 'ari_factura_id' => $factura->ari_factura_id,
                 'siigo_id' => $factura->siigo_id,
                 'numero_siigo' => $factura->numero_siigo,
+                // Documento impreso que devuelve SIIGO al emitir. Sirve aunque
+                // la DIAN todavía no haya timbrado, que es cuando el PDF DIAN
+                // no existe y antes no quedaba nada que imprimir.
+                'siigo_public_url' => $factura->siigo_public_url,
                 'cufe' => $factura->cufe,
                 'stamp_status' => $factura->stamp_status,
                 'qr_url' => $factura->qr_url,

@@ -71,12 +71,68 @@ const sparklinePath = computed(() => {
                         {{ rango.inicio }} → {{ rango.fin }} · facturado + despachado = venta efectiva
                     </p>
                 </div>
-                <div class="flex gap-1 flex-wrap">
+                <div class="flex gap-2 flex-wrap items-center">
                     <button v-for="p in periodosDisponibles" :key="p.key" @click="cambiarPeriodo(p.key)"
                             :class="['px-3 py-1.5 text-xs rounded-lg',
                                      periodo === p.key ? 'bg-brand-600 text-white' : 'bg-surface-100 dark:bg-surface-800 hover:bg-surface-200']">
                         {{ p.label }}
                     </button>
+                </div>
+            </div>
+
+            <!--
+                La accion principal del vendedor, arriba del todo.
+
+                Estaba al FINAL de la pagina, debajo de siete tarjetas de KPIs y
+                con pinta de filtro: en una revision del front no se encontro, y
+                el panel parecia de pura consulta. Lo que el vendedor hace en la
+                calle es tomar pedidos; eso va primero.
+            -->
+            <div class="card p-4">
+                <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
+                    <div class="text-sm font-semibold">🛒 Levantar un pedido a nombre de un cliente</div>
+                </div>
+                <form @submit.prevent="buscar" class="flex gap-2 mb-3">
+                    <div class="flex-1 relative">
+                        <Search class="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-surface-400"/>
+                        <input v-model="query" type="text" placeholder="Razón social, NIT, correo o nombre…"
+                               class="w-full pl-10 pr-4 py-2 border border-surface-300 rounded-lg dark:bg-surface-900 focus:border-brand-500 focus:outline-none">
+                    </div>
+                    <button type="submit" class="btn-primary">Buscar cliente</button>
+                </form>
+                <div v-if="!clientes.length" class="text-sm text-surface-400 italic text-center py-4">
+                    <span v-if="q">Sin coincidencias con «{{ q }}».</span>
+                    <span v-else>Escribí para buscar un cliente activo con lista de precios.</span>
+                </div>
+                <div v-else class="divide-y divide-surface-200 dark:divide-surface-800">
+                    <Link v-for="c in clientes" :key="c.id" :href="`/app/vendedor/pedido-nuevo/${c.id}`"
+                          class="block p-2 hover:bg-brand-50 dark:hover:bg-surface-800 rounded transition">
+                        <div class="flex items-center justify-between gap-3 flex-wrap">
+                            <div>
+                                <div class="font-bold text-sm flex items-center gap-2 flex-wrap">
+                                    {{ c.razon_social || c.nombre_completo }}
+                                    <!-- Cartera de clientes: el vendedor ve lo suyo y las
+                                         cuentas libres; las de un compañero no le aparecen. -->
+                                    <span v-if="c.libre"
+                                          class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300">
+                                        libre
+                                    </span>
+                                    <span v-else-if="c.es_mio"
+                                          class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-brand-100 text-brand-700 dark:bg-brand-900/50 dark:text-brand-300">
+                                        mi cuenta
+                                    </span>
+                                    <span v-else-if="c.vendedor"
+                                          class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-surface-200 text-surface-600 dark:bg-surface-800 dark:text-surface-300">
+                                        {{ c.vendedor }}
+                                    </span>
+                                </div>
+                                <div class="text-xs text-surface-500">
+                                    NIT {{ c.numero_documento }} · {{ c.ciudad || 'sin ciudad' }}
+                                </div>
+                            </div>
+                            <div class="btn-primary text-xs">Armar pedido →</div>
+                        </div>
+                    </Link>
                 </div>
             </div>
 
@@ -193,54 +249,6 @@ const sparklinePath = computed(() => {
                 </div>
             </div>
 
-            <!-- Buscador para armar pedido nuevo -->
-            <div class="card p-4">
-                <div class="flex items-center justify-between gap-2 mb-3 flex-wrap">
-                    <div class="text-sm font-semibold">🛒 Armar nuevo pedido a nombre de cliente</div>
-                </div>
-                <form @submit.prevent="buscar" class="flex gap-2 mb-3">
-                    <div class="flex-1 relative">
-                        <Search class="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-surface-400"/>
-                        <input v-model="query" type="text" placeholder="Razón social, NIT, correo o nombre…"
-                               class="w-full pl-10 pr-4 py-2 border border-surface-300 rounded-lg dark:bg-surface-900 focus:border-brand-500 focus:outline-none">
-                    </div>
-                    <button type="submit" class="btn-primary">Buscar cliente</button>
-                </form>
-                <div v-if="!clientes.length" class="text-sm text-surface-400 italic text-center py-4">
-                    <span v-if="q">Sin coincidencias con «{{ q }}».</span>
-                    <span v-else>Escribí para buscar un cliente activo con lista de precios.</span>
-                </div>
-                <div v-else class="divide-y divide-surface-200 dark:divide-surface-800">
-                    <Link v-for="c in clientes" :key="c.id" :href="`/app/vendedor/pedido-nuevo/${c.id}`"
-                          class="block p-2 hover:bg-brand-50 dark:hover:bg-surface-800 rounded transition">
-                        <div class="flex items-center justify-between gap-3 flex-wrap">
-                            <div>
-                                <div class="font-bold text-sm flex items-center gap-2 flex-wrap">
-                                    {{ c.razon_social || c.nombre_completo }}
-                                    <!-- Cartera de clientes: el vendedor ve lo suyo y las
-                                         cuentas libres; las de un compañero no le aparecen. -->
-                                    <span v-if="c.libre"
-                                          class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300">
-                                        libre
-                                    </span>
-                                    <span v-else-if="c.es_mio"
-                                          class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-brand-100 text-brand-700 dark:bg-brand-900/50 dark:text-brand-300">
-                                        mi cuenta
-                                    </span>
-                                    <span v-else-if="c.vendedor"
-                                          class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-surface-200 text-surface-600 dark:bg-surface-800 dark:text-surface-300">
-                                        {{ c.vendedor }}
-                                    </span>
-                                </div>
-                                <div class="text-xs text-surface-500">
-                                    NIT {{ c.numero_documento }} · {{ c.ciudad || 'sin ciudad' }}
-                                </div>
-                            </div>
-                            <div class="btn-primary text-xs">Armar pedido →</div>
-                        </div>
-                    </Link>
-                </div>
-            </div>
         </div>
     </AppLayout>
 </template>

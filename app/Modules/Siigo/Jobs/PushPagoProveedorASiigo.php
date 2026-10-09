@@ -11,6 +11,8 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
+use DateTimeInterface;
+use App\Modules\Siigo\Jobs\Middleware\EsperarCredencialSiigo;
 use Illuminate\Queue\Middleware\RateLimited;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Queue\SerializesModels;
@@ -21,7 +23,6 @@ class PushPagoProveedorASiigo implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public int $tries = 5;
     public int $timeout = 60;
     public bool $manual = false;
 
@@ -35,9 +36,32 @@ class PushPagoProveedorASiigo implements ShouldQueue
         return [10 + random_int(0, 5), 30 + random_int(0, 10), 60 + random_int(0, 15), 120 + random_int(0, 30), 300 + random_int(0, 60)];
     }
 
+    /**
+     * El techo es el reloj, no el contador de intentos.
+     *
+     * Con `tries = 5` pelado, una credencial vencida mandaba el documento a
+     * `failed_jobs` en minutos y de ahi no sale solo: el 2026-10-08 fueron
+     * 1008 trabajos, el catalogo entero. `EsperarCredencialSiigo` lo devuelve
+     * a la cola mientras la llave este muerta, y `release()` gasta intento,
+     * asi que el limite tiene que ser temporal. 12 horas alcanzan para que
+     * alguien pegue la llave nueva en /app/siigo sin perder la cola.
+     *
+     * Los rechazos de verdad siguen acotados por `$maxExceptions`.
+     */
+    public function retryUntil(): DateTimeInterface
+    {
+        return now()->addHours(12);
+    }
+
+    /** Un rechazo real de SIIGO corta a los 5, como antes. */
+    public int $maxExceptions = 5;
+
     public function middleware(): array
     {
         return [
+            // Primero de todos: con la credencial muerta no tiene sentido ni
+            // pedir turno al rate limiter.
+            new EsperarCredencialSiigo(),
             new RateLimited('siigo-api'),
             (new WithoutOverlapping("siigo:pago-prov:{$this->pagoId}"))->releaseAfter(60)->expireAfter(180),
         ];

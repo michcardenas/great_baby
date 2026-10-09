@@ -52,7 +52,7 @@ const { money } = useMoney();
                 <!-- Stock por ubicación con valorización -->
                 <div class="card p-4">
                     <div class="text-xs uppercase font-bold text-brand-600 mb-3">Stock por ubicación (valorizado)</div>
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-[10px] uppercase text-surface-500 border-b">
                             <tr>
                                 <th class="text-left p-2">Ubicación</th>
@@ -86,7 +86,7 @@ const { money } = useMoney();
                 <!-- Top con costo promedio y SIIGO -->
                 <div class="card p-4">
                     <div class="text-xs uppercase font-bold text-brand-600 mb-3">Top 30 con más stock</div>
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-[10px] uppercase text-surface-500 border-b">
                             <tr>
                                 <th class="text-left p-2">SKU</th>

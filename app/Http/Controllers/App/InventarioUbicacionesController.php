@@ -6,7 +6,6 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Modules\Dropi\Enums\CategoriaUbicacion;
 use App\Modules\Dropi\Models\InventarioUbicacion;
-use App\Modules\Siigo\Jobs\PushUbicacionASiigo;
 use App\Modules\Siigo\Models\SiigoCatalogo;
 use App\Modules\Siigo\Models\SiigoConfig;
 use Illuminate\Http\JsonResponse;
@@ -15,6 +14,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -48,23 +48,54 @@ class InventarioUbicacionesController extends Controller
             ->get(['id', 'name', 'email'])
             ->keyBy('id');
 
-        $ubicaciones = InventarioUbicacion::query()
+        // El orden agrupa cada bodega con las posiciones que viven adentro
+        // (COALESCE pone a la hija junto a su madre) y deja la bodega arriba de
+        // su grupo. Antes se ordenaba por activa+codigo, que mezclaba racks de
+        // sedes distintas y hacía imposible leer dónde está cada cosa; las
+        // inactivas se siguen distinguiendo porque la fila va atenuada.
+        $filas = InventarioUbicacion::query()
             ->withCount(['movimientos'])
-            ->orderBy('activa', 'desc')
+            // Primero las de Great Baby. Hoy el alfabeto ya las deja arriba
+            // («RES-» < «SIIGO-»), pero eso es casualidad del prefijo y se
+            // rompe con el primer código nuevo que empiece por T.
+            ->orderByRaw("codigo LIKE 'SIIGO-%'")
+            ->orderByRaw('COALESCE(bodega_id, id)')
+            ->orderByRaw('bodega_id IS NOT NULL')
             ->orderBy('codigo')
-            ->get()
-            ->map(function ($u) use ($responsables) {
+            ->get();
+
+        $nombresBodega = $filas->pluck('nombre', 'id');
+
+        $ubicaciones = $filas
+            ->map(function ($u) use ($responsables, $nombresBodega) {
                 $resp = $u->responsable_user_id ? $responsables->get($u->responsable_user_id) : null;
                 return [
                     'id' => $u->id,
                     'codigo' => $u->codigo,
                     'nombre' => $u->nombre,
+                    // Las trajo el importador del catálogo de SIIGO, no las
+                    // creó nadie acá. Son 43 contra 21 propias, y como el
+                    // sandbox es compartido muchas son de otras empresas
+                    // («Tiendanube», «ISLA I0001», «Locacion Jikko MP»).
+                    // Sin distinguirlas, la lista parece un desastre operativo
+                    // que en realidad no lo es.
+                    'importada_de_siigo' => str_starts_with((string) $u->codigo, 'SIIGO-'),
                     'categoria' => $u->categoria?->value,
                     'categoria_label' => $u->categoria?->name,
                     'activa' => (bool) $u->activa,
                     'disponible_para_venta' => (bool) $u->disponible_para_venta,
                     'direccion' => $u->direccion,
                     'ciudad' => $u->ciudad,
+                    'bodega_id' => $u->bodega_id,
+                    'bodega_nombre' => $u->bodega_id ? $nombresBodega->get($u->bodega_id) : null,
+                    'pasillo' => $u->pasillo,
+                    'estante' => $u->estante,
+                    'nivel' => $u->nivel,
+                    'posicion' => $u->posicion(),
+                    'es_bodega' => $u->esBodega(),
+                    // Una ubicación suelta —que no es bodega ni pertenece a
+                    // una— no la puede operar ningún responsable de bodega.
+                    'sin_sede' => $u->bodega_id === null && $u->responsable_user_id === null,
                     'responsable_user_id' => $u->responsable_user_id,
                     'responsable_nombre' => $resp?->name,
                     'responsable_email' => $resp?->email,
@@ -113,6 +144,35 @@ class InventarioUbicacionesController extends Controller
                 ->map(fn ($c) => ['id' => (int) $c->codigo, 'nombre' => $c->nombre])->all(),
             // UBIC-8 · usuarios candidatos y endpoint para crear nuevos.
             'candidatos_admin' => $candidatos,
+            // Ubicaciones activas que no pertenecen a ninguna bodega y tampoco
+            // son una: nadie las puede contar ni mover. Se muestra arriba para
+            // que no quede invisible — era la causa de que los conteos en los
+            // racks le dieran 403 al responsable de la bodega.
+            //
+            // No cuenta las `SIIGO-*`. Son las bodegas que el importador trajo
+            // del catálogo de SIIGO —43 hoy, muchas de otras empresas porque
+            // el sandbox es compartido—: existen sólo como destino contable,
+            // nadie las opera y nunca van a tener responsable. Contándolas, el
+            // aviso decía 63 cuando los casos reales eran 20, y un aviso que
+            // grita sin motivo se vuelve invisible.
+            'sin_sede' => InventarioUbicacion::where('activa', true)
+                ->whereNull('bodega_id')->whereNull('responsable_user_id')
+                ->where('codigo', 'not like', 'SIIGO-%')
+                ->count(),
+            // Las bodegas disponibles para colgar una ubicación · las sedes de
+            // Great Baby primero. El resto son warehouses de otras empresas que
+            // llegan del ambiente compartido de SIIGO, y mezclados por nombre
+            // empujaban las dos sedes propias al fondo de una lista de 60.
+            'bodegas' => InventarioUbicacion::whereNull('bodega_id')
+                ->orderByRaw('responsable_user_id IS NULL')
+                ->orderBy('nombre')
+                ->get(['id', 'codigo', 'nombre', 'responsable_user_id'])
+                ->map(fn ($b) => [
+                    'id' => $b->id,
+                    'nombre' => $b->nombre,
+                    'codigo' => $b->codigo,
+                    'es_sede' => $b->responsable_user_id !== null,
+                ]),
         ]);
     }
 
@@ -158,12 +218,24 @@ class InventarioUbicacionesController extends Controller
             'codigo' => ['required', 'string', 'max:30'],
             'nombre' => ['required', 'string', 'max:120'],
             'categoria' => ['required', 'string'],
+            // A qué bodega pertenece. Vacío = esto ES una bodega (sede).
+            'bodega_id' => ['nullable', 'integer', 'exists:inventario_ubicaciones,id'],
+            'pasillo' => ['nullable', 'string', 'max:30'],
+            'estante' => ['nullable', 'string', 'max:30'],
+            'nivel' => ['nullable', 'string', 'max:30'],
             'activa' => ['boolean'],
             'direccion' => ['nullable', 'string', 'max:200'],
             'ciudad' => ['nullable', 'string', 'max:80'],
             'responsable_user_id' => ['nullable', 'integer', 'exists:users,id'],
             'notas' => ['nullable', 'string', 'max:2000'],
-            'siigo_id' => ['nullable', 'integer'],
+            // Tiene que ser una bodega que SIIGO conozca de verdad. Era un
+            // entero suelto: cualquier número entraba y el chip verde de
+            // «sincronizado» salía igual, apuntando a una bodega inexistente.
+            // Filtra por `tipo` porque `siigo_catalogos` guarda juntos
+            // warehouses, taxes, price-lists y account-groups, y sin eso un
+            // impuesto con el mismo código pasaría por bodega.
+            'siigo_id' => ['nullable', 'integer',
+                Rule::exists('siigo_catalogos', 'codigo')->where('tipo', 'warehouses')],
             'siigo_resolution_id' => ['nullable', 'integer'],
             'siigo_resolution_name' => ['nullable', 'string', 'max:120'],
             'siigo_resolution_prefix' => ['nullable', 'string', 'max:10'],
@@ -176,6 +248,37 @@ class InventarioUbicacionesController extends Controller
         if (! empty($datos['id'])) $query->where('id', '!=', $datos['id']);
         if ($query->exists()) {
             return response()->json(['ok' => false, 'mensaje' => "Ya existe otra ubicación con código {$datos['codigo']}."], 422);
+        }
+
+        // Una ubicación no puede colgar de sí misma ni de otra que ya cuelga
+        // de alguien: la jerarquía es de dos niveles, bodega → ubicación. Si se
+        // permitieran cadenas, el permiso del responsable dejaría de ser
+        // predecible y habría que recorrer el árbol en cada verificación.
+        if (! empty($datos['bodega_id'])) {
+            if (! empty($datos['id']) && (int) $datos['bodega_id'] === (int) $datos['id']) {
+                return response()->json(['ok' => false, 'mensaje' => 'Una ubicación no puede pertenecerse a sí misma.'], 422);
+            }
+
+            $padre = InventarioUbicacion::find($datos['bodega_id']);
+            if ($padre && $padre->bodega_id !== null) {
+                return response()->json([
+                    'ok' => false,
+                    'mensaje' => "«{$padre->nombre}» no es una bodega: ya pertenece a otra. Elegí una bodega principal.",
+                ], 422);
+            }
+
+            // Si esta ubicación ya tiene posiciones adentro, no puede pasar a
+            // colgar de otra: dejaría de ser bodega y sus hijas quedarían
+            // huérfanas de permiso.
+            if (! empty($datos['id'])) {
+                $hijas = InventarioUbicacion::where('bodega_id', $datos['id'])->count();
+                if ($hijas > 0) {
+                    return response()->json([
+                        'ok' => false,
+                        'mensaje' => "Esta bodega tiene {$hijas} ubicación(es) adentro: no puede pasar a depender de otra.",
+                    ], 422);
+                }
+            }
         }
 
         // UBIC-6 · Auto-asignación de resolución SIIGO · si la ubicación es de
@@ -214,15 +317,25 @@ class InventarioUbicacionesController extends Controller
         $u->fill($datos);
         $u->save();
 
-        // UBIC-9 · push automático a SIIGO (crea warehouse si es nueva o
-        // actualiza si cambió el nombre/código y ya tiene siigo_id).
-        $pushEncolado = false;
-        if (SiigoConfig::pushAutoActivo() && $u->activa) {
-            if ($wasNew || ($siigoDataChanged && $u->siigo_id) || (! $u->siigo_id && $wasNew === false)) {
-                PushUbicacionASiigo::dispatch($u->id)->afterCommit();
-                $pushEncolado = true;
-            }
-        }
+        /*
+         * Acá iba un push automático que creaba la bodega en SIIGO.
+         *
+         * No puede funcionar: `/v1/warehouses` es un catálogo de **sólo
+         * lectura**. El GET responde 200 —de ahí salieron las 43 bodegas que
+         * tenemos cacheadas— y el POST responde `404 Resource not found`. No
+         * es la credencial: un 401 se ve distinto. Y la prueba es que ninguna
+         * ubicación propia del ERP tiene `siigo_id`; las únicas que lo tienen
+         * son las `SIIGO-xx` que creó el importador trayéndolas de allá.
+         *
+         * Encima no era deseable aunque funcionara: se disparaba para toda
+         * ubicación activa, y 20 de las 21 sin mapear son racks, niveles,
+         * zonas de avería y reservas —granularidad interna de bodega— que no
+         * tienen nada que hacer como bodegas en la contabilidad.
+         *
+         * El camino que sí existe está en el formulario: el selector «Bodega
+         * SIIGO» enlaza la ubicación con una de las que ya trajimos. Se crean
+         * en SIIGO y acá se eligen.
+         */
 
         // UBIC-8 · si el responsable asignado todavía no tiene rol AdminBodega
         // (ni Aracely/Gerencia, que ya ven todo), lo promovemos automáticamente.
@@ -242,37 +355,46 @@ class InventarioUbicacionesController extends Controller
         if ($promovido) {
             $msg .= " {$promovido} fue promovido a Admin Bodega.";
         }
-        if ($pushEncolado) {
-            $msg .= $u->siigo_id
-                ? " Actualización enviada a SIIGO en segundo plano."
-                : " Enviando a SIIGO en segundo plano · el ID aparecerá al terminar.";
-        }
         return response()->json([
             'ok' => true,
             'id' => $u->id,
             'auto_asignada' => $autoAsignada,
             'promovido' => $promovido,
-            'push_siigo' => $pushEncolado,
             'mensaje' => $msg,
         ]);
     }
 
     /**
-     * UBIC-9 · Botón manual "Enviar a SIIGO" en el CRUD. Útil para:
-     *   · ubicaciones viejas creadas antes del push automático,
-     *   · reintentar cuando el job de fondo falló.
+     * El botón "Enviar a SIIGO" ya no manda nada: explica qué hacer.
+     *
+     * Creaba la bodega con `POST /v1/warehouses`, que responde
+     * `404 Resource not found` — ese catálogo es de sólo lectura, el GET sí
+     * funciona y de ahí salieron las 43 bodegas cacheadas. El mensaje de
+     * antes decía «Creación encolada · el ID aparecerá al terminar», y ese id
+     * no iba a aparecer nunca: ninguna ubicación propia del ERP tiene
+     * `siigo_id`, sólo las que vinieron importadas.
+     *
+     * Las bodegas se crean en SIIGO y acá se eligen con el selector «Bodega
+     * SIIGO» del formulario.
      */
     public function enviarASiigo(Request $r, int $id): JsonResponse
     {
         abort_unless(\App\Auth\Permisos::esRoot($r->user()), 403);
         $u = InventarioUbicacion::findOrFail($id);
-        PushUbicacionASiigo::dispatchManual($u->id);
+
+        if ($u->siigo_id) {
+            return response()->json([
+                'ok' => true,
+                'mensaje' => "«{$u->codigo}» ya está enlazada con la bodega SIIGO #{$u->siigo_id}.",
+            ]);
+        }
+
         return response()->json([
-            'ok' => true,
-            'mensaje' => $u->siigo_id
-                ? "Actualización encolada para la warehouse SIIGO #{$u->siigo_id}."
-                : "Creación encolada en SIIGO · el ID aparecerá al terminar.",
-        ]);
+            'ok' => false,
+            'mensaje' => 'SIIGO no deja crear bodegas desde fuera: hay que crearla en SIIGO, '
+                .'correr "Sincronizar catálogos" y después elegirla en el campo «Bodega SIIGO» de esta ubicación. '
+                .'Si es un rack o una zona de avería, no lleva bodega de SIIGO.',
+        ], 422);
     }
 
     /**

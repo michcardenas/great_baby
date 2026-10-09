@@ -69,7 +69,7 @@ const timeline = [
             <div class="card p-4">
                 <div class="text-xs uppercase tracking-widest font-bold text-brand-600 mb-3">Ítems ({{ items.length }})</div>
                 <div class="overflow-x-auto">
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-xs text-surface-500 uppercase">
                             <tr>
                                 <th class="text-left p-2">Producto</th>

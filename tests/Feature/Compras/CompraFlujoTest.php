@@ -80,8 +80,10 @@ it('flujo completo: aprobar → recibir → asiento contable → stock', functio
     expect($orden->estado)->toBe(EstadoOrdenCompra::Recibida)
         ->and((float) $orden->items->first()->cantidad_recibida)->toBe(50.0);
 
-    expect(InventarioMovimiento::where('variante_id', $this->variante->id)->where('tipo', 'entrada_compra')->sum('cantidad'))
-        ->toBe(50);
+    // `cantidad` tiene cast decimal, así que la suma vuelve como texto
+    // ('50.0000'): se compara por valor y no por tipo.
+    expect((float) InventarioMovimiento::where('variante_id', $this->variante->id)->where('tipo', 'entrada_compra')->sum('cantidad'))
+        ->toBe(50.0);
 
     $movs = MovimientoContable::where('origen_type', \App\Modules\Compras\Models\RecepcionCompra::class)->get();
     expect($movs)->toHaveCount(3);

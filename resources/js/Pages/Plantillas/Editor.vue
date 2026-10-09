@@ -3,12 +3,18 @@ import { ref, reactive, computed, onMounted, watch } from 'vue';
 import { Head, Link, router } from '@inertiajs/vue3';
 import { FileText, Save, Trash2, Eye, Plus, CheckCircle2 } from 'lucide-vue-next';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
+import { mensajeDeError } from '@/composables/useMensajeError';
 
 const props = defineProps({
     tipo: { type: String, required: true },
     plantillas: { type: Array, required: true },
     plantilla: { type: Object, required: true },
 });
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
 
 const form = reactive({
     id: props.plantilla.id,
@@ -55,8 +61,16 @@ const guardar = () => {
 
 const eliminar = () => {
     if (!form.id) return;
-    if (!confirm('¿Eliminar esta plantilla?')) return;
-    router.delete(`/app/plantillas/${form.id}`, { preserveScroll: true });
+    modalConfirm.value = {
+        titulo: '¿Eliminar esta plantilla?',
+        mensaje: 'No se puede deshacer.',
+        color: 'rose',
+        textoConfirmar: 'Eliminar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            router.delete(`/app/plantillas/${form.id}`, { preserveScroll: true });
+        },
+    };
 };
 
 // Preview: POST devuelve PDF, lo cargamos en iframe con blob URL.
@@ -81,7 +95,7 @@ const generarPreview = async () => {
         if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
         previewUrl.value = URL.createObjectURL(blob);
     } catch (e) {
-        errorMsg.value = 'Preview falló: ' + e.message;
+        errorMsg.value = mensajeDeError(e, 'No pude generar la vista previa');
     } finally {
         previewLoading.value = false;
     }
@@ -311,5 +325,6 @@ watch(() => form.config, () => {
                 </div>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

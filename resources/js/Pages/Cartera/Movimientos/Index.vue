@@ -54,7 +54,7 @@ const diferencia = computed(() => props.totales.diferencia);
             </div>
 
             <div class="card overflow-x-auto">
-                <table class="w-full text-sm">
+                <table v-tabla-movil data-vacia="No hubo movimiento contable en ese rango de fechas." class="w-full text-sm">
                     <thead class="text-xs text-surface-500 uppercase border-b">
                         <tr>
                             <th class="text-left p-2">Fecha</th>

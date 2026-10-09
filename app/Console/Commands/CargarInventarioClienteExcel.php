@@ -208,11 +208,17 @@ class CargarInventarioClienteExcel extends Command
                 }
             };
 
-            if ($dryRun) {
-                $callback();
-            } else {
-                DB::transaction($callback);
-            }
+            // Mismo motivo que en la pantalla de importación: este comando
+            // escribe su propio kardex en la bodega indicada, así que el
+            // automático de `Producto::created` duplicaría el stock y pondría
+            // la mitad en «la primera ubicación activa».
+            Producto::sinKardexAutomatico(function () use ($dryRun, $callback) {
+                if ($dryRun) {
+                    $callback();
+                } else {
+                    DB::transaction($callback);
+                }
+            });
         } finally {
             $reader->close();
         }

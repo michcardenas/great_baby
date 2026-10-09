@@ -1,6 +1,8 @@
 <script setup>
+import { ref } from 'vue';
 import { Head, Link, router } from '@inertiajs/vue3';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
 import { ShieldCheck, Users, Plus, Lock, Trash2, KeyRound } from 'lucide-vue-next';
 
 defineProps({
@@ -8,9 +10,21 @@ defineProps({
     total_permisos: Number,
 });
 
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
 const eliminar = (rol) => {
-    if (! window.confirm(`¿Eliminar el rol «${rol.nombre}»?\n\nEsta acción no se puede deshacer.`)) return;
-    router.delete(`/app/roles/${rol.id}`, { preserveScroll: true });
+    modalConfirm.value = {
+        titulo: `¿Eliminar el rol «${rol.nombre}»?`,
+        mensaje: `Esta acción no se puede deshacer.`,
+        color: 'rose',
+        textoConfirmar: 'Eliminar',
+        onConfirmar: () => {
+            modalConfirm.value = null;
+            router.delete(`/app/roles/${rol.id}`, { preserveScroll: true });
+        },
+    };
 };
 </script>
 
@@ -36,7 +50,7 @@ const eliminar = (rol) => {
             </div>
 
             <div class="card overflow-hidden">
-                <table class="w-full text-sm">
+                <table v-tabla-movil data-vacia="No hay roles creados." class="w-full text-sm">
                     <thead class="text-xs uppercase text-surface-500 bg-surface-50 dark:bg-surface-900 border-b">
                         <tr>
                             <th class="p-3 text-left">Rol</th>
@@ -97,5 +111,6 @@ const eliminar = (rol) => {
             </div>
 
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

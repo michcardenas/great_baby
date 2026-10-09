@@ -206,7 +206,7 @@ const guardarInteraccion = () => {
                         <div class="text-lg font-bold text-emerald-600">Total a pagar: {{ fmtCOP(comisionesUltimoMes.total_a_pagar) }}</div>
                     </div>
                     <div class="overflow-x-auto">
-                        <table class="w-full min-w-[700px] text-sm">
+                        <table v-tabla-movil class="w-full min-w-[700px] text-sm">
                             <thead>
                                 <tr class="text-surface-500 text-xs uppercase border-b border-surface-200 dark:border-surface-800">
                                     <th class="text-left py-2">Vendedor</th>

@@ -5,6 +5,8 @@ import { Cloud, CloudOff, AlertTriangle, AlertOctagon, RefreshCw, ExternalLink, 
 import AppLayout from '@/Layouts/AppLayout.vue';
 import { useMoney } from '@/composables/useMoney';
 import { fechaCorta } from '@/composables/useFecha';
+import AppConfirmModal from '@/Components/AppConfirmModal.vue';
+import { mensajeDeError } from '@/composables/useMensajeError';
 
 /*
  * CONT-C1 · Dashboard de documentos pendientes de SIIGO.
@@ -16,6 +18,10 @@ const props = defineProps({
     resumen: { type: Object, required: true },
     pendientes: { type: Array, required: true },
 });
+
+// Confirmaciones con el modal propio: el confirm() nativo queda bloqueado
+// dentro del iframe de la app de escritorio y en celular ignora el diseno.
+const modalConfirm = ref(null);
 
 const { money } = useMoney();
 
@@ -78,7 +84,7 @@ const reenviar = async (p) => {
             toast.value = { type: 'error', text: `No se pudo encolar ${p.numero}: HTTP ${resp.status} ${body.slice(0, 120)}` };
         }
     } catch (e) {
-        toast.value = { type: 'error', text: `Error de red: ${e.message}` };
+        toast.value = { type: 'error', text: mensajeDeError(e, 'No pude reenviar el documento a SIIGO') };
     } finally {
         reenviando.value = null;
         setTimeout(() => { toast.value = null; }, 6000);
@@ -89,24 +95,32 @@ const reenviar = async (p) => {
 const enviandoLote = ref(false);
 const enviarTodosVisibles = async () => {
     if (enviandoLote.value) return;
-    if (!confirm(`¿Enviar a SIIGO los ${filtrados.value.length} documento(s) visibles? Se dispara uno por uno en segundo plano.`)) return;
-    enviandoLote.value = true;
-    try {
-        for (const p of filtrados.value) {
-            await fetch(p.url_reenviar, {
-                method: 'POST',
-                headers: {
-                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content ?? '',
-                    'X-Requested-With': 'XMLHttpRequest',
-                    'Accept': 'application/json',
-                },
-                credentials: 'same-origin',
-            });
-        }
-        router.reload({ preserveScroll: true });
-    } finally {
-        enviandoLote.value = false;
-    }
+    modalConfirm.value = {
+        titulo: `¿Enviar a SIIGO ${filtrados.value.length} documento(s)?`,
+        mensaje: 'Se dispara un envío por documento, uno por uno.',
+        color: 'sky',
+        textoConfirmar: 'Enviar todos',
+        onConfirmar: async () => {
+            modalConfirm.value = null;
+            enviandoLote.value = true;
+            try {
+                for (const p of filtrados.value) {
+                    await fetch(p.url_reenviar, {
+                        method: 'POST',
+                        headers: {
+                            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content ?? '',
+                            'X-Requested-With': 'XMLHttpRequest',
+                            'Accept': 'application/json',
+                        },
+                        credentials: 'same-origin',
+                    });
+                }
+                router.reload({ preserveScroll: true });
+            } finally {
+                enviandoLote.value = false;
+            }
+        },
+    };
 };
 </script>
 
@@ -220,7 +234,7 @@ const enviarTodosVisibles = async () => {
             <!-- Tabla · acciones en la PRIMERA columna (siempre visibles) + scroll
                  horizontal del resto si el viewport es angosto. -->
             <div class="card p-0 overflow-x-auto">
-                <table class="w-full text-sm min-w-[900px]">
+                <table v-tabla-movil class="w-full text-sm min-w-[900px]">
                     <thead class="text-[10px] uppercase text-surface-500 border-b bg-surface-50 dark:bg-surface-900/50">
                         <tr>
                             <th class="text-left p-3 w-[200px] sticky left-0 bg-surface-50 dark:bg-surface-900/50 z-10">Acciones</th>
@@ -278,5 +292,6 @@ const enviarTodosVisibles = async () => {
                 </table>
             </div>
         </div>
+        <AppConfirmModal :cfg="modalConfirm" @cerrar="modalConfirm = null"/>
     </AppLayout>
 </template>

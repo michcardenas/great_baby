@@ -126,7 +126,7 @@ const linkTodosMovs = computed(() =>
                 <div class="text-xs uppercase tracking-widest font-bold text-brand-600 mb-3">📊 Balance de comprobación por cuenta</div>
                 <div v-if="!porCuenta.length" class="text-center py-6 text-surface-500 text-sm">Sin movimientos en el período.</div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full min-w-[600px] text-sm">
+                    <table v-tabla-movil class="w-full min-w-[600px] text-sm">
                         <thead>
                             <tr class="text-surface-500 text-xs uppercase border-b border-surface-200 dark:border-surface-800">
                                 <th class="text-left py-2">Cuenta PUC</th>
@@ -176,7 +176,7 @@ const linkTodosMovs = computed(() =>
                 </div>
                 <div v-if="!movimientosRecientes.length" class="text-center py-6 text-surface-500 text-sm">Sin movimientos en el período.</div>
                 <div v-else class="overflow-x-auto">
-                    <table class="w-full min-w-[800px] text-sm">
+                    <table v-tabla-movil class="w-full min-w-[800px] text-sm">
                         <thead>
                             <tr class="text-surface-500 text-xs uppercase border-b border-surface-200 dark:border-surface-800">
                                 <th class="text-left py-2">Fecha</th>

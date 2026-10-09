@@ -71,6 +71,11 @@ class PagosController extends Controller implements HasMiddleware
                 'referencia' => $p->referencia,
                 'banco' => $p->banco,
                 'registrado_por' => $p->registrador?->name,
+                // Comprobante de SIIGO (RC-1-2453). Se guardaba y no se
+                // mostraba en ningún lado, así que no había forma de saber si
+                // el cobro llegó a la contabilidad ni con qué número.
+                'siigo_numero' => $p->siigo_number,
+                'en_siigo' => (bool) $p->siigo_id,
             ])->withQueryString(),
             'filtros' => ['q' => $q, 'medio' => $medio, 'desde' => $desde, 'hasta' => $hasta],
             'totales' => [

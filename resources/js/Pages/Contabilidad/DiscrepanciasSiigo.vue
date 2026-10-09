@@ -2,6 +2,7 @@
 import { ref } from 'vue';
 import { Head, Link, router } from '@inertiajs/vue3';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import { mensajeDeError } from '@/composables/useMensajeError';
 import { AlertTriangle, RefreshCw, Eye, Activity, CheckCircle2, Ghost, Scale, XCircle } from 'lucide-vue-next';
 
 const props = defineProps({
@@ -37,7 +38,7 @@ const verSiigo = async (asientoId) => {
         });
         verSiigoDiff.value = await r.json();
     } catch (e) {
-        verSiigoDiff.value = { ok: false, mensaje: 'Error de red: ' + e.message };
+        verSiigoDiff.value = { ok: false, mensaje: mensajeDeError(e, 'No pude traer el asiento de SIIGO') };
     } finally {
         verSiigoLoading.value = false;
     }
@@ -127,7 +128,7 @@ const reintentar = (id) => {
                     </span>
                 </div>
                 <div class="overflow-x-auto">
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-xs uppercase text-surface-500 bg-surface-50 dark:bg-surface-900">
                             <tr>
                                 <th class="p-3 text-left">#</th>
@@ -177,7 +178,7 @@ const reintentar = (id) => {
                     </span>
                 </div>
                 <div class="overflow-x-auto">
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-xs uppercase text-surface-500 bg-surface-50 dark:bg-surface-900">
                             <tr>
                                 <th class="p-3 text-left">#</th>
@@ -229,7 +230,7 @@ const reintentar = (id) => {
                     </span>
                 </div>
                 <div class="overflow-x-auto">
-                    <table class="w-full text-sm">
+                    <table v-tabla-movil class="w-full text-sm">
                         <thead class="text-xs uppercase text-surface-500 bg-surface-50 dark:bg-surface-900">
                             <tr>
                                 <th class="p-3 text-left">Asiento</th>
@@ -286,7 +287,7 @@ const reintentar = (id) => {
                             <div class="text-xs text-surface-500">
                                 SIIGO journal: <span class="font-mono">{{ verSiigoDiff.siigo_journal_id }}</span>
                             </div>
-                            <table class="w-full text-sm">
+                            <table v-tabla-movil class="w-full text-sm">
                                 <thead class="text-xs uppercase text-surface-500 border-b">
                                     <tr>
                                         <th class="p-2 text-left">Campo</th>

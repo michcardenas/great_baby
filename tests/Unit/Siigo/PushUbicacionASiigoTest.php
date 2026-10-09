@@ -1,10 +1,18 @@
 <?php
 
+use DateTimeInterface;
 use App\Modules\Siigo\Jobs\PushUbicacionASiigo;
 use Illuminate\Support\Facades\Queue;
 
 // UBIC-9 · Smoke tests del Job de push de ubicaciones a SIIGO como warehouse.
 // Mismo patrón que PushRecepcionASiigo/PushProductoASiigo (Unit sin BD, Queue::fake).
+//
+// ⚠ El job está DESCONECTADO desde el 2026-10-09: `/v1/warehouses` es un
+// catálogo de sólo lectura en SIIGO (GET 200, POST 404), así que crear bodegas
+// desde el ERP no es posible. Nada lo encola. Estas pruebas sólo verifican la
+// forma del job —cola, timeout, kill-switch—, no que el flujo sirva: el flujo
+// real es enlazar la ubicación con una bodega ya existente en SIIGO, y eso se
+// prueba en tests/Feature/Inventario/EnlaceBodegaSiigoTest.php.
 
 beforeEach(function () {
     Queue::fake();
@@ -30,7 +38,13 @@ it('cola correcta (siigo) y timeouts/retries estándar', function () {
     $job = new PushUbicacionASiigo(ubicacionId: 303);
     expect($job->queue)->toBe('siigo');
     expect($job->timeout)->toBe(60);
-    expect($job->tries)->toBe(5);
+    // `tries` ya no gobierna: el worker lo ignora apenas el job define
+    // `retryUntil()` (Worker::markJobAsFailedIfWillExceedMaxAttempts). El
+    // techo es el reloj, y lo que corta un rechazo real de SIIGO es
+    // `maxExceptions`.
+    expect($job->retryUntil())->toBeInstanceOf(DateTimeInterface::class)
+        ->and($job->retryUntil()->greaterThan(now()->addHours(11)))->toBeTrue()
+        ->and($job->maxExceptions)->toBe(5);
 });
 
 it('backoff con jitter (progresión 10 · 30 · 60 · 120 · 300)', function () {

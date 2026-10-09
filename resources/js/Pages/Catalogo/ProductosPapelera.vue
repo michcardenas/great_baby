@@ -54,7 +54,7 @@ const restaurar = (p) => {
             </div>
 
             <div v-else class="card overflow-x-auto">
-                <table class="w-full text-sm">
+                <table v-tabla-movil class="w-full text-sm">
                     <thead class="bg-surface-50 dark:bg-surface-800 text-left text-xs uppercase text-surface-500">
                         <tr>
                             <th class="p-3">Referencia</th>

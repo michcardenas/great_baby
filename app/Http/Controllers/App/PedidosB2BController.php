@@ -410,7 +410,10 @@ class PedidosB2BController extends Controller implements HasMiddleware
         if ($esCredito) {
             $yaAprobado = \App\Modules\Cartera\Models\SolicitudCredito::query()
                 ->where('pedido_id', $p0->id)
-                ->whereIn('estado', ['aprobada_cartera', 'aprobada_gerencia'])
+                // «aprobada» a secas es lo que escribía la pantalla Vue antes
+                // del 2026-10-08. Se acepta para no dejar colgadas las
+                // solicitudes que ya quedaron guardadas así.
+                ->whereIn('estado', ['aprobada_cartera', 'aprobada_gerencia', 'aprobada'])
                 ->exists();
 
             if (! $yaAprobado) {

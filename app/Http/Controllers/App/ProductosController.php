@@ -10,6 +10,7 @@ use App\Modules\Catalogo\Models\CatalogoSubgrupo;
 use App\Modules\Dropi\Models\Producto;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controllers\HasMiddleware;
 use Illuminate\Routing\Controllers\Middleware;
@@ -115,6 +116,8 @@ class ProductosController extends Controller implements HasMiddleware
             'producto' => $this->serializarCompleto($producto),
             'historial' => $this->historialProducto($producto),
             'catalogos' => $this->catalogosParaForm(),
+            'precios_lista' => $this->preciosPorLista($producto),
+            'listo_para_vender' => $this->listoParaVender($producto),
         ]);
     }
 
@@ -811,25 +814,32 @@ class ProductosController extends Controller implements HasMiddleware
     }
 
     /**
-     * Sugiere la siguiente referencia disponible siguiendo el patrón del
-     * código del producto más reciente. Si no hay patrón reconocible, propone
-     * `GB-NNNN`.
+     * Sugiere la siguiente referencia libre de la familia `GB-NNNN`, que es
+     * justo el ejemplo que muestra el campo.
      */
     public function sugerirReferencia(): JsonResponse
     {
-        // Toma el último producto creado y propone +1 si tiene patrón "PREFIJO-N".
-        $ultimo = Producto::latest('id')->first(['referencia']);
-        $sugerencia = 'GB-'.str_pad((string) (Producto::count() + 1), 4, '0', STR_PAD_LEFT);
-        if ($ultimo && preg_match('/^(.*?)(\d+)$/', $ultimo->referencia, $m)) {
-            $siguiente = $m[1] . str_pad((string) ((int) $m[2] + 1), strlen($m[2]), '0', STR_PAD_LEFT);
-            // Si por casualidad ya existe, se incrementa hasta encontrar libre.
-            while (Producto::withTrashed()->where('referencia', $siguiente)->exists()) {
-                $siguiente = $m[1] . str_pad((string) ((int) $m[2] + 1), strlen($m[2]), '0', STR_PAD_LEFT);
-                $m[2] = (int) $m[2] + 1;
-            }
-            $sugerencia = $siguiente;
+        // El campo promete "Ej: GB-0001", así que el botón entrega exactamente
+        // esa familia. Antes tomaba el ÚLTIMO producto creado sin mirar su
+        // prefijo, así que después de importar el Excel del cliente sugería
+        // cosas como "PRUEBA-REAL-104018" — nada que ver con lo ofrecido.
+        $maximo = Producto::withTrashed()
+            ->where('referencia', 'REGEXP', '^GB-[0-9]+$')
+            ->pluck('referencia')
+            ->map(fn ($r) => (int) substr($r, 3))
+            ->max() ?? 0;
+
+        // Ancho mínimo 4 (GB-0001); si el catálogo pasa de 9999 crece solo.
+        $formato = fn (int $n) => 'GB-'.str_pad((string) $n, 4, '0', STR_PAD_LEFT);
+
+        // Red de seguridad: si alguien creó ese código a mano mientras tanto,
+        // se avanza al primer hueco libre en vez de chocar al guardar.
+        $n = $maximo + 1;
+        while (Producto::withTrashed()->where('referencia', $formato($n))->exists()) {
+            $n++;
         }
-        return response()->json(['referencia' => $sugerencia]);
+
+        return response()->json(['referencia' => $formato($n)]);
     }
 
     /** Búsqueda AJAX para el selector M:M de accesorios/sustitutos. */
@@ -1022,6 +1032,130 @@ class ProductosController extends Controller implements HasMiddleware
                 'orden' => $img->orden,
             ])->all(),
         ]);
+    }
+
+    /**
+     * Qué le falta al producto para poder venderse y costearse.
+     *
+     * Un producto se puede guardar con lo mínimo —referencia, nombre y
+     * línea— y queda perfectamente inútil: sin precio de venta no entra en
+     * ningún pedido, y sin costo sus movimientos de kardex no se pueden
+     * asentar, así que la venta no registra el costo y el margen bruto sale
+     * 100%. Las dos cosas fallan DESPUÉS, lejos de esta pantalla y sin
+     * explicación.
+     *
+     * El formulario de contactos ya avisa así («un cliente B2B sin lista de
+     * precios no le aparece al vendedor»); este no decía nada.
+     *
+     * @return array{sin_costo:bool, sin_precio:bool, variantes_sin_precio:int}
+     */
+    private function listoParaVender(Producto $producto): array
+    {
+        $sinPrecio = $producto->desglose_stock
+            // En un producto granular el precio vive en cada variante.
+            ? ! \App\Modules\Catalogo\Models\PrecioVariante::query()
+                ->whereIn('variante_id', $producto->variantes->pluck('id'))
+                ->exists()
+            : ! \App\Modules\Catalogo\Models\PrecioProducto::query()
+                ->where('producto_id', $producto->id)->vigentes()->exists();
+
+        $variantesSinPrecio = 0;
+        if ($producto->desglose_stock) {
+            $conPrecio = \App\Modules\Catalogo\Models\PrecioVariante::query()
+                ->whereIn('variante_id', $producto->variantes->pluck('id'))
+                ->distinct()->pluck('variante_id')->count();
+            $variantesSinPrecio = max(0, $producto->variantes->count() - $conPrecio);
+        }
+
+        return [
+            'sin_costo' => (float) $producto->precio_proveedor <= 0,
+            'sin_precio' => $sinPrecio,
+            'variantes_sin_precio' => $variantesSinPrecio,
+        ];
+    }
+
+    /**
+     * Guarda el precio del producto agregado en cada lista.
+     *
+     * Dejar una casilla vacía BORRA el precio de esa lista, que es como se
+     * deja de ofrecerle el producto a los clientes que la tienen asignada.
+     * Es lo que la pantalla muestra, así que es lo que tiene que hacer.
+     */
+    public function guardarPrecios(Request $r, Producto $producto): RedirectResponse
+    {
+        abort_if($producto->desglose_stock, 422,
+            'Este producto se vende por variante: su precio se carga en cada variante, no acá.');
+
+        $data = $r->validate([
+            'precios' => ['present', 'array'],
+            'precios.*.lista_id' => ['required', 'integer', 'exists:listas_precios,id'],
+            'precios.*.precio' => ['nullable', 'numeric', 'min:0', 'max:99999999'],
+        ]);
+
+        $puestos = 0;
+        $quitados = 0;
+
+        DB::transaction(function () use ($data, $producto, &$puestos, &$quitados) {
+            foreach ($data['precios'] as $fila) {
+                $precio = $fila['precio'];
+
+                if ($precio === null || $precio === '' || (float) $precio <= 0) {
+                    $quitados += \App\Modules\Catalogo\Models\PrecioProducto::query()
+                        ->where('producto_id', $producto->id)
+                        ->where('lista_id', $fila['lista_id'])
+                        ->delete();
+
+                    continue;
+                }
+
+                \App\Modules\Catalogo\Models\PrecioProducto::updateOrCreate(
+                    ['producto_id' => $producto->id, 'lista_id' => $fila['lista_id']],
+                    ['precio' => (float) $precio, 'vigente_desde' => now()->toDateString(), 'vigente_hasta' => null],
+                );
+                $puestos++;
+            }
+        });
+
+        return back()->with('success', $puestos > 0
+            ? "Precios guardados: {$puestos} lista(s)."
+                .($quitados > 0 ? " Se quitó el precio de {$quitados}." : '')
+            : 'Se quitó el precio de todas las listas: este producto deja de poder pedirse.');
+    }
+
+    /**
+     * Precio de venta del producto en cada lista.
+     *
+     * Sólo aplica a productos AGREGADOS: en los granulares el precio vive por
+     * variante (`precios_variante`). Los agregados no tenían dónde guardarlo,
+     * así que no se podían vender —la línea del pedido se descartaba sin
+     * decir por qué— hasta que el 2026-10-08 se creó `precios_producto`.
+     *
+     * Se devuelven TODAS las listas, con o sin precio, porque la pantalla
+     * tiene que dejar ver cuáles faltan: una lista sin precio es un cliente
+     * que no le puede comprar este producto.
+     */
+    private function preciosPorLista(Producto $producto): array
+    {
+        if ($producto->desglose_stock) {
+            return [];
+        }
+
+        $puestos = \App\Modules\Catalogo\Models\PrecioProducto::query()
+            ->where('producto_id', $producto->id)
+            ->vigentes()
+            ->pluck('precio', 'lista_id');
+
+        return \App\Modules\Catalogo\Models\ListaPrecios::query()
+            ->orderByRaw('siigo_id IS NOT NULL')
+            ->orderBy('nombre')
+            ->get(['id', 'nombre', 'siigo_id'])
+            ->map(fn ($l) => [
+                'lista_id' => $l->id,
+                'nombre' => $l->nombre,
+                'grupo' => $l->siigo_id ? 'Listas del catálogo de SIIGO' : 'Listas de Great Baby',
+                'precio' => isset($puestos[$l->id]) ? (float) $puestos[$l->id] : null,
+            ])
+            ->all();
     }
 
     private function catalogosParaForm(): array

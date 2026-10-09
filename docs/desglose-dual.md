@@ -157,17 +157,25 @@ php artisan db:seed --class=CategoriasClienteBebesSeeder
 
 ---
 
-## Limitaciones conocidas (F2 R2 pendiente)
+## Estado de los flujos con productos agregados
 
-Los siguientes flujos aún NO soportan productos agregados. Si el usuario intenta usarlos con un producto agregado, falla con mensaje claro:
+C-F2 Round 2 está **cerrado**. Cuatro de los cinco flujos que figuraban como
+pendientes ya soportan productos agregados, y desde el 2026-10-08 hay tests que
+lo comprueban — antes el código decía soportarlos y nadie lo había verificado:
+los 19 tests del desglose dual cubrían los cimientos (constraints,
+`StockService`, reservas) y ninguno recorría estos flujos.
 
-- **EjecutarTraslado** — falla con "El soporte de traslados agregados llega en C-F2 Round 2"
-- **PrepararTomaFisica** — no lo incluye en la toma; comentario TODO documenta el gap
-- **RecibirMercancia** (Compras) — solo variantes
-- **LiquidarImportacion** — solo variantes
-- **ProcesarEscaneoEmpaque** — escáner solo lee códigos de variante
+| Flujo | Estado | Test |
+|---|---|---|
+| `EjecutarTraslado` | ✅ traslada agregados entre bodegas | `FlujosConProductoAgregadoTest` |
+| `PrepararTomaFisica` | ✅ los incluye en el conteo con su saldo | idem |
+| `RecibirMercancia` | ✅ los ingresa al kardex con su costo | idem |
+| `LiquidarImportacion` | ✅ los ingresa con el costo prorrateado | idem |
+| `ProcesarEscaneoEmpaque` | ⬜ sólo lee códigos de variante | — |
 
-Ver [C-F2 R2 en el plan de trabajo](../MEMORY.md) para orden de refactor.
+El escáner de empaque sigue leyendo únicamente códigos de barras de variante.
+Es del canal **Dropi**, que está fuera de alcance por decisión del cliente
+(2026-10-06), así que no se tocó.
 
 ---
 
