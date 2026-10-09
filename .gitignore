@@ -3,6 +3,11 @@
 .env
 .env.backup
 .env.production
+# Cualquier otra copia del .env: una llamada `.env.backup-recuperacion`
+# con APP_KEY, DB_PASSWORD y las de AWS estuvo a un `git add -A` de
+# subir al repo publico el 2026-10-09.
+.env.*
+!.env.example
 .phpactor.json
 .phpunit.result.cache
 /.fleet
